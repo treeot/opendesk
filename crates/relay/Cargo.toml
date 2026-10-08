@@ -16,11 +16,11 @@ path = "src/main.rs"
 [dependencies]
 protocol = { path = "../protocol" }
 tokio = { workspace = true }
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 dashmap = "6"
 futures-util = "0.3"
 log = "0.4"
 env_logger = "0.11"
 
 [dev-dependencies]
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.29"

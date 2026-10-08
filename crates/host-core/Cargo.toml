@@ -9,14 +9,14 @@ edition = "2021"
 async-trait = "0.1"
 protocol = { path = "../protocol" }
 tokio = { workspace = true }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.29"
 futures-util = "0.3"
 openh264 = "0.9"
 scap = "0.0.8"
-enigo = "0.2"
-webrtc-ice = "0.13"
-webrtc-util = "0.11"
-sha2 = "0.10"
+enigo = "0.6"
+webrtc-ice = "0.17"
+webrtc-util = "0.17"
+sha2 = "0.11"
 totp-lite = "2"
 cpal = "0.18"
 opus = "0.4"
@@ -26,4 +26,4 @@ log = "0.4"
 [dev-dependencies]
 relay = { path = "../relay" }
 tokio = { workspace = true, features = ["full"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.29"
