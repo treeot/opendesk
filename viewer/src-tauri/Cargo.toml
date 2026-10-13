@@ -45,16 +45,16 @@ qrcode = { version = "0.14", default-features = false }
 tauri-plugin-updater = "2.13.3"
 tauri-plugin-process = "2.4.0"
 tauri-plugin-autostart = "=2.7.0"
-tauri-plugin-single-instance = "=2.4.5"
+tauri-plugin-single-instance = "=2.5.3"
 sha2 = "0.11"
 
 # Already in the tree through tauri-plugin-autostart; reads MachineGuid.
 [target.'cfg(windows)'.dependencies]
-windows-registry = "0.6"
+windows-registry = "0.100"
 # Downloading and unpacking Amyuni's virtual display driver (vdriver.rs).
 # Both already in the tree on Windows through tauri-plugin-updater.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-zip = { version = "4.6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
 # zip's deflate needs a backend picked; the pure-Rust one.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 windows-service = "0.8.1"
@@ -62,7 +62,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 # vdriver.rs unpacks a zip in its tests on every platform.
-zip = { version = "4.6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
 # zip's deflate needs a backend picked; the pure-Rust one.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
