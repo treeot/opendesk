@@ -47,7 +47,7 @@ objc2-video-toolbox = { version = "0.3.2", default-features = false, features = 
 # Not used directly: scap 0.0.8 accepts any windows-capture 1.x, but 1.5
 # changed Settings::new and breaks scap's Windows build. Cap it here.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-capture = ">=1.3.6, <1.5"
+windows-capture = ">=1.3.6, <2.1"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
