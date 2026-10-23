@@ -37,3 +37,7 @@ yarn-error.log*
 
 # OS / misc
 *.log
+
+# Signing certificates (never commit)
+*.p12
+*.pem
