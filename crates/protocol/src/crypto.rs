@@ -42,6 +42,11 @@ pub struct Opener {
     seen_any: bool,
     highest: u64,
     window: u128,
+    // Strict openers accept only strictly-increasing counters, for reliable,
+    // in-order channels (Control/Data). A relay that reorders or re-injects an
+    // authentic-but-stale frame is then rejected, not silently accepted within
+    // the window. Media/input over UDP use the sliding window instead.
+    strict: bool,
 }
 
 impl Opener {
@@ -51,7 +56,14 @@ impl Opener {
             seen_any: false,
             highest: 0,
             window: 0,
+            strict: false,
         }
+    }
+
+    /// An opener for a reliable, ordered channel: only strictly newer counters
+    /// are accepted, so stale or reordered frames from a hostile relay are dropped.
+    pub fn strict(key: [u8; 32]) -> Opener {
+        Opener { strict: true, ..Opener::new(key) }
     }
 
     pub fn open(&mut self, aad: &[u8], wire: &[u8]) -> Option<Vec<u8>> {
@@ -76,6 +88,14 @@ impl Opener {
             self.seen_any = true;
             self.highest = counter;
             self.window = 1;
+            return true;
+        }
+        if self.strict {
+            // Reliable channel: accept only strictly newer counters.
+            if counter <= self.highest {
+                return false;
+            }
+            self.highest = counter;
             return true;
         }
         if counter > self.highest {
@@ -114,6 +134,26 @@ mod tests {
         let mut o = Opener::new(key);
         let wire = s.seal(&[0x10], b"secret frame");
         assert_eq!(o.open(&[0x10], &wire).as_deref(), Some(&b"secret frame"[..]));
+    }
+
+    #[test]
+    fn strict_opener_rejects_reorder_and_replay() {
+        let key = [9u8; 32];
+        let mut s = Sealer::new(key);
+        let f0 = s.seal(&[0x10], b"a");
+        let f1 = s.seal(&[0x10], b"b");
+        let f2 = s.seal(&[0x10], b"c");
+        let mut strict = Opener::strict(key);
+        assert!(strict.open(&[0x10], &f0).is_some());
+        assert!(strict.open(&[0x10], &f2).is_some());
+        // f1 arrives late (reordered) and is rejected, as is a replay of f2.
+        assert!(strict.open(&[0x10], &f1).is_none());
+        assert!(strict.open(&[0x10], &f2).is_none());
+        // A sliding-window opener would have accepted the reordered f1.
+        let mut windowed = Opener::new(key);
+        assert!(windowed.open(&[0x10], &f0).is_some());
+        assert!(windowed.open(&[0x10], &f2).is_some());
+        assert!(windowed.open(&[0x10], &f1).is_some());
     }
 
     fn hex(bytes: &[u8]) -> String {

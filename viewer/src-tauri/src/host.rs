@@ -359,6 +359,9 @@ pub(crate) async fn run_paired_host_session(
         let state = app.state::<AppState>();
         let mut state = state.lock();
         state.viewer_permissions.reset();
+        // Drop any one-shot upload destination from a previous session, so a
+        // stale viewer-chosen path can never redirect the next session's file.
+        *lock_unpoisoned(&state.upload_dir) = None;
         let gates = host_core::roles::SessionGates {
             control: state.viewer_permissions.control.clone(),
             audio: state.viewer_permissions.audio.clone(),
@@ -431,7 +434,7 @@ pub(crate) async fn run_paired_host_session(
             match handle {
                 Ok(handle) => {
                     streamed = true;
-                    activate_data_channel(app, handle, remote_id.clone());
+                    activate_data_channel(app, handle, remote_id.clone(), true);
                     tokio::select! {
                         result = &mut session => Some(result),
                         _ = &mut *stop_rx => None,

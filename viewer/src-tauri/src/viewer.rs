@@ -379,7 +379,7 @@ pub(crate) fn connect(
                 Ok(handle) => {
                     // Ends with this attempt; a reconnect reports its own path.
                     let _link_stats = AbortOnDrop::new(spawn_link_stats(task_app.clone(), handle.link.clone()));
-                    activate_data_channel(&task_app, handle, target.clone());
+                    activate_data_channel(&task_app, handle, target.clone(), false);
                     emit(&task_app, VIEWER_STATUS, StatusEvent { state: "in_session" });
                     if !session_started {
                         emit(

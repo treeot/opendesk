@@ -48,11 +48,18 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
 // traffic; the retained-memory DoS is closed by strict Register field
 // validation (9-digit id, 64-hex token) plus the per-IP limits, not by this.
 const DEFAULT_MAX_SIGNAL_MESSAGE: usize = 8 * 1024 * 1024;
+/// A pre-pairing signal (Register/Connect/Presence) is well under 1 KiB; this
+/// bound rejects an oversized first message before it is buffered or parsed.
+const SIGNAL_MESSAGE_MAX: usize = 64 * 1024;
 const DEFAULT_CONNECTION_ATTEMPT_BURST: u32 = 20;
 const DEFAULT_CONNECTION_ATTEMPT_REFILL_SECS: u64 = 10;
 const DEFAULT_SWEEP_SECS: u64 = 60;
-/// Frames queued toward one peer before the other peer's reads pause.
-const PEER_QUEUE: usize = 32;
+/// Frames queued toward one peer before the other peer's reads pause. Kept small
+/// to bound both latency and the memory one pair can pin: at the forwarded-frame
+/// cap this is the worst-case queued bytes per direction, so a slow or stalled
+/// receiver cannot make the relay hold hundreds of MiB per session. A complete
+/// fix would budget by bytes rather than frame count.
+const PEER_QUEUE: usize = 8;
 
 #[derive(Clone)]
 pub struct RelayState {
@@ -121,6 +128,7 @@ fn registry_config_from_env() -> RegistryConfig {
     let lease = env_u64("RELAY_ID_LEASE_SECS", env_u64("RELAY_OWNERSHIP_GRACE_SECS", default.lease.as_secs()));
     RegistryConfig {
         lease: Duration::from_secs(lease),
+        unpaired_lease: Duration::from_secs(env_u64("RELAY_UNPAIRED_ID_LEASE_SECS", default.unpaired_lease.as_secs())),
         max_bindings: env_usize("RELAY_MAX_ID_BINDINGS", default.max_bindings),
         max_rate_entries: env_usize("RELAY_MAX_RATE_ENTRIES", default.max_rate_entries),
         connect_burst: env_u64("RELAY_CONNECT_BURST", default.connect_burst as u64) as u32,
@@ -164,13 +172,16 @@ impl ConnectionLimits {
     }
 
     fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionGuard> {
-        if !self.attempts.allow(ip) { return None; }
+        // Count per IPv4 address or IPv6 /64, so one IPv6 allocation cannot open
+        // unlimited connections (or fill the attempt map) by rotating addresses.
+        let key = registry::rate_key(ip);
+        if !self.attempts.allow(key) { return None; }
         let mut ips = self.ips.lock().expect("connection limits lock poisoned");
-        let current = ips.get(&ip).copied().unwrap_or(0);
+        let current = ips.get(&key).copied().unwrap_or(0);
         if self.active.load(Ordering::Relaxed) >= self.max || current >= self.per_ip { return None; }
         self.active.fetch_add(1, Ordering::Relaxed);
-        *ips.entry(ip).or_default() += 1;
-        Some(ConnectionGuard { limits: Arc::clone(self), ip })
+        *ips.entry(key).or_default() += 1;
+        Some(ConnectionGuard { limits: Arc::clone(self), ip: key })
     }
 
     fn active(&self) -> usize { self.active.load(Ordering::Relaxed) }
@@ -304,13 +315,24 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
     // Kept short: a deep queue here is seconds of stale video when the
     // receiving peer is slower than the sender. A full queue backpressures
     // the sending peer, whose host bounds video in flight.
-    let (my_tx, mut my_rx) = mpsc::channel::<Vec<u8>>(PEER_QUEUE);
+    // Byte-budgeted toward this peer: the sender acquires budget per frame and
+    // the writer below releases it as it drains, so a slow/stalled receiver
+    // backpressures the sender instead of growing memory without bound.
+    let budget = Arc::new(tokio::sync::Semaphore::new(registry::MAX_QUEUED_BYTES));
+    let (raw_tx, mut my_rx) = mpsc::channel::<Vec<u8>>(PEER_QUEUE);
+    let my_tx = registry::Outbound::new(raw_tx, Arc::clone(&budget));
     let (close_tx, close_rx) = watch::channel::<Option<CloseFrame>>(None);
     let mut writer_close_rx = close_rx.clone();
     let writer = tokio::spawn(async move {
         loop {
             tokio::select! {
-                Some(bytes) = my_rx.recv() => { if sink.send(Message::Binary(bytes.into())).await.is_err() { break; } }
+                Some(bytes) = my_rx.recv() => {
+                    let cost = registry::Outbound::permits_for(bytes.len());
+                    let sent = sink.send(Message::Binary(bytes.into())).await.is_ok();
+                    // Return the frame's budget once it is off the queue.
+                    budget.add_permits(cost);
+                    if !sent { break; }
+                }
                 result = writer_close_rx.changed() => {
                     if result.is_err() { break; }
                     let close = writer_close_rx.borrow().clone();
@@ -337,6 +359,11 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
         result = tokio::time::timeout(state.config.handshake_timeout, stream.next()) => result.ok().flatten().and_then(Result::ok),
     };
     let Some(Message::Binary(first)) = first else { writer.abort(); log_event("connection_close", addr, "handshake"); return; };
+    // The first message is always a signal (Register/Connect/Presence), never a
+    // forwarded frame, so it is tiny. Reject an oversized one before parsing it,
+    // so a pre-auth connection cannot make the relay buffer or deserialize
+    // megabytes (e.g. a huge Presence array) per socket.
+    if first.len() > SIGNAL_MESSAGE_MAX { writer.abort(); log_event("connection_rejected", addr, "signal_too_large"); return; }
     let mut bytes = TokenBucket::new(state.config.byte_burst, state.config.bytes_per_sec);
     if !bytes.allow(first.len()) { writer.abort(); log_event("connection_rejected", addr, "byte_rate"); return; }
 

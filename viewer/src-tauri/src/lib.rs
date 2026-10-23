@@ -237,6 +237,7 @@ fn dispatch_data(
     data_sender: ReliableSender,
     data_sealer: Arc<Mutex<Sealer>>,
     files_allowed: Arc<std::sync::atomic::AtomicBool>,
+    is_host: bool,
 ) -> (Arc<FileRouter>, mpsc::Receiver<IncomingTransfer>) {
     let (router, offers) = FileRouter::new();
     let clipboard_app = app.clone();
@@ -251,7 +252,7 @@ fn dispatch_data(
             if let Some(sender) = &clipboard_tx { let _ = sender.send(ClipboardCommand::Apply(message.text)); }
         },
         move |message| emit(&chat_app, "chat_message", ChatMessage { text: message.text }),
-        move |message| handle_browse(&browse_app, &data_sender, &data_sealer, &files_allowed, message),
+        move |message| handle_browse(&browse_app, &data_sender, &data_sealer, &files_allowed, is_host, message),
     ));
     (router, offers)
 }
@@ -264,12 +265,21 @@ fn handle_browse(
     sender: &ReliableSender,
     sealer: &Arc<Mutex<Sealer>>,
     files_allowed: &Arc<std::sync::atomic::AtomicBool>,
+    is_host: bool,
     message: protocol::browse::BrowseMsg,
 ) {
     use protocol::browse::BrowseMsg;
     use protocol::datamsg::DataMsg;
+    // Request kinds (ListDir/Pull/SetUploadDir) only act on the host; reply kinds
+    // (DirListing/BrowseError) only on the viewer. Enforce it so a malicious peer
+    // cannot drive the wrong half, e.g. a host making a viewer list or send its
+    // own files.
+    let for_host = matches!(message, BrowseMsg::ListDir { .. } | BrowseMsg::Pull { .. } | BrowseMsg::SetUploadDir { .. });
+    if for_host != is_host { return; }
     match message {
         BrowseMsg::ListDir { req, path } => {
+            // Logged so the host can see which folders the viewer browsed.
+            emit_activity(app, "files", format!("browsed \"{path}\""));
             let allowed = files_allowed.load(std::sync::atomic::Ordering::Relaxed);
             let sender = sender.clone();
             let sealer = sealer.clone();
@@ -293,6 +303,8 @@ fn handle_browse(
             // Host side: the viewer asked for this file; send it if file access
             // is on. It reaches the viewer as a normal incoming transfer.
             if !files_allowed.load(std::sync::atomic::Ordering::Relaxed) { return; }
+            // Logged so the host can see which files the viewer pulled.
+            emit_activity(app, "files", format!("sent \"{path}\""));
             let (outgoing, sealer, router) = {
                 let state = app.state::<AppState>();
                 let state = state.lock();
@@ -305,13 +317,17 @@ fn handle_browse(
         }
         BrowseMsg::SetUploadDir { dir } => {
             // Host side: the next incoming file goes here instead of Downloads.
+            // Gated on file access, and the chosen directory is shown to the host
+            // in the accept prompt (see the FileOffer event), so a viewer cannot
+            // silently redirect a file into an autostart or persistence location.
+            if !files_allowed.load(std::sync::atomic::Ordering::Relaxed) { return; }
             let slot = { app.state::<AppState>().lock().upload_dir.clone() };
             *lock_unpoisoned(&slot) = if dir.is_empty() { None } else { Some(dir) };
         }
     }
 }
 
-fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String) {
+fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String, is_host: bool) {
     let DataHandle { sender, receiver, sealer, opener, control_sender, control_sealer, .. } = handle;
     let (enabled, clipboard_allowed) = {
         let state = app.state::<AppState>();
@@ -322,7 +338,7 @@ fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String) {
     let sealer = Arc::new(Mutex::new(sealer));
     let clipboard_thread = spawn_clipboard_thread(sender.clone(), sealer.clone(), enabled, clipboard_allowed);
     let clipboard_tx = clipboard_thread.as_ref().map(|(tx, _)| tx.clone());
-    let (file_router, offers) = dispatch_data(app.clone(), receiver, Arc::new(Mutex::new(opener)), clipboard_tx, sender.clone(), sealer.clone(), files_allowed);
+    let (file_router, offers) = dispatch_data(app.clone(), receiver, Arc::new(Mutex::new(opener)), clipboard_tx, sender.clone(), sealer.clone(), files_allowed, is_host);
     let state = app.state::<AppState>();
     let mut state = state.lock();
     state.file_outgoing = Some(sender);
@@ -361,7 +377,10 @@ fn clear_data_channel(app: &AppHandle) {
     }
 }
 fn fresh_password() -> String {
-    rand::random_range(100_000..=999_999).to_string()
+    // 8 digits (no leading zero): ~90M values, so online guessing against the
+    // host's rate limit and backoff is ~100x harder than a 6-digit PIN while
+    // staying easy to read aloud for attended support.
+    rand::random_range(10_000_000..=99_999_999).to_string()
 }
 fn current_password(state: &mut RuntimeState) -> String {
     state.password.get_or_insert_with(fresh_password).clone()

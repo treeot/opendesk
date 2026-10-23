@@ -21,7 +21,7 @@ export interface ErrorEvent { message: string }
 export interface TwofaPrompt { reason: "required" | "invalid" }
 export interface StatusChanged { state: Status }
 export interface AudioFrame { sample_rate: number; channels: number; samples: string } // base64 of little-endian i16 PCM
-export interface FileOffer { id: number; name: string; size: number; from: string }
+export interface FileOffer { id: number; name: string; size: number; from: string; dir: string }
 export interface FileProgress { id: number; transferred: number; total: number; direction: "send" | "receive" | string }
 export interface FileDone { id: number; path?: string | null }
 export interface FileError { id: number; message: string }

@@ -581,7 +581,7 @@ where
     }
     let (control_send_key, control_recv_key) = protocol::kex::derive_control_keys(&shared, true);
     let control_sealer: SharedSealer = Arc::new(Mutex::new(Sealer::new(control_send_key)));
-    let mut control_opener = Opener::new(control_recv_key);
+    let mut control_opener = Opener::strict(control_recv_key);
     // Keepalives start as soon as the peer is authenticated, so neither the
     // relay nor the viewer's dead-peer timer drops a session that is waiting
     // on the host user's approval.
@@ -658,7 +658,7 @@ where
     // key. Sharing the media key here would be catastrophic AEAD nonce reuse.
     let (data_send_key, data_recv_key) = protocol::kex::derive_data_keys(&shared, true);
     let data_sealer = Sealer::new(data_send_key);
-    let data_opener = Opener::new(data_recv_key);
+    let data_opener = Opener::strict(data_recv_key);
     let (ice_rx, mut session_control_rx) = split_session_control(control_rx, early_control, ice_session.to_owned());
 
     let signaling: RelayIceSignaling<S> = RelayIceSignaling::new(sender.clone(), ice_rx, ice_session);
@@ -749,6 +749,9 @@ where
     let inject_tx = spawn_injection_thread(injector_factory, Arc::clone(&dims), Arc::clone(&display))?;
     // Aborting the forwarder on exit drops the last injection sender, which
     // ends the injection thread together with the session.
+    // Also read by the control loop so view-only blocks host-state changes
+    // (privacy, restart, virtual displays, secure attention), not just input.
+    let control_gate = Arc::clone(&gates.control);
     let mut input_forwarder = AbortOnDrop(tokio::spawn(forward_input(transport_rx, opener, inject_tx, gates.control)));
     let mut media = AbortOnDrop(tokio::spawn(send_media(transport_tx, sealer, audio_rx, Arc::clone(&video.units), aux_rx, gates.audio)));
     // The viewer keepalives on the relay socket even when media is direct, so
@@ -811,7 +814,7 @@ where
                             display.store(pack_display(Some(id)), Ordering::Release);
                         }
                     }
-                    Some(Control::AddVirtualDisplay { width, height, hidpi }) => {
+                    Some(Control::AddVirtualDisplay { width, height, hidpi }) if control_gate.load(Ordering::Relaxed) => {
                         let spec = DisplaySpec::fitted(width, height, hidpi);
                         match virtual_displays.add(&spec) {
                             // Shared once capture can see it (VideoEvent::Shown).
@@ -824,7 +827,7 @@ where
                             }
                         }
                     }
-                    Some(Control::RemoveVirtualDisplay { id }) => {
+                    Some(Control::RemoveVirtualDisplay { id }) if control_gate.load(Ordering::Relaxed) => {
                         // Move off the display first, so capture never waits
                         // on one that is gone (but not for a refusal).
                         let allowed = virtual_displays.check_remove(id);
@@ -852,17 +855,26 @@ where
                         video.send(VideoCommand::SetCodec(if hevc { encode::Codec::Hevc } else { encode::Codec::H264 }));
                     }
                     Some(Control::RequestSecureAttention) => {
-                        if let Err(error) = crate::secure_attention::deliver() {
+                        if !control_gate.load(Ordering::Relaxed) {
+                            log::debug!("ignoring secure attention request: control is off");
+                        } else if let Err(error) = crate::secure_attention::deliver() {
                             log::debug!("ignoring secure attention request: {error}");
                         }
                     }
+                    // Turning privacy on is a control action (it can lock the host
+                    // user out), so view-only blocks it; turning it off is always
+                    // allowed so the host can be recovered.
                     Some(Control::SetPrivacyMode { on }) => {
                         if on {
-                            if privacy_guard.is_none() {
-                                match crate::privacy::enable() {
-                                    Ok(guard) => privacy_guard = Some(guard),
-                                    Err(error) => log::warn!("privacy mode could not start: {error}"),
+                            if control_gate.load(Ordering::Relaxed) {
+                                if privacy_guard.is_none() {
+                                    match crate::privacy::enable() {
+                                        Ok(guard) => privacy_guard = Some(guard),
+                                        Err(error) => log::warn!("privacy mode could not start: {error}"),
+                                    }
                                 }
+                            } else {
+                                log::debug!("ignoring privacy-on request: control is off");
                             }
                         } else {
                             // Dropping the guard restores local input and the screen.
@@ -873,8 +885,11 @@ where
                     }
                     Some(Control::RequestRestart) => {
                         // Only honor it on the same terms it was advertised, so a
-                        // viewer can't reboot a host that won't come back.
-                        if unattended_enabled && crate::restart::available() {
+                        // viewer can't reboot a host that won't come back, and not
+                        // while the host user has revoked control.
+                        if !control_gate.load(Ordering::Relaxed) {
+                            log::debug!("ignoring restart request: control is off");
+                        } else if unattended_enabled && crate::restart::available() {
                             // Tell the viewer to expect a long gap before we return.
                             let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &Control::Restarting)).await;
                             if let Err(error) = crate::restart::restart() {
@@ -1747,10 +1762,10 @@ where
     // Separate Data-channel key (see host session) — avoids nonce reuse.
     let (data_send_key, data_recv_key) = protocol::kex::derive_data_keys(&shared, false);
     let data_sealer = Sealer::new(data_send_key);
-    let data_opener = Opener::new(data_recv_key);
+    let data_opener = Opener::strict(data_recv_key);
     let (control_send_key, control_recv_key) = protocol::kex::derive_control_keys(&shared, false);
     let control_sealer: SharedSealer = Arc::new(Mutex::new(Sealer::new(control_send_key)));
-    let mut control_opener = Opener::new(control_recv_key);
+    let mut control_opener = Opener::strict(control_recv_key);
     // Always send one (empty = no code) so a 2FA host can answer at once
     // instead of waiting for its timeout; other hosts ignore it.
     let auth = Control::AuthCode { code: auth_code.unwrap_or_default() };

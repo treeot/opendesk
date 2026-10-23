@@ -131,6 +131,8 @@ async fn receive_offer(
             _ => downloads_dir(),
         }
     };
+    // Shown in the accept prompt so the host sees where the file would land.
+    let dest_display = dest_dir.display().to_string();
     let result = FileReceiver::receive_with_async_consent(
         &mut source,
         &mut answers,
@@ -162,6 +164,7 @@ async fn receive_offer(
                     name,
                     size,
                     from,
+                    dir: dest_display,
                 },
             );
 

@@ -161,6 +161,9 @@ pub(crate) struct FileOffer {
     pub(crate) name: String,
     pub(crate) size: u64,
     pub(crate) from: String,
+    /// Where the file will be saved, so the host sees a viewer-chosen upload
+    /// directory before accepting (not just the default Downloads folder).
+    pub(crate) dir: String,
 }
 #[derive(Serialize, Clone)]
 pub(crate) struct FileProgress {

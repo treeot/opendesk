@@ -9,9 +9,60 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc::Sender, watch};
+use tokio::sync::{mpsc::Sender, watch, Semaphore};
 
-pub type Outbound = Sender<Vec<u8>>;
+/// Most bytes queued toward one peer before the sender is backpressured. Bounds
+/// per-session memory regardless of how large or how many frames are in flight,
+/// unlike a frame-count channel where one slow receiver can pin frame_cap x
+/// depth. Any single frame fits, since the forwarded-frame cap is below this.
+pub(crate) const MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
+
+/// A sender toward one peer, backpressured by queued bytes (not frame count).
+/// Sending acquires byte permits that the peer's writer releases as it drains,
+/// so a stalled or slow receiver blocks the sender instead of growing memory.
+#[derive(Clone)]
+pub struct Outbound {
+    tx: Sender<Vec<u8>>,
+    budget: Arc<Semaphore>,
+}
+
+impl Outbound {
+    pub(crate) fn new(tx: Sender<Vec<u8>>, budget: Arc<Semaphore>) -> Self {
+        Self { tx, budget }
+    }
+
+    /// Byte permits a frame costs, clamped so an over-cap frame still sends once
+    /// the queue drains rather than deadlocking.
+    pub(crate) fn permits_for(len: usize) -> usize {
+        len.clamp(1, MAX_QUEUED_BYTES)
+    }
+
+    /// Queue `frame` toward the peer, waiting if the byte budget is full. `Err`
+    /// means the peer is gone (receiver dropped).
+    pub async fn send(&self, frame: Vec<u8>) -> Result<(), ()> {
+        let cost = Self::permits_for(frame.len());
+        let Ok(permit) = self.budget.clone().acquire_many_owned(cost as u32).await else { return Err(()) };
+        // The permits are released by the peer's writer after it sends the frame.
+        permit.forget();
+        match self.tx.send(frame).await {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // The frame never reached the queue, so give its budget back.
+                self.budget.add_permits(cost);
+                Err(())
+            }
+        }
+    }
+
+    pub(crate) fn same_channel(&self, other: &Outbound) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(tx: Sender<Vec<u8>>) -> Self {
+        Self::new(tx, Arc::new(Semaphore::new(MAX_QUEUED_BYTES)))
+    }
+}
 pub type CloseOutbound = watch::Sender<Option<CloseFrame>>;
 
 /// Delivered to a parked host once a viewer takes its registration: the
@@ -34,8 +85,12 @@ pub enum Registration {
 
 #[derive(Clone, Debug)]
 pub struct RegistryConfig {
-    /// How long an ID stays bound to its token after the host was last seen.
+    /// How long an ID stays bound to its token after the host was last seen,
+    /// once it has successfully paired at least once.
     pub lease: Duration,
+    /// How long an ID that has never paired stays bound. Short, so registering
+    /// IDs and walking away cannot squat the registry for the full lease.
+    pub unpaired_lease: Duration,
     pub max_bindings: usize,
     pub max_rate_entries: usize,
     pub connect_burst: u32,
@@ -53,6 +108,7 @@ impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
             lease: Duration::from_secs(30 * 24 * 3600),
+            unpaired_lease: Duration::from_secs(24 * 3600),
             max_bindings: 100_000,
             max_rate_entries: 100_000,
             connect_burst: 6,
@@ -73,6 +129,9 @@ pub struct Registry {
     /// would deadlock while a shard is held by `entry`.
     bindings: Arc<AtomicUsize>,
     connect_limits: Arc<RateMap<(IpAddr, String)>>,
+    /// A global per-target connect bucket, so one actor cannot knock a specific
+    /// host offline by spamming connects to it from many source addresses.
+    target_connect_limits: Arc<RateMap<String>>,
     new_id_limits: Arc<RateMap<IpAddr>>,
     dirty: Arc<AtomicBool>,
     config: Arc<RegistryConfig>,
@@ -85,6 +144,9 @@ struct RegistrationState {
     parked: Option<(Outbound, CloseOutbound, PeerNotify)>,
     active: Option<Outbound>,
     takeovers: Takeovers,
+    /// Whether a viewer has ever paired with this id. Until then it holds only
+    /// the short unpaired lease, so squatting an id costs that, not the full one.
+    ever_paired: bool,
 }
 
 /// Counts same-token registrations that replaced a live parked one. A host
@@ -126,6 +188,7 @@ impl Registry {
             hosts: Arc::new(DashMap::new()),
             bindings: Arc::new(AtomicUsize::new(0)),
             connect_limits: Arc::new(RateMap::new(config.connect_burst, config.connect_refill, config.max_rate_entries)),
+            target_connect_limits: Arc::new(RateMap::new(config.connect_burst, config.connect_refill, config.max_rate_entries)),
             new_id_limits: Arc::new(RateMap::new(config.new_id_burst, config.new_id_refill, config.max_rate_entries)),
             dirty: Arc::new(AtomicBool::new(false)),
             config: Arc::new(config),
@@ -135,7 +198,10 @@ impl Registry {
     pub fn register(&self, peer_id: String, token: [u8; 32], source: IpAddr, tx: Outbound, close_tx: CloseOutbound, notify: PeerNotify) -> Registration {
         let now = Instant::now();
         let token_hash = hash_token(&token);
-        let mut state = RegistrationState { token_hash, owner_until: now + self.config.lease, parked: Some((tx, close_tx, notify)), active: None, takeovers: Takeovers::default() };
+        // A fresh registration holds only the short unpaired lease; it extends
+        // to the full lease once a viewer pairs (see `take`) or if this re-registers
+        // an id that already paired.
+        let mut state = RegistrationState { token_hash, owner_until: now + self.config.unpaired_lease, parked: Some((tx, close_tx, notify)), active: None, takeovers: Takeovers::default(), ever_paired: false };
         let result = match self.hosts.entry(peer_id) {
             Entry::Occupied(mut existing) => {
                 let same_owner = constant_time_eq(&existing.get().token_hash, &token_hash);
@@ -149,7 +215,12 @@ impl Registry {
                     // The live registration stays; the newcomer is told why.
                     Registration::InUse
                 } else {
-                    if same_owner { state.takeovers = existing.get().takeovers; }
+                    if same_owner {
+                        state.takeovers = existing.get().takeovers;
+                        // Keep the full lease for an id that already paired.
+                        state.ever_paired = existing.get().ever_paired;
+                        if state.ever_paired { state.owner_until = now + self.config.lease; }
+                    }
                     existing.insert(state);
                     Registration::Accepted
                 }
@@ -175,6 +246,8 @@ impl Registry {
             let parked = entry.parked.take();
             if let Some((tx, _, _)) = parked.as_ref() {
                 entry.active = Some(tx.clone());
+                // A successful pairing earns the full lease from here on.
+                entry.ever_paired = true;
                 entry.owner_until = Instant::now() + self.config.lease;
             }
             parked
@@ -195,7 +268,11 @@ impl Registry {
     }
 
     pub fn allow_connect(&self, source: IpAddr, target: &str) -> bool {
-        self.connect_limits.allow((source, target.to_owned()))
+        // Per (source /64, target) so one network cannot spend many targets'
+        // buckets, and a global per-target bucket so many networks cannot gang
+        // up to deny one host. Both must allow the attempt.
+        self.connect_limits.allow((rate_key(source), target.to_owned()))
+            && self.target_connect_limits.allow(target.to_owned())
     }
 
     pub fn binding_count(&self) -> usize { self.bindings.load(Ordering::Relaxed) }
@@ -219,7 +296,7 @@ impl Registry {
             self.bindings.fetch_sub(removed, Ordering::Relaxed);
             self.dirty.store(true, Ordering::Relaxed);
         }
-        SweepStats { bindings_removed: removed, buckets_removed: self.connect_limits.sweep(now) + self.new_id_limits.sweep(now) }
+        SweepStats { bindings_removed: removed, buckets_removed: self.connect_limits.sweep(now) + self.target_connect_limits.sweep(now) + self.new_id_limits.sweep(now) }
     }
 
     pub fn state_file(&self) -> Option<&Path> { self.config.state_file.as_deref() }
@@ -265,7 +342,8 @@ impl Registry {
             if !crate::session::valid_peer_id(&binding.id) || binding.expires_unix <= now_unix { continue; }
             let remaining = Duration::from_secs(binding.expires_unix - now_unix).min(self.config.lease);
             if let Entry::Vacant(slot) = self.hosts.entry(binding.id) {
-                slot.insert(RegistrationState { token_hash, owner_until: now + remaining, parked: None, active: None, takeovers: Takeovers::default() });
+                // A persisted binding already earned its lease, so treat it as established.
+                slot.insert(RegistrationState { token_hash, owner_until: now + remaining, parked: None, active: None, takeovers: Takeovers::default(), ever_paired: true });
                 self.bindings.fetch_add(1, Ordering::Relaxed);
                 loaded += 1;
             }
@@ -279,7 +357,11 @@ impl Default for Registry {
 }
 
 /// IPv6 clients usually control a whole /64, so new-ID limits apply per /64.
-fn rate_key(ip: IpAddr) -> IpAddr {
+/// The key per-IP rate limits bucket on: a full IPv4 address, or an IPv6 /64,
+/// since a single IPv6 allocation hands out an effectively unlimited number of
+/// addresses. Shared so connection, connect, and new-ID limits all resist
+/// address rotation the same way.
+pub(crate) fn rate_key(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => IpAddr::V6((u128::from(v6) & !((1u128 << 64) - 1)).into()),
         other => other,
@@ -328,9 +410,10 @@ mod tests {
 
     fn register_from(registry: &Registry, id: &str, token: [u8; 32], source: IpAddr) -> (Registration, Outbound) {
         let (tx, _rx) = mpsc::channel(1);
+        let out = Outbound::for_test(tx);
         let (close_tx, _close_rx) = watch::channel(None);
         let (notify, _wait) = oneshot::channel();
-        (registry.register(id.into(), token, source, tx.clone(), close_tx, notify), tx)
+        (registry.register(id.into(), token, source, out.clone(), close_tx, notify), out)
     }
 
     fn registration(registry: &Registry, id: &str, token: &str) -> (Registration, Outbound) {
@@ -339,7 +422,9 @@ mod tests {
 
     fn token_from_byte(value: &str) -> [u8; 32] { [value.as_bytes().first().copied().unwrap_or(0); 32] }
 
-    fn with_lease(lease: Duration) -> Registry { Registry::new(RegistryConfig { lease, ..RegistryConfig::default() }) }
+    // Both leases set, so expiry tests cover a never-paired binding (which holds
+    // only the unpaired lease) as well as a paired one.
+    fn with_lease(lease: Duration) -> Registry { Registry::new(RegistryConfig { lease, unpaired_lease: lease, ..RegistryConfig::default() }) }
 
     #[test]
     fn default_lease_is_long() {
@@ -496,6 +581,52 @@ mod tests {
         let registry = Registry::new(RegistryConfig { max_rate_entries: 1, ..RegistryConfig::default() });
         assert!(registry.allow_connect(SOURCE, "111111111"));
         assert!(!registry.allow_connect(SOURCE, "222222222"));
+    }
+
+    #[test]
+    fn unpaired_id_holds_only_the_short_lease() {
+        let registry = Registry::new(RegistryConfig { lease: Duration::from_secs(3600), unpaired_lease: Duration::from_millis(20), ..RegistryConfig::default() });
+        assert_eq!(registration(&registry, "123456789", "a").0, Registration::Accepted);
+        // A different token is refused while the short unpaired lease still holds.
+        assert_eq!(registration(&registry, "123456789", "b").0, Registration::IdTaken);
+        std::thread::sleep(Duration::from_millis(30));
+        // Once it lapses, a never-paired id is free for a new owner.
+        assert_eq!(registration(&registry, "123456789", "b").0, Registration::Accepted);
+    }
+
+    #[test]
+    fn pairing_extends_to_the_full_lease() {
+        let registry = Registry::new(RegistryConfig { lease: Duration::from_secs(3600), unpaired_lease: Duration::from_millis(20), ..RegistryConfig::default() });
+        registration(&registry, "123456789", "a");
+        assert!(registry.take("123456789").is_some());
+        std::thread::sleep(Duration::from_millis(30));
+        // Having paired, it keeps the full lease past the unpaired window.
+        assert_eq!(registration(&registry, "123456789", "b").0, Registration::IdTaken);
+    }
+
+    #[test]
+    fn connect_limit_has_a_per_target_bucket_across_sources() {
+        // A global per-target bucket (burst 2) blocks a host knockout even when
+        // the attacker connects from a different source address each time.
+        let registry = Registry::new(RegistryConfig { connect_burst: 2, max_rate_entries: 10_000, ..RegistryConfig::default() });
+        let source = |n: u8| IpAddr::V4(Ipv4Addr::new(203, 0, 113, n));
+        assert!(registry.allow_connect(source(1), "123456789"));
+        assert!(registry.allow_connect(source(2), "123456789"));
+        // Third attempt to the same target from a fresh source is denied by the
+        // target bucket, not the per-source one.
+        assert!(!registry.allow_connect(source(3), "123456789"));
+        // A different target is unaffected.
+        assert!(registry.allow_connect(source(3), "999999999"));
+    }
+
+    #[test]
+    fn connect_limit_is_shared_within_an_ipv6_64() {
+        // Two addresses in one /64 share the per-(source, target) bucket.
+        let registry = Registry::new(RegistryConfig { connect_burst: 2, max_rate_entries: 10_000, ..RegistryConfig::default() });
+        let v6 = |last: u16| IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, last));
+        assert!(registry.allow_connect(v6(1), "123456789"));
+        assert!(registry.allow_connect(v6(2), "123456789"));
+        assert!(!registry.allow_connect(v6(3), "123456789"));
     }
 
     #[test]

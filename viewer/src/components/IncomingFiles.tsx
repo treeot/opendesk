@@ -68,9 +68,10 @@ export default function IncomingFiles() {
       <section className="incoming-modal" role="dialog" aria-modal="true" aria-labelledby="incoming-file-title" onKeyDown={onKeyDown}>
         <span className="eyebrow">INCOMING FILE</span>
         <h1 id="incoming-file-title">Accept this file?</h1>
-        <p className="incoming-lead">{offer.from} wants to send you a file. It is saved to your Downloads folder.</p>
+        <p className="incoming-lead">{offer.from} wants to send you a file. Check where it will be saved before you accept.</p>
         <div className="request-details">
           <div><span className="request-label">FILE</span><strong className="request-peer">{offer.name}</strong><span>{formatFileSize(offer.size)}</span></div>
+          <div><span className="request-label">SAVE TO</span><span className="request-dir" title={offer.dir}>{offer.dir}</span></div>
         </div>
         <div className="incoming-actions">
           <button ref={declineRef} className="ghost-button" type="button" disabled={busy} onClick={() => void answer(false)}>Decline</button>

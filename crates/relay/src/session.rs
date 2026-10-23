@@ -164,6 +164,7 @@ mod tests {
         let source = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
         let reg = Registry::new(RegistryConfig::default());
         let (htx, _hrx) = mpsc::channel(1);
+        let htx = crate::registry::Outbound::for_test(htx);
         let (hclose, _hclose_rx) = watch::channel(None);
         let (hnotify, _hwait) = oneshot::channel();
         assert!(matches!(reg.register("123456789".into(), [1u8; 32], source, htx, hclose, hnotify), Registration::Accepted));
@@ -173,6 +174,7 @@ mod tests {
             ids: vec!["123456789".into(), "987654321".into(), "bad".into()],
         }.to_bytes());
         let (me, _me_rx) = mpsc::channel(1);
+        let me = crate::registry::Outbound::for_test(me);
         let (me_close, _me_close_rx) = watch::channel(None);
         match super::classify(&query, me, me_close, &reg, source).expect("presence classifies") {
             super::Bridge::Presence { online } => assert_eq!(online, vec!["123456789".to_string()]),
