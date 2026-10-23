@@ -120,6 +120,15 @@ pub(crate) struct MonitorStreamRefusedEvent { pub(crate) id: u32, pub(crate) cod
 /// Privacy mode turned on or off on the host.
 #[derive(Serialize, Clone)]
 pub(crate) struct PrivacyModeEvent { pub(crate) on: bool }
+/// The host's cursor image; `rgba` is base64 of straight-alpha RGBA.
+#[derive(Serialize, Clone)]
+pub(crate) struct CursorShapeEvent {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) hot_x: u16,
+    pub(crate) hot_y: u16,
+    pub(crate) rgba: String,
+}
 /// A remote directory listing for the file manager, or an error.
 #[derive(Serialize, Clone)]
 pub(crate) struct RemoteListingEvent {

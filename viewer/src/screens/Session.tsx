@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
-import { makeDecoder } from "../lib/decode";
+import { makeDecoder, supportsHevcDecode } from "../lib/decode";
 import { attachInput } from "../lib/input";
 import Toolbar, { monitorName, virtualDisplaySize } from "../components/Toolbar";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -74,6 +74,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   // Off until the saved preference loads (clipboard sync defaults off).
   const [clipboardSync, setClipboardSync] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
+  // Bitrate cap in bps; 0 is automatic. Re-sent on each live session below.
+  const [quality, setQuality] = useState(0);
   const audioRef = useRef<{ context: AudioContext; nextTime: number } | undefined>(undefined);
   const recorderRef = useRef<MediaRecorder | undefined>(undefined);
   const recordingStreamRef = useRef<MediaStream | undefined>(undefined);
@@ -87,6 +89,18 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [link, setLink] = useState<api.LinkStats>();
   // Set once the host says it offers virtual displays (older hosts never do).
   const [virtualMax, setVirtualMax] = useState<number>();
+  // Auto-hiding toolbar: shown until the pointer leaves the top edge.
+  const [barVisible, setBarVisible] = useState(true);
+  const hideTimerRef = useRef<number | undefined>(undefined);
+  const barHoverRef = useRef(false);
+  // Fullscreen "fit to my screen": the virtual display we add on entering
+  // fullscreen and remove on leaving, plus the monitor to restore afterwards.
+  const selectedMonitorRef = useRef<number | undefined>(undefined);
+  useEffect(() => { selectedMonitorRef.current = selectedMonitor; }, [selectedMonitor]);
+  const canAddDisplayRef = useRef(false);
+  const fitDisplayIdRef = useRef<number | undefined>(undefined);
+  const pendingFitRef = useRef(false);
+  const preFitMonitorRef = useRef<number | undefined>(undefined);
   const toggleClipboardSync = (enabled: boolean) => {
     setClipboardSync(enabled);
     void api.setClipboardSync(enabled).catch((error: unknown) => { setClipboardSync(!enabled); notify(friendlyError(error)); });
@@ -185,7 +199,10 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     const listeners = Promise.all([
       api.onVirtualDisplaySupport(({ max }) => setVirtualMax(max)),
       // The host already switched to it; the list naming it came first.
-      api.onVirtualDisplayAdded(({ id }) => setSelectedMonitor(id)),
+      api.onVirtualDisplayAdded(({ id }) => {
+        setSelectedMonitor(id);
+        if (pendingFitRef.current) { pendingFitRef.current = false; fitDisplayIdRef.current = id; }
+      }),
       api.onVirtualDisplayRefused(({ code }) => notify(virtualDisplayRefusal(code))),
       api.onMultiMonitorSupport(({ max }) => setMultiMonitorMax(max)),
     ]);
@@ -203,6 +220,24 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   // A reconnect may land on the other path; show nothing until it reports.
   useEffect(() => { if (status !== "in_session") { setLink(undefined); setVirtualMax(undefined); setMultiMonitorMax(undefined); } }, [status]);
 
+  // Send the chosen cap on change and whenever a session goes live (each new
+  // session, including a reconnect, starts automatic until we tell it again).
+  useEffect(() => {
+    if (role !== "viewer" || status !== "in_session") return;
+    void api.setMaxBitrate(quality).catch((error: unknown) => notify(friendlyError(error)));
+  }, [role, status, quality, notify]);
+
+  // Tell the host whether we can decode HEVC so it may offer the sharper codec;
+  // it stays on H.264 otherwise. Re-sent on each live session (reconnects too).
+  useEffect(() => {
+    if (role !== "viewer" || status !== "in_session") return;
+    let active = true;
+    void supportsHevcDecode().then((hevc) => {
+      if (active) void api.setDecoderCodecs(hevc).catch(() => {});
+    });
+    return () => { active = false; };
+  }, [role, status]);
+
   const chooseMonitor = (id: number) => {
     setSelectedMonitor(id);
     void api.selectMonitor(id).catch((error: unknown) => notify(friendlyError(error)));
@@ -218,6 +253,92 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   };
 
   const canAddDisplay = virtualMax !== undefined && monitors.filter((monitor) => monitor.is_virtual).length < virtualMax;
+  useEffect(() => { canAddDisplayRef.current = canAddDisplay; }, [canAddDisplay]);
+
+  // On entering fullscreen, add a virtual display shaped to this screen so the
+  // remote fills it with no letterbox bars; on leaving, remove it and restore
+  // the monitor that was selected before. Only when the host allows it.
+  useEffect(() => {
+    if (role !== "viewer") return;
+    const onChange = () => {
+      if (document.fullscreenElement !== null) {
+        if (canAddDisplayRef.current && fitDisplayIdRef.current === undefined && !pendingFitRef.current) {
+          preFitMonitorRef.current = selectedMonitorRef.current;
+          pendingFitRef.current = true;
+          const { width, height, hidpi } = virtualDisplaySize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
+          void api.addVirtualDisplay(width, height, hidpi).catch((error: unknown) => { pendingFitRef.current = false; notify(friendlyError(error)); });
+        }
+      } else {
+        const id = fitDisplayIdRef.current;
+        fitDisplayIdRef.current = undefined;
+        pendingFitRef.current = false;
+        if (id !== undefined) {
+          void api.removeVirtualDisplay(id).catch((error: unknown) => notify(friendlyError(error)));
+          const back = preFitMonitorRef.current;
+          if (back !== undefined) { setSelectedMonitor(back); void api.selectMonitor(back).catch(() => {}); }
+        }
+      }
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, [role, notify]);
+
+  // Auto-hide the toolbar: reveal while the pointer is near the top edge, then
+  // slide it away a few seconds after the pointer leaves (unless hovered).
+  useEffect(() => {
+    if (role !== "viewer") return;
+    const REVEAL_PX = 90;
+    const IDLE_MS = 2500;
+    const scheduleHide = () => {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = window.setTimeout(() => { if (!barHoverRef.current) setBarVisible(false); }, IDLE_MS);
+    };
+    const onMove = (event: MouseEvent) => {
+      if (event.clientY <= REVEAL_PX) { setBarVisible(true); window.clearTimeout(hideTimerRef.current); }
+      else if (!barHoverRef.current) scheduleHide();
+    };
+    window.addEventListener("mousemove", onMove);
+    scheduleHide();
+    return () => { window.removeEventListener("mousemove", onMove); window.clearTimeout(hideTimerRef.current); };
+  }, [role]);
+
+  const onBarEnter = () => { barHoverRef.current = true; setBarVisible(true); window.clearTimeout(hideTimerRef.current); };
+  const onBarLeave = () => { barHoverRef.current = false; window.clearTimeout(hideTimerRef.current); hideTimerRef.current = window.setTimeout(() => setBarVisible(false), 2500); };
+  // The peek tab: reveal the bar, then let the normal pointer logic re-hide it.
+  const revealBar = () => { setBarVisible(true); window.clearTimeout(hideTimerRef.current); };
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen?.();
+  };
+
+  // Native macOS menu actions (see src-tauri/src/menu.rs). Kept on a ref so the
+  // handler always sees current state without re-subscribing.
+  const menuActionRef = useRef<(action: string) => void>(() => {});
+  menuActionRef.current = (action: string) => {
+    switch (action) {
+      case "fullscreen": toggleFullscreen(); break;
+      case "disconnect": onDisconnect(); break;
+      case "add_screen": if (canAddDisplay) addDisplay(); break;
+      case "clipboard_sync": toggleClipboardSync(!clipboardSync); break;
+      case "record": void toggleRecording(); break;
+    }
+  };
+  useEffect(() => {
+    if (role !== "viewer") return;
+    const listener = api.onMenuAction((action) => menuActionRef.current(action));
+    return () => { void listener.then((unlisten) => unlisten()); };
+  }, [role]);
+
+  // Enable the Session menu while a session is live; disable it on the way out.
+  useEffect(() => {
+    if (role !== "viewer") return;
+    return () => { void api.setSessionMenu(false, false, false).catch(() => {}); };
+  }, [role]);
+  useEffect(() => {
+    if (role !== "viewer") return;
+    void api.setSessionMenu(true, clipboardSync, recordingActive).catch(() => {});
+  }, [role, clipboardSync, recordingActive]);
   // The host can stream extra monitors in their own windows, and there is more
   // than one to spread out.
   const canOpenMonitorWindow = multiMonitorMax !== undefined && multiMonitorMax > 0 && monitors.length > 1;
@@ -348,13 +469,45 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     };
   }, [role]);
 
+  // Draw the host's cursor as the canvas pointer, so its shape (arrow, text
+  // beam, resize, hand) matches the host without waiting on the video frame.
+  useEffect(() => {
+    if (role !== "viewer") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const offscreen = document.createElement("canvas");
+    const applyShape = (shape: api.CursorShape) => {
+      const bytes = b64ToBytes(shape.rgba);
+      if (shape.width <= 0 || shape.height <= 0 || bytes.length !== shape.width * shape.height * 4) return;
+      offscreen.width = shape.width;
+      offscreen.height = shape.height;
+      const context = offscreen.getContext("2d");
+      if (!context) return;
+      context.putImageData(new ImageData(new Uint8ClampedArray(bytes), shape.width, shape.height), 0, 0);
+      const hotX = Math.min(shape.hot_x, Math.max(0, shape.width - 1));
+      const hotY = Math.min(shape.hot_y, Math.max(0, shape.height - 1));
+      // Browsers ignore cursors past ~128px and fall back to the keyword.
+      canvas.style.cursor = `url(${offscreen.toDataURL("image/png")}) ${hotX} ${hotY}, auto`;
+    };
+    const listeners = Promise.all([
+      api.onCursorShape(applyShape),
+      api.onCursorHidden(() => { canvas.style.cursor = "none"; }),
+    ]);
+    return () => { void listeners.then((stops) => stops.forEach((stop) => stop())); canvas.style.cursor = ""; };
+  }, [role]);
+
   return (
     <main className={`session-screen session-screen--${role}`}>
       {role === "viewer" && restarting && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Remote is restarting. Reconnecting automatically…</div>}
       {role === "viewer" && <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />}
+      {role === "viewer" && !barVisible && (
+        <button type="button" className="session-peek" aria-label="Show session controls" title="Show session controls" onMouseEnter={revealBar} onFocus={revealBar} onClick={revealBar}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </button>
+      )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} />}
-      <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={() => setFilesOpen((open) => !open)} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} onDisconnect={onDisconnect} />
+      <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={() => setFilesOpen((open) => !open)} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />
       {role === "viewer" && <FileTransfer open={filesOpen} onOpenChange={onFilesOpenChange} />}
       {role === "viewer" && <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />}
     </main>

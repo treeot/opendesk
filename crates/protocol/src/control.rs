@@ -138,6 +138,28 @@ pub enum Control {
     /// Host → viewer: privacy mode is now on or off (the real state after the
     /// host tried to apply it).
     PrivacyModeChanged { on: bool },
+    /// Viewer → host: cap the stream bitrate at `bps`, or `0` for no cap (the
+    /// host's automatic, bandwidth-following behavior). The host still adapts
+    /// below the cap. Older peers can't parse it and ignore it, so the stream
+    /// stays automatic.
+    SetMaxBitrate { bps: u32 },
+    /// Host → viewer: the host's mouse cursor image changed. `rgba` is
+    /// `width * height * 4` bytes of straight-alpha RGBA, top row first. The
+    /// viewer draws it as its own pointer over the remote screen, so the shape
+    /// (arrow, text beam, resize, hand) matches the host without waiting on the
+    /// video frame. `hot_x`/`hot_y` are the click point within the image. Sent
+    /// only when the shape changes; older peers ignore it.
+    CursorShape { width: u16, height: u16, hot_x: u16, hot_y: u16, rgba: Vec<u8> },
+    /// Host → viewer: the host hid its cursor (for example a game captured the
+    /// mouse). The viewer hides its pointer over the remote screen until the
+    /// next `CursorShape`.
+    CursorHidden,
+    /// Viewer → host: which codecs this viewer can decode beyond the baseline
+    /// H.264. `hevc` lets the host switch the stream to HEVC where its hardware
+    /// can encode it; the host falls back to H.264 otherwise and the frame
+    /// header always says which codec a frame actually uses. Older hosts ignore
+    /// it and stay on H.264.
+    DecoderCodecs { hevc: bool },
 }
 
 /// Most IDs one `Presence` query may ask about.
@@ -297,6 +319,28 @@ mod tests {
     #[test]
     fn select_monitor_roundtrips() {
         let c = Control::SelectMonitor { id: 7 };
+        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
+    }
+
+    #[test]
+    fn set_max_bitrate_roundtrips_and_old_peers_ignore_it() {
+        let c = Control::SetMaxBitrate { bps: 8_000_000 };
+        assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"set_max_bitrate","bps":8000000}"#);
+        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
+        assert_eq!(Control::from_bytes(&Control::SetMaxBitrate { bps: 0 }.to_bytes()), Some(Control::SetMaxBitrate { bps: 0 }));
+    }
+
+    #[test]
+    fn cursor_messages_roundtrip() {
+        let shape = Control::CursorShape { width: 2, height: 1, hot_x: 0, hot_y: 0, rgba: vec![1, 2, 3, 4, 5, 6, 7, 8] };
+        assert_eq!(Control::from_bytes(&shape.to_bytes()), Some(shape));
+        assert_eq!(Control::from_bytes(&Control::CursorHidden.to_bytes()), Some(Control::CursorHidden));
+    }
+
+    #[test]
+    fn decoder_codecs_roundtrips() {
+        let c = Control::DecoderCodecs { hevc: true };
+        assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"decoder_codecs","hevc":true}"#);
         assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
     }
 

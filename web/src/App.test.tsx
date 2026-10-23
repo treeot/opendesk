@@ -5,7 +5,7 @@ import App from "./App";
 import { FakeCore, FakeSocket } from "./lib/fakes";
 
 // jsdom has no canvas or WebCodecs; the session screen's decoder is not under test.
-vi.mock("../../viewer/src/lib/decode", () => ({ makeDecoder: () => ({ push: vi.fn(), close: vi.fn() }) }));
+vi.mock("../../viewer/src/lib/decode", () => ({ makeDecoder: () => ({ push: vi.fn(), close: vi.fn() }), supportsHevcDecode: () => Promise.resolve(false) }));
 
 function fill(id: string, password: string) {
   fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: id } });

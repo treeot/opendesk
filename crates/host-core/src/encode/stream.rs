@@ -111,17 +111,25 @@ pub struct BitrateFollower {
     rate: Arc<RateControl>,
     /// The bitrate the encoder runs at; 0 for a new encoder.
     applied: u32,
+    /// Viewer-chosen ceiling in bps; 0 means no cap (fully automatic).
+    cap: u32,
 }
 
 impl BitrateFollower {
-    pub fn new(rate: Arc<RateControl>) -> Self { Self { rate, applied: 0 } }
+    pub fn new(rate: Arc<RateControl>) -> Self { Self { rate, applied: 0, cap: 0 } }
 
     /// The encoder was replaced by one created at the stream bitrate.
     pub fn encoder_replaced(&mut self) { self.applied = 0; }
 
+    /// Cap the bitrate at `bps`, or `0` to go back to fully automatic.
+    pub fn set_cap(&mut self, bps: u32) { self.cap = bps; }
+
     /// Call before each encode of a `width` x `height` stream.
     pub fn update<E: Encoder + ?Sized>(&mut self, encoder: &mut E, width: u16, height: u16) {
-        let ceiling = stream_bitrate(width, height, STREAM_FPS);
+        let mut ceiling = stream_bitrate(width, height, STREAM_FPS);
+        if self.cap > 0 {
+            ceiling = ceiling.min(self.cap);
+        }
         self.rate.set_ceiling(ceiling);
         if self.applied == 0 {
             self.applied = ceiling;
@@ -233,6 +241,33 @@ mod tests {
         rate.set_target(1_500_000);
         follower.update(&mut replaced, 640, 360);
         assert_eq!(replaced.0, vec![1_500_000]);
+    }
+
+    #[test]
+    fn bitrate_cap_lowers_the_ceiling_and_lifts_again() {
+        let rate = Arc::new(RateControl::default());
+        let mut follower = BitrateFollower::new(Arc::clone(&rate));
+        let mut encoder = RecordingEncoder::default();
+        let full = stream_bitrate(1920, 1080, STREAM_FPS);
+        assert!(full > 3_000_000, "1080p runs well above the data-saver cap");
+
+        // Warm up: the encoder is now known to run at the automatic ceiling.
+        rate.set_target(full);
+        follower.update(&mut encoder, 1920, 1080);
+        assert!(encoder.0.is_empty());
+
+        // A cap below the automatic ceiling becomes the ceiling, and the
+        // plentiful target is clamped down to it.
+        follower.set_cap(3_000_000);
+        follower.update(&mut encoder, 1920, 1080);
+        assert_eq!(rate.ceiling(), 3_000_000);
+        assert_eq!(encoder.0, vec![3_000_000]);
+
+        // Back to automatic: the ceiling returns to the stream's own bitrate.
+        follower.set_cap(0);
+        follower.update(&mut encoder, 1920, 1080);
+        assert_eq!(rate.ceiling(), full);
+        assert_eq!(encoder.0, vec![3_000_000, full]);
     }
 
     #[test]

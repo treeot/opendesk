@@ -54,7 +54,7 @@ async fn run_session_until_first_frame(
             PASSWORD,
             ice_session,
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             NoopInjector::default(),
         )
         .await;
@@ -170,7 +170,7 @@ async fn viewer_rejection(
             PASSWORD,
             "reject",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             NoopInjector::default(),
             unattended,
             twofa,

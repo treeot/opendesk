@@ -1,11 +1,12 @@
-//! Hardware H.264 encoding with Apple VideoToolbox.
+//! Hardware H.264 and HEVC encoding with Apple VideoToolbox.
 //!
 //! The session is configured for real-time screen sharing: hardware encoder
-//! required, low-latency rate control when available, Baseline profile, no
+//! required, low-latency rate control when available, Baseline (H.264) or Main
+//! (HEVC) profile, no
 //! frame reordering (no B-frames), no frame delay, average bitrate. Each `encode` call submits one frame
 //! and waits for it (`VTCompressionSessionCompleteFrames`), so the encoder
 //! behaves synchronously like openh264. VideoToolbox emits AVCC samples with
-//! SPS/PPS in the format description; they are rewritten to the Annex B
+//! SPS/PPS (plus VPS for HEVC) in the format description; they are rewritten to the Annex B
 //! contract documented in the parent module.
 
 use std::{
@@ -18,8 +19,9 @@ use std::{
 
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
-    kCMTimeInvalid, kCMVideoCodecType_H264, CMFormatDescription, CMSampleBuffer, CMTime,
-    CMTimeFlags, CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    kCMTimeInvalid, kCMVideoCodecType_H264, kCMVideoCodecType_HEVC, CMFormatDescription,
+    CMSampleBuffer, CMTime, CMTimeFlags, CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    CMVideoFormatDescriptionGetHEVCParameterSetAtIndex,
 };
 use objc2_core_video::{
     kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
@@ -34,13 +36,13 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxFrameDelayCount,
     kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel,
     kVTCompressionPropertyKey_RealTime, kVTEncodeFrameOptionKey_ForceKeyFrame,
-    kVTProfileLevel_H264_Baseline_AutoLevel,
+    kVTProfileLevel_H264_Baseline_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
     kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, VTCompressionSession,
     VTEncodeInfoFlags, VTSessionSetProperty,
 };
 
-use super::{append_parameter_sets, avcc_to_annex_b, EncodedFrame, PixelFormat, RawFrame};
+use super::{append_parameter_sets, avcc_to_annex_b, Codec, EncodedFrame, PixelFormat, RawFrame};
 
 /// Safety-net keyframe interval in seconds, beyond the session loop's own
 /// periodic (10 s) and requested keyframes so the two do not coincide.
@@ -87,6 +89,7 @@ pub struct VtEncoder {
     fps: i32,
     frame_index: i64,
     force_keyframe: bool,
+    codec: Codec,
 }
 
 // SAFETY: VTCompressionSession, its pixel buffer pool and the pixel buffers
@@ -97,7 +100,13 @@ pub struct VtEncoder {
 unsafe impl Send for VtEncoder {}
 
 impl VtEncoder {
-    pub fn new(width: u16, height: u16, fps: u32, bitrate: u32) -> Result<Self, VtError> {
+    pub fn new(
+        width: u16,
+        height: u16,
+        fps: u32,
+        bitrate: u32,
+        codec: Codec,
+    ) -> Result<Self, VtError> {
         let invalid = |context| VtError {
             context,
             status: -50, /* paramErr */
@@ -111,9 +120,9 @@ impl VtEncoder {
             .ok_or(invalid("frame rate"))?;
         let bitrate = i32::try_from(bitrate).map_err(|_| invalid("bitrate"))?;
 
-        Self::create(width, height, fps, bitrate, true).or_else(|error| {
+        Self::create(width, height, fps, bitrate, codec, true).or_else(|error| {
             log::debug!("VideoToolbox low-latency mode unavailable ({error}); using default mode");
-            Self::create(width, height, fps, bitrate, false)
+            Self::create(width, height, fps, bitrate, codec, false)
         })
     }
 
@@ -122,6 +131,7 @@ impl VtEncoder {
         height: u16,
         fps: i32,
         bitrate: i32,
+        codec: Codec,
         low_latency: bool,
     ) -> Result<Self, VtError> {
         // SAFETY: these are immutable CFString constants exported by the
@@ -169,7 +179,10 @@ impl VtEncoder {
                 None,
                 i32::from(width),
                 i32::from(height),
-                kCMVideoCodecType_H264,
+                match codec {
+                    Codec::H264 => kCMVideoCodecType_H264,
+                    Codec::Hevc => kCMVideoCodecType_HEVC,
+                },
                 Some(encoder_spec.as_opaque()),
                 Some(source_attributes.as_opaque()),
                 None,
@@ -195,6 +208,7 @@ impl VtEncoder {
             fps,
             frame_index: 0,
             force_keyframe: true,
+            codec,
         };
         encoder.configure(fps, bitrate)?;
         // SAFETY: the session is valid and fully configured.
@@ -206,24 +220,29 @@ impl VtEncoder {
 
     fn configure(&self, fps: i32, bitrate: i32) -> Result<(), VtError> {
         // SAFETY: immutable CFString constants exported by VideoToolbox.
+        let profile_level = unsafe {
+            match self.codec {
+                Codec::H264 => kVTProfileLevel_H264_Baseline_AutoLevel,
+                Codec::Hevc => kVTProfileLevel_HEVC_Main_AutoLevel,
+            }
+        };
+        // SAFETY: immutable CFString constants exported by VideoToolbox.
         let keys = unsafe {
             (
                 kVTCompressionPropertyKey_RealTime,
                 kVTCompressionPropertyKey_AllowFrameReordering,
                 kVTCompressionPropertyKey_ProfileLevel,
-                kVTProfileLevel_H264_Baseline_AutoLevel,
                 kVTCompressionPropertyKey_AverageBitRate,
                 kVTCompressionPropertyKey_ExpectedFrameRate,
                 kVTCompressionPropertyKey_MaxKeyFrameInterval,
                 kVTCompressionPropertyKey_MaxFrameDelayCount,
             )
         };
-        let (real_time, reordering, profile, baseline, bitrate_key, fps_key, gop_key, delay_key) =
-            keys;
+        let (real_time, reordering, profile, bitrate_key, fps_key, gop_key, delay_key) = keys;
         // Required: these define the bitstream contract and latency.
         self.set(real_time, CFBoolean::new(true))?;
         self.set(reordering, CFBoolean::new(false))?;
-        self.set(profile, baseline)?;
+        self.set(profile, profile_level)?;
         self.set(bitrate_key, &CFNumber::new_i32(bitrate))?;
         // Best effort: tuning hints some encoders may not support.
         for (key, value) in [
@@ -432,9 +451,9 @@ fn sample_to_annex_b(sample: &CMSampleBuffer) -> Option<EncodedFrame> {
         return None;
     }
 
-    let (sets, length_size) = parameter_sets(&format)?;
+    let (sets, length_size, codec) = parameter_sets(&format)?;
     let mut body = Vec::with_capacity(len + 16);
-    let keyframe = avcc_to_annex_b(&avcc, length_size, &mut body)?;
+    let keyframe = avcc_to_annex_b(&avcc, length_size, codec, &mut body)?;
     if !keyframe {
         return Some(EncodedFrame {
             data: body,
@@ -447,15 +466,52 @@ fn sample_to_annex_b(sample: &CMSampleBuffer) -> Option<EncodedFrame> {
     Some(EncodedFrame { data, keyframe })
 }
 
-/// Returns the H.264 parameter sets (SPS, PPS) and the NAL length-prefix size
-/// from a format description.
-fn parameter_sets(format: &CMFormatDescription) -> Option<(Vec<Vec<u8>>, usize)> {
+/// Reads one parameter set (or, with null out pointers, just the count and
+/// length-prefix size) from a format description with the codec's getter.
+///
+/// # Safety
+/// `format` must be a valid format description of `codec`, and every non-null
+/// out pointer must be valid for writes.
+unsafe fn parameter_set_at(
+    codec: Codec,
+    format: &CMFormatDescription,
+    index: usize,
+    pointer: *mut *const u8,
+    size: *mut usize,
+    count: *mut usize,
+    length_size: *mut i32,
+) -> i32 {
+    // SAFETY: forwarded from the caller's contract.
+    unsafe {
+        match codec {
+            Codec::H264 => CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                format, index, pointer, size, count, length_size,
+            ),
+            Codec::Hevc => CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                format, index, pointer, size, count, length_size,
+            ),
+        }
+    }
+}
+
+/// Returns the parameter sets (H.264: SPS, PPS; HEVC: VPS, SPS, PPS) and the
+/// NAL length-prefix size from a format description. The codec follows the
+/// description's media subtype, so the output callback needs no extra state.
+fn parameter_sets(format: &CMFormatDescription) -> Option<(Vec<Vec<u8>>, usize, Codec)> {
+    // SAFETY: `format` is a valid format description.
+    let subtype = unsafe { format.media_sub_type() };
+    let codec = if subtype == kCMVideoCodecType_HEVC {
+        Codec::Hevc
+    } else {
+        Codec::H264
+    };
     let mut count = 0usize;
     let mut length_size = 0i32;
-    // SAFETY: `format` is a valid H.264 format description; null pointer and
-    // size outputs are allowed, the count/length outputs are valid pointers.
+    // SAFETY: `format` is a valid format description of `codec`; null pointer
+    // and size outputs are allowed, the count/length outputs are valid pointers.
     let status = unsafe {
-        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+        parameter_set_at(
+            codec,
             format,
             0,
             ptr::null_mut(),
@@ -473,7 +529,8 @@ fn parameter_sets(format: &CMFormatDescription) -> Option<(Vec<Vec<u8>>, usize)>
         let mut size = 0usize;
         // SAFETY: as above; `pointer`/`size` are valid out pointers.
         let status = unsafe {
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+            parameter_set_at(
+                codec,
                 format,
                 index,
                 &mut pointer,
@@ -490,7 +547,7 @@ fn parameter_sets(format: &CMFormatDescription) -> Option<(Vec<Vec<u8>>, usize)>
         // the bytes are copied out immediately.
         sets.push(unsafe { std::slice::from_raw_parts(pointer, size) }.to_vec());
     }
-    Some((sets, usize::try_from(length_size).ok()?))
+    Some((sets, usize::try_from(length_size).ok()?, codec))
 }
 
 #[cfg(test)]
@@ -505,7 +562,7 @@ mod tests {
     /// Creates a hardware session, or `None` (test skipped) where VideoToolbox
     /// has no hardware H.264 encoder, e.g. in a VM or on CI.
     fn hardware_encoder(width: u16, height: u16) -> Option<VtEncoder> {
-        match VtEncoder::new(width, height, 15, 1_000_000) {
+        match VtEncoder::new(width, height, 15, 1_000_000, Codec::H264) {
             Ok(encoder) => Some(encoder),
             Err(error) => {
                 eprintln!("skipping VideoToolbox test: {error}");
@@ -577,7 +634,7 @@ mod tests {
 
     #[test]
     fn videotoolbox_follows_a_live_bitrate_change() {
-        let mut encoder = match VtEncoder::new(320, 240, 30, 4_000_000) {
+        let mut encoder = match VtEncoder::new(320, 240, 30, 4_000_000, Codec::H264) {
             Ok(encoder) => encoder,
             Err(error) => return eprintln!("skipping VideoToolbox test: {error}"),
         };

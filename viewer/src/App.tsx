@@ -88,6 +88,15 @@ export default function App() {
       api.onError(({ message }) => active && notify(friendlyError(message))),
       api.onTwofaPrompt(({ reason }) => { if (active) setTwofa(reason); }),
       api.onHostNotice(({ message }) => active && notify(message, "info")),
+      api.onMenuAction((action) => {
+        if (!active) return;
+        if (action === "settings") go("home");
+        // Session handles fullscreen itself (with fit-to-screen) while it is up.
+        else if (action === "fullscreen" && screenRef.current !== "session") {
+          if (document.fullscreenElement) void document.exitFullscreen();
+          else void document.documentElement.requestFullscreen?.();
+        }
+      }),
     ]);
 
     return () => {

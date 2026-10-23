@@ -101,6 +101,21 @@ export class RateLimiter {
 /** Baseline profile, level 5.2: covers streams up to 4096 wide. */
 export const DEFAULT_H264_CODEC = "avc1.42E034";
 
+/** The frame-header codec byte for HEVC (H.264 is 1; see host `Codec`). */
+export const CODEC_HEVC = 2;
+
+/** HEVC Main profile, level 5.1: covers 4K. Used when a frame is marked HEVC. */
+export const DEFAULT_HEVC_CODEC = "hev1.1.6.L153.B0";
+
+/**
+ * The WebCodecs codec string for a frame: the exact `avc1.*` from the H.264 SPS
+ * when present, else a sensible default for the frame's codec byte.
+ */
+export function codecForFrame(frame: Pick<VideoFrame, "codec" | "keyframe" | "data">): string {
+  if (frame.codec === CODEC_HEVC) return DEFAULT_HEVC_CODEC;
+  return (frame.keyframe && codecFromSps(frame.data)) || DEFAULT_H264_CODEC;
+}
+
 const hex = (byte: number) => byte.toString(16).padStart(2, "0").toUpperCase();
 
 /**

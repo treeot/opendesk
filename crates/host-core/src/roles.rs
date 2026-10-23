@@ -449,7 +449,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     C: ScreenCapturer + Send + 'static,
     E: Encoder + Send + 'static,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
     I: InputInjector + Send + 'static,
 {
     run_host_session_with_data(ws, password, ice_session, capturer, encoder_factory, injector, None).await
@@ -463,7 +463,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     C: ScreenCapturer + Send + 'static,
     E: Encoder + Send + 'static,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
     I: InputInjector + Send + 'static,
 {
     run_host_session_with_data_and_accept(
@@ -485,7 +485,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     C: ScreenCapturer + Send + 'static,
     E: Encoder + Send + 'static,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
     I: InputInjector + Send + 'static,
     A: FnOnce() -> Fut,
     Fut: Future<Output = bool>,
@@ -507,7 +507,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     C: ScreenCapturer + Send + 'static,
     E: Encoder + Send + 'static,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
     I: InputInjector + Send + 'static,
     A: FnOnce() -> Fut,
     Fut: Future<Output = bool>,
@@ -541,7 +541,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     C: ScreenCapturer + Send + 'static,
     E: Encoder + Send + 'static,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Clone + Send + 'static,
     IF: FnOnce() -> Box<dyn InputInjector> + Send + 'static,
     A: FnOnce() -> Fut,
     Fut: Future<Output = bool>,
@@ -755,8 +755,32 @@ where
     // silence there means the viewer is gone (a direct transport may never
     // report a dead peer on its own).
     let mut peer_deadline = tokio::time::Instant::now() + timings.dead_peer;
+    // Poll the host's cursor shape and forward changes so the viewer can draw a
+    // matching pointer. u64::MAX stands for "hidden"; None for nothing sent yet.
+    let mut cursor_interval = tokio::time::interval(Duration::from_millis(66));
+    cursor_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_cursor: Option<u64> = None;
     loop {
         tokio::select! {
+            _ = cursor_interval.tick() => {
+                match crate::cursor::sample() {
+                    crate::cursor::CursorSample::Visible(image) => {
+                        let fingerprint = crate::cursor::fingerprint(&image);
+                        if last_cursor != Some(fingerprint) {
+                            last_cursor = Some(fingerprint);
+                            let shape = Control::CursorShape { width: image.width, height: image.height, hot_x: image.hot_x, hot_y: image.hot_y, rgba: image.rgba };
+                            let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &shape)).await;
+                        }
+                    }
+                    crate::cursor::CursorSample::Hidden => {
+                        if last_cursor != Some(u64::MAX) {
+                            last_cursor = Some(u64::MAX);
+                            let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &Control::CursorHidden)).await;
+                        }
+                    }
+                    crate::cursor::CursorSample::Unavailable => {}
+                }
+            },
             _ = tokio::time::sleep_until(peer_deadline) => {
                 log::warn!("viewer sent no control traffic for {}s; ending the session", timings.dead_peer.as_secs());
                 return Ok(());
@@ -820,6 +844,13 @@ where
                         let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &reply)).await;
                     }
                     Some(Control::RequestKeyframe) => video.send(VideoCommand::RequestKeyframe),
+                    Some(Control::SetMaxBitrate { bps }) => video.send(VideoCommand::MaxBitrate(bps)),
+                    // The host tries HEVC when the viewer can decode it; the
+                    // encoder falls back to H.264 where hardware can't, and the
+                    // frame header tells the viewer which codec each frame uses.
+                    Some(Control::DecoderCodecs { hevc }) => {
+                        video.send(VideoCommand::SetCodec(if hevc { encode::Codec::Hevc } else { encode::Codec::H264 }));
+                    }
                     Some(Control::RequestSecureAttention) => {
                         if let Err(error) = crate::secure_attention::deliver() {
                             log::debug!("ignoring secure attention request: {error}");
@@ -1012,7 +1043,7 @@ fn spawn_aux_stream<C, E, F, CF>(
 where
     C: ScreenCapturer + Send + 'static,
     E: Encoder + Send + 'static,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Send + 'static,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Send + 'static,
     CF: Fn() -> Option<C> + Send + 'static,
 {
     AbortOnDrop(tokio::spawn(async move {
@@ -1095,20 +1126,25 @@ struct VideoPipeline<E, F> {
     keyframes: KeyframePolicy,
     /// Follows the transport's bitrate estimate (none in tests).
     bitrate: Option<stream::BitrateFollower>,
+    /// The codec the factory should build; a change rebuilds the encoder.
+    desired_codec: encode::Codec,
+    /// Set when the encoder must be rebuilt before the next encode (a codec
+    /// switch; size changes rebuild inline).
+    rebuild: bool,
 }
 
 impl<E, F> VideoPipeline<E, F>
 where
     E: Encoder,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError>,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError>,
 {
     fn new(frame: encode::RawFrame, encoder_factory: F, dims: Arc<AtomicU32>) -> SessionResult<Self> {
         let (capture, frame) = stream_frame(frame)
             .ok_or(SessionError("screen capture returned an invalid or unusable frame"))?;
-        let encoder = encoder_factory(frame.width, frame.height)?;
+        let encoder = encoder_factory(frame.width, frame.height, encode::Codec::H264)?;
         dims.store(pack_dims(capture.0, capture.1), Ordering::Release);
         let now = Instant::now();
-        Ok(Self { encoder_factory, encoder, frame, capture, dims, seq: 0, started: now, keyframes: KeyframePolicy::new(now), bitrate: None })
+        Ok(Self { encoder_factory, encoder, frame, capture, dims, seq: 0, started: now, keyframes: KeyframePolicy::new(now), bitrate: None, desired_codec: encode::Codec::H264, rebuild: false })
     }
 
     fn with_rate(mut self, rate: Arc<transport::RateControl>) -> Self {
@@ -1119,7 +1155,20 @@ where
     /// A viewer asked for a keyframe; returns whether it was accepted.
     fn request_keyframe(&mut self) -> bool { self.keyframes.request(Instant::now()) }
 
+    /// Cap the stream bitrate at `bps` (0 = automatic); takes effect next encode.
+    fn set_max_bitrate(&mut self, bps: u32) {
+        if let Some(bitrate) = &mut self.bitrate { bitrate.set_cap(bps); }
+    }
+
     fn keyframe_due(&self) -> bool { self.keyframes.due(Instant::now()) }
+
+    /// Ask for a codec on the next encode; a no-op when already building it.
+    fn set_codec(&mut self, codec: encode::Codec) {
+        if codec != self.desired_codec {
+            self.desired_codec = codec;
+            self.rebuild = true;
+        }
+    }
 
     /// Encodes `fresh` if it is a usable frame, else the previous frame.
     /// Returns `None` when the encoder produced no output.
@@ -1127,7 +1176,8 @@ where
         if let Some((capture, frame)) = fresh.and_then(stream_frame) {
             if (frame.width, frame.height) != (self.frame.width, self.frame.height) {
                 log::info!("stream size changed to {}x{} (capture {}x{})", frame.width, frame.height, capture.0, capture.1);
-                self.encoder = (self.encoder_factory)(frame.width, frame.height)?;
+                self.encoder = (self.encoder_factory)(frame.width, frame.height, self.desired_codec)?;
+                self.rebuild = false;
                 if let Some(bitrate) = &mut self.bitrate { bitrate.encoder_replaced(); }
             }
             if capture != self.capture {
@@ -1135,6 +1185,13 @@ where
                 self.capture = capture;
             }
             self.frame = frame;
+        }
+        // A codec switch with no size change rebuilds here (a size change above
+        // already rebuilt with the desired codec and cleared the flag).
+        if self.rebuild {
+            self.encoder = (self.encoder_factory)(self.frame.width, self.frame.height, self.desired_codec)?;
+            self.rebuild = false;
+            if let Some(bitrate) = &mut self.bitrate { bitrate.encoder_replaced(); }
         }
         let now = Instant::now();
         if self.keyframes.due(now) {
@@ -1149,7 +1206,7 @@ where
         // The header field is 32-bit microseconds and wraps after ~71 minutes.
         let timestamp_us = self.started.elapsed().as_micros() as u32;
         let mut plaintext = encode::video_header(
-            self.seq, timestamp_us, encoded.keyframe, self.frame.width, self.frame.height,
+            self.seq, timestamp_us, encoded.keyframe, self.frame.width, self.frame.height, self.encoder.codec(),
         );
         plaintext.extend_from_slice(&encoded.data);
         self.seq += 1;
@@ -1163,6 +1220,10 @@ enum VideoCommand {
     /// Switch to a new display as soon as capture lists it.
     ShowDisplay(u32),
     RequestKeyframe,
+    /// Cap the stream bitrate at this many bps; 0 is fully automatic.
+    MaxBitrate(u32),
+    /// Switch the stream codec (HEVC when the viewer supports it, else H.264).
+    SetCodec(encode::Codec),
 }
 
 /// News from the encode thread for the session loop.
@@ -1195,7 +1256,7 @@ impl VideoSource {
     where
         C: ScreenCapturer + Send + 'static,
         E: Encoder + 'static,
-        F: Fn(u16, u16) -> Result<E, encode::EncoderInitError> + Send + 'static,
+        F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError> + Send + 'static,
     {
         let (commands, command_rx) = std::sync::mpsc::channel();
         let units = Arc::new(UnitSlot::default());
@@ -1254,7 +1315,7 @@ fn run_video_thread<C, E, F>(
 ) where
     C: ScreenCapturer,
     E: Encoder,
-    F: Fn(u16, u16) -> Result<E, encode::EncoderInitError>,
+    F: Fn(u16, u16, encode::Codec) -> Result<E, encode::EncoderInitError>,
 {
     let deadline = Instant::now() + FIRST_FRAME_DEADLINE;
     let first = loop {
@@ -1290,6 +1351,8 @@ fn run_video_thread<C, E, F>(
                 Ok(VideoCommand::RequestKeyframe) => {
                     if !video.request_keyframe() { log::debug!("keyframe request ignored: one was just sent"); }
                 }
+                Ok(VideoCommand::MaxBitrate(bps)) => video.set_max_bitrate(bps),
+                Ok(VideoCommand::SetCodec(codec)) => video.set_codec(codec),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
             }
@@ -2029,8 +2092,8 @@ fn default_injector() -> Box<dyn InputInjector> {
 
 /// The production encoder for a stream of `width` x `height`, at the stream
 /// frame rate with a bitrate scaled to the stream size.
-fn default_encoder(width: u16, height: u16) -> Result<VideoEncoder, encode::EncoderInitError> {
-    VideoEncoder::best_available(width, height, STREAM_FPS, stream::stream_bitrate(width, height, STREAM_FPS))
+fn default_encoder(width: u16, height: u16, codec: encode::Codec) -> Result<VideoEncoder, encode::EncoderInitError> {
+    VideoEncoder::best_available(width, height, STREAM_FPS, stream::stream_bitrate(width, height, STREAM_FPS), codec)
 }
 
 /// Run a host session with the production capture, H.264 encoder, and Enigo injector.
@@ -2247,7 +2310,7 @@ mod tests {
             Opener::new(viewer_recv),
         ));
 
-        let mut video = encode::video_header(0, 0, true, 64, 48);
+        let mut video = encode::video_header(0, 0, true, 64, 48, encode::Codec::H264);
         video.extend_from_slice(b"h264");
         let sealed_video = host_video_sealer.seal(&[Tag::Video as u8], &video);
         host_tx.send(Tag::Video, &sealed_video).await.unwrap();
@@ -2416,7 +2479,7 @@ mod tests {
         let first = even_frame(capturer.next_frame().unwrap()).unwrap();
         let mut video = VideoPipeline::new(
             first,
-            |w, h| encode::H264Encoder::new(w, h, 15, 1_000_000),
+            |w, h, _codec| encode::H264Encoder::new(w, h, 15, 1_000_000),
             Arc::clone(&dims),
         ).unwrap();
         assert_eq!(unpack_dims(dims.load(Ordering::Acquire)), (64, 48));
@@ -2440,7 +2503,7 @@ mod tests {
     fn video_pipeline_turns_encoder_init_failure_into_an_error() {
         use crate::capture::{FakeCapturer, ScreenCapturer};
         // Only 64x48 encoders can be created.
-        let factory = |w, h| {
+        let factory = |w, h, _codec| {
             if (w, h) == (64, 48) {
                 encode::H264Encoder::new(w, h, 15, 1_000_000)
             } else {
@@ -2466,7 +2529,7 @@ mod tests {
         let dims = Arc::new(AtomicU32::new(0));
         let mut video = VideoPipeline::new(
             capturer.next_frame().unwrap(),
-            |w, h| encode::H264Encoder::new(w, h, STREAM_FPS, stream::stream_bitrate(w, h, STREAM_FPS)),
+            |w, h, _codec| encode::H264Encoder::new(w, h, STREAM_FPS, stream::stream_bitrate(w, h, STREAM_FPS)),
             Arc::clone(&dims),
         ).unwrap();
         let first = video.next(None).unwrap().expect("encodes");
@@ -2486,7 +2549,7 @@ mod tests {
         let mut capturer = FakeCapturer::new(64, 48);
         let mut video = VideoPipeline::new(
             capturer.next_frame().unwrap(),
-            |w, h| encode::H264Encoder::new(w, h, STREAM_FPS, 1_000_000),
+            |w, h, _codec| encode::H264Encoder::new(w, h, STREAM_FPS, 1_000_000),
             Arc::new(AtomicU32::new(0)),
         ).unwrap();
         assert!(video_header_fields(&video.next(None).unwrap().unwrap()).1);
@@ -2539,10 +2602,10 @@ mod tests {
 
     #[test]
     fn video_seq_reads_the_header() {
-        let mut plaintext = encode::video_header(42, 7, true, 64, 48);
+        let mut plaintext = encode::video_header(42, 7, true, 64, 48, encode::Codec::H264);
         plaintext.extend_from_slice(b"au");
         assert_eq!(video_seq(&plaintext), Some((42, true)));
-        assert_eq!(video_seq(&encode::video_header(43, 7, false, 64, 48)), Some((43, false)));
+        assert_eq!(video_seq(&encode::video_header(43, 7, false, 64, 48, encode::Codec::H264)), Some((43, false)));
         assert_eq!(video_seq(&[0; 17]), None);
     }
 
@@ -2597,7 +2660,7 @@ mod tests {
         }
         let host = run_host_session(
             host_ws, "right", "s", crate::capture::FakeCapturer::new(32, 32),
-            |width, height| crate::encode::H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| crate::encode::H264Encoder::new(width, height, 15, 1_000_000),
             crate::inject::NoopInjector::default(),
         ).await;
         assert!(host.is_err());
@@ -2642,7 +2705,7 @@ mod tests {
         ));
 
         for (seq, keyframe) in [(0, true), (1, false), (3, false), (4, true)] {
-            let plaintext = encode::video_header(seq, 0, keyframe, 64, 48);
+            let plaintext = encode::video_header(seq, 0, keyframe, 64, 48, encode::Codec::H264);
             let sealed = host_video_sealer.seal(&[Tag::Video as u8], &plaintext);
             host_tx.send(Tag::Video, &sealed).await.unwrap();
         }
@@ -2783,7 +2846,7 @@ mod tests {
             viewer_tx, viewer_rx, frame_sink, input_rx, Sealer::new(viewer_send), Opener::new(viewer_recv),
         ));
         for seq in 0..10 {
-            let sealed = host_video_sealer.seal(&[Tag::Video as u8], &encode::video_header(seq, 0, seq == 0, 64, 48));
+            let sealed = host_video_sealer.seal(&[Tag::Video as u8], &encode::video_header(seq, 0, seq == 0, 64, 48, encode::Codec::H264));
             host_tx.send(Tag::Video, &sealed).await.unwrap();
         }
         input_tx.send(b"click".to_vec()).await.unwrap();
@@ -2884,7 +2947,7 @@ mod tests {
             tokio::spawn(async move {
                 run_host_session_with_data_and_accept_and_2fa_with_factory(
                     ws, PASSWORD, SESSION, || Some(FakeCapturer::new(64, 64)),
-                    |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+                    |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
                     || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
                     false, false, None, approve, ready, timings, HostDisplays::default(), SessionGates::default(),
                 ).await
@@ -3081,7 +3144,7 @@ mod tests {
             let host = tokio::spawn(async move {
                 run_host_session_with_data_and_accept_and_2fa_with_factory(
                     host_ws, PASSWORD, SESSION, || None::<FakeCapturer>,
-                    |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+                    |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
                     || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
                     false, false, None, || async { true }, None, timings, HostDisplays::default(), SessionGates::default(),
                 ).await
@@ -3167,7 +3230,7 @@ mod tests {
             tokio::spawn(async move {
                 run_host_session_with_data_and_accept_and_2fa_with_factory(
                     ws, PASSWORD, SESSION, once_capturer(capturer),
-                    |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+                    |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
                     || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
                     false, false, None, || async { true }, None, timings, displays, SessionGates::default(),
                 ).await

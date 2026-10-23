@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codecFromSps, DEFAULT_H264_CODEC, FramePolicy, parseFrame, RateLimiter } from "./video";
+import { codecForFrame, codecFromSps, DEFAULT_H264_CODEC, DEFAULT_HEVC_CODEC, FramePolicy, parseFrame, RateLimiter } from "./video";
 
 function message(seq: number, flags: number, payload: number[]): Uint8Array {
   const bytes = new Uint8Array(18 + payload.length);
@@ -128,5 +128,22 @@ describe("codecFromSps", () => {
 
   it("has a default covering 4K-wide baseline streams", () => {
     expect(DEFAULT_H264_CODEC).toBe("avc1.42E034");
+  });
+});
+
+describe("codecForFrame", () => {
+  const sps = new Uint8Array([0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x28, 0xaa, 0, 0, 0, 1, 0x68, 0xce]);
+
+  it("uses the exact H.264 codec from a keyframe's SPS", () => {
+    expect(codecForFrame({ codec: 1, keyframe: true, data: sps })).toBe("avc1.42C028");
+  });
+
+  it("falls back to the H.264 default without an SPS", () => {
+    expect(codecForFrame({ codec: 1, keyframe: true, data: new Uint8Array([0, 0, 0, 1, 0x41]) })).toBe(DEFAULT_H264_CODEC);
+    expect(codecForFrame({ codec: 1, keyframe: false, data: new Uint8Array() })).toBe(DEFAULT_H264_CODEC);
+  });
+
+  it("uses the HEVC codec when the frame is marked HEVC", () => {
+    expect(codecForFrame({ codec: 2, keyframe: true, data: new Uint8Array([0, 0, 0, 1, 0x26]) })).toBe(DEFAULT_HEVC_CODEC);
   });
 });

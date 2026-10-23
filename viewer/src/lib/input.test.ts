@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { attachInput, containedRect, encodeInputEvent, mapPointer } from "./input";
 
@@ -46,6 +47,74 @@ describe("pointer mapping with object-fit: contain", () => {
 
   it("uses the whole element before the first frame arrives", () => {
     expect(mapPointer(50, 25, { left: 0, top: 0, width: 100, height: 50 }, 0, 0)).toEqual({ x: 32768, y: 32768 });
+  });
+
+  it("forwards a right-click as down+up and suppresses the native menu", async () => {
+    const listeners = new Map<string, EventListener>();
+    const canvas = {
+      tabIndex: 0, width: 800, height: 400,
+      addEventListener: (type: string, listener: EventListener) => listeners.set(type, listener),
+      removeEventListener: () => {},
+      focus: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 400 }),
+    } as unknown as HTMLCanvasElement;
+    const sent: number[][] = [];
+    attachInput(canvas, (bytes) => { sent.push(Array.from(bytes)); return Promise.resolve(); });
+    listeners.get("mousedown")!({ button: 2, clientX: 400, clientY: 200 } as MouseEvent);
+    let defaulted = true;
+    listeners.get("contextmenu")!({ preventDefault: () => { defaulted = false; } } as unknown as Event);
+    listeners.get("mouseup")!({ button: 2, clientX: 400, clientY: 200 } as MouseEvent);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Both are mouseButton (kind 2), right button (2), down then up.
+    expect(sent.map((bytes) => [bytes[0], bytes[9], bytes[10]])).toEqual([[2, 2, 1], [2, 2, 0]]);
+    expect(defaulted).toBe(false);
+  });
+
+  it("releases held buttons and keys when the window loses focus", async () => {
+    const listeners = new Map<string, EventListener>();
+    const windowListeners = new Map<string, EventListener>();
+    const canvas = {
+      tabIndex: 0, width: 800, height: 400,
+      addEventListener: (type: string, listener: EventListener) => listeners.set(type, listener),
+      removeEventListener: () => {},
+      focus: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 400 }),
+    } as unknown as HTMLCanvasElement;
+    const addWin = vi.spyOn(window, "addEventListener").mockImplementation((type, listener) => windowListeners.set(type, listener as EventListener));
+    const sent: number[][] = [];
+    attachInput(canvas, (bytes) => { sent.push(Array.from(bytes)); return Promise.resolve(); });
+    // Hold left button and the "a" key down, then blur.
+    listeners.get("mousedown")!({ button: 0, clientX: 400, clientY: 200 } as MouseEvent);
+    listeners.get("keydown")!({ preventDefault: () => {}, key: "a", shiftKey: false, ctrlKey: false, altKey: false, metaKey: false } as unknown as KeyboardEvent);
+    windowListeners.get("blur")!(new Event("blur"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Two presses, then two releases: mouseButton-up (kind 2) and char-up (kind 5).
+    const kinds = sent.map((bytes) => [bytes[0], bytes[bytes[0] === 2 ? 10 : 13]]);
+    expect(kinds).toEqual([[2, 1], [5, 1], [2, 0], [5, 0]]);
+    addWin.mockRestore();
+  });
+
+  it("releases a held button when the release happens outside the canvas", async () => {
+    const listeners = new Map<string, EventListener>();
+    const windowListeners = new Map<string, EventListener>();
+    const canvas = {
+      tabIndex: 0, width: 800, height: 400,
+      addEventListener: (type: string, listener: EventListener) => listeners.set(type, listener),
+      removeEventListener: () => {},
+      focus: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 400 }),
+    } as unknown as HTMLCanvasElement;
+    const addWin = vi.spyOn(window, "addEventListener").mockImplementation((type, listener) => windowListeners.set(type, listener as EventListener));
+    const sent: number[][] = [];
+    attachInput(canvas, (bytes) => { sent.push(Array.from(bytes)); return Promise.resolve(); });
+    listeners.get("mousedown")!({ button: 0, clientX: 400, clientY: 200 } as MouseEvent);
+    // Release lands on the window, not the canvas (dragged over the toolbar).
+    windowListeners.get("mouseup")!({ button: 0, clientX: 10, clientY: 10 } as unknown as Event);
+    // A second window mouseup for the same button must not double-send.
+    windowListeners.get("mouseup")!({ button: 0, clientX: 10, clientY: 10 } as unknown as Event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent.map((bytes) => [bytes[0], bytes[10]])).toEqual([[2, 1], [2, 0]]);
+    addWin.mockRestore();
   });
 
   it("drops canvas clicks in the bars but always sends releases", async () => {

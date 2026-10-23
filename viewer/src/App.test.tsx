@@ -25,11 +25,15 @@ const { listeners, mocks } = vi.hoisted(() => {
     getViewerPermissions: () => Promise.resolve({ control: true, files: true, clipboard: true, audio: true }),
     setViewerPermission: vi.fn(() => Promise.resolve()), disconnectViewer: vi.fn(() => Promise.resolve()),
     onViewerPermissions: on("viewer_permissions"), onActivity: on("activity"),
+    onMenuAction: on("menu"), setSessionMenu: vi.fn(() => Promise.resolve()),
+    setMaxBitrate: vi.fn(() => Promise.resolve()),
+    setDecoderCodecs: vi.fn(() => Promise.resolve()),
+    onCursorShape: on("cursor_shape"), onCursorHidden: on("cursor_hidden"),
   };
   return { listeners, mocks };
 });
 vi.mock("./lib/api", () => mocks);
-vi.mock("./lib/decode", () => ({ makeDecoder: () => ({ push: vi.fn(), close: vi.fn() }) }));
+vi.mock("./lib/decode", () => ({ makeDecoder: () => ({ push: vi.fn(), close: vi.fn() }), supportsHevcDecode: () => Promise.resolve(false) }));
 
 import App from "./App";
 

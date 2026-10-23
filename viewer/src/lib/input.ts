@@ -194,6 +194,12 @@ export function attachInput(
 
   const pointer = (event: MouseEvent) => mapPointer(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height);
 
+  // Buttons and keys held right now, so focus loss can release them: without
+  // this, a button or key still down when the window loses focus (Cmd-Tab, a
+  // click elsewhere) never gets its release and stays stuck down on the host.
+  const buttonsDown = new Set<number>();
+  const keysDown = new Map<string, InputEvent>();
+
   const onMouseMove = (event: MouseEvent): void => {
     const position = pointer(event);
     if (position) enqueueMove({ kind: "mouseMove", ...position });
@@ -205,56 +211,92 @@ export function attachInput(
     canvas.focus();
     if (!pointer(event)) return;
     const mapped = button(event.button);
-    if (mapped !== null) enqueue({ kind: "mouseButton", button: mapped, down: true });
+    if (mapped !== null) { buttonsDown.add(mapped); enqueue({ kind: "mouseButton", button: mapped, down: true }); }
   };
 
   const onMouseUp = (event: MouseEvent): void => {
     const mapped = button(event.button);
-    if (mapped !== null) enqueue({ kind: "mouseButton", button: mapped, down: false });
+    if (mapped !== null) { buttonsDown.delete(mapped); enqueue({ kind: "mouseButton", button: mapped, down: false }); }
   };
 
   const onWheel = (event: WheelEvent): void => {
+    // Keep the wheel on the remote; don't let it scroll or zoom the viewer page.
+    event.preventDefault();
     if (!pointer(event)) return;
     enqueue({ kind: "scroll", dx: Math.trunc(event.deltaX), dy: Math.trunc(event.deltaY) });
   };
 
+  // Suppress the webview's own context menu so a right-click's mousedown and
+  // mouseup both reach the canvas and forward to the host; otherwise the native
+  // menu swallows the release and the remote right-click never completes.
+  const onContextMenu = (event: MouseEvent): void => {
+    event.preventDefault();
+  };
+
+  // The event to send for a key press/release, and a stable id to track it by.
+  const keyEvent = (event: KeyboardEvent, down: boolean): { id: string; ev: InputEvent } | null => {
+    if (isModifierKey(event.key)) return null;
+    const code = keyCode(event);
+    if (code === null) return null;
+    const key = event.key || "";
+    return key.length > 0 && [...key].length === 1
+      ? { id: `c:${key}`, ev: { kind: "char", ch: key, down, modifiers: modifiers(event) } }
+      : { id: `k:${code}`, ev: { kind: "key", code, down, modifiers: modifiers(event) } };
+  };
+
   const onKeyDown = (event: KeyboardEvent): void => {
     event.preventDefault();
-    if (isModifierKey(event.key)) return;
-    const code = keyCode(event);
-    if (code !== null) {
-      const key = event.key || "";
-      enqueue(key.length > 0 && [...key].length === 1
-        ? { kind: "char", ch: key, down: true, modifiers: modifiers(event) }
-        : { kind: "key", code, down: true, modifiers: modifiers(event) });
-    }
+    const built = keyEvent(event, true);
+    if (!built) return;
+    const release = keyEvent(event, false);
+    if (release) keysDown.set(built.id, release.ev);
+    enqueue(built.ev);
   };
 
   const onKeyUp = (event: KeyboardEvent): void => {
     event.preventDefault();
-    if (isModifierKey(event.key)) return;
-    const code = keyCode(event);
-    if (code !== null) {
-      const key = event.key || "";
-      enqueue(key.length > 0 && [...key].length === 1
-        ? { kind: "char", ch: key, down: false, modifiers: modifiers(event) }
-        : { kind: "key", code, down: false, modifiers: modifiers(event) });
-    }
+    const built = keyEvent(event, false);
+    if (!built) return;
+    keysDown.delete(built.id);
+    enqueue(built.ev);
+  };
+
+  // A release outside the canvas (over the toolbar, or past the window edge)
+  // never reaches the canvas handler, so catch it on the window. The guard both
+  // dedupes the canvas release that bubbles here and ignores presses we never
+  // started (e.g. a press that began over a letterbox bar).
+  const onWindowMouseUp = (event: MouseEvent): void => {
+    const mapped = button(event.button);
+    if (mapped !== null && buttonsDown.has(mapped)) { buttonsDown.delete(mapped); enqueue({ kind: "mouseButton", button: mapped, down: false }); }
+  };
+
+  // Release everything still held when the window loses focus.
+  const onBlur = (): void => {
+    for (const mapped of buttonsDown) enqueue({ kind: "mouseButton", button: mapped, down: false });
+    buttonsDown.clear();
+    for (const release of keysDown.values()) enqueue(release);
+    keysDown.clear();
   };
 
   canvas.addEventListener("mousemove", onMouseMove);
   canvas.addEventListener("mousedown", onMouseDown);
   canvas.addEventListener("mouseup", onMouseUp);
-  canvas.addEventListener("wheel", onWheel);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("contextmenu", onContextMenu);
   canvas.addEventListener("keydown", onKeyDown);
   canvas.addEventListener("keyup", onKeyUp);
+  window.addEventListener("mouseup", onWindowMouseUp);
+  window.addEventListener("blur", onBlur);
 
   return () => {
     canvas.removeEventListener("mousemove", onMouseMove);
     canvas.removeEventListener("mousedown", onMouseDown);
     canvas.removeEventListener("mouseup", onMouseUp);
     canvas.removeEventListener("wheel", onWheel);
+    canvas.removeEventListener("contextmenu", onContextMenu);
     canvas.removeEventListener("keydown", onKeyDown);
     canvas.removeEventListener("keyup", onKeyUp);
+    window.removeEventListener("mouseup", onWindowMouseUp);
+    window.removeEventListener("blur", onBlur);
   };
 }

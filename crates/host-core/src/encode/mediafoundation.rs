@@ -38,14 +38,14 @@ use windows::{
     Win32::{
         Foundation::{E_FAIL, E_INVALIDARG, E_UNEXPECTED, VARIANT_TRUE},
         Media::MediaFoundation::{
-            eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_Base,
+            eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_Base, eAVEncH265VProfile_Main_420_8,
             CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
             CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
             CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
             IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFTransform, METransformHaveOutput,
             METransformNeedInput, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
             MFMediaType_Video, MFShutdown, MFStartup, MFTEnumEx, MFT_FRIENDLY_NAME_Attribute,
-            MFVideoFormat_ARGB32, MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoFormat_RGB32,
+            MFVideoFormat_ARGB32, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_RGB32,
             MFVideoInterlace_Progressive, MFSTARTUP_LITE, MFT_CATEGORY_VIDEO_ENCODER,
             MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
             MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
@@ -68,7 +68,7 @@ use windows::{
 use super::{
     normalize_access_unit,
     nv12::{bgra_to_nv12, nv12_len},
-    EncodedFrame, ParameterSets, PixelFormat, RawFrame,
+    Codec, EncodedFrame, ParameterSets, PixelFormat, RawFrame,
 };
 
 /// Safety-net keyframe interval in seconds, beyond the session loop's own
@@ -215,6 +215,7 @@ pub struct MfEncoder {
     /// Whether the MFT allocates output samples itself.
     provides_samples: bool,
     output_buffer_size: u32,
+    codec: Codec,
     width: u16,
     height: u16,
     frame_duration: i64,
@@ -242,7 +243,13 @@ pub struct MfEncoder {
 unsafe impl Send for MfEncoder {}
 
 impl MfEncoder {
-    pub fn new(width: u16, height: u16, fps: u32, bitrate: u32) -> Result<Self, MfError> {
+    pub fn new(
+        width: u16,
+        height: u16,
+        fps: u32,
+        bitrate: u32,
+        codec: Codec,
+    ) -> Result<Self, MfError> {
         let invalid = |context| MfError::new(context, E_INVALIDARG);
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(invalid("frame dimensions"));
@@ -252,10 +259,16 @@ impl MfEncoder {
         }
 
         let _runtime = MfRuntime::start()?;
-        let mut last_error = MfError::new("MFTEnumEx: no hardware H.264 encoder", E_FAIL);
-        for activate in hardware_encoders()? {
+        let mut last_error = MfError::new(
+            match codec {
+                Codec::H264 => "MFTEnumEx: no hardware H.264 encoder",
+                Codec::Hevc => "MFTEnumEx: no hardware HEVC encoder",
+            },
+            E_FAIL,
+        );
+        for activate in hardware_encoders(codec)? {
             let name = friendly_name(&activate);
-            match Self::create(activate, width, height, fps, bitrate) {
+            match Self::create(activate, width, height, fps, bitrate, codec) {
                 Ok(encoder) => {
                     log::info!(
                         "Media Foundation encoder: {name} ({} input, {})",
@@ -286,6 +299,7 @@ impl MfEncoder {
         height: u16,
         fps: u32,
         bitrate: u32,
+        codec: Codec,
     ) -> Result<Self, MfError> {
         let runtime = MfRuntime::start()?;
         // SAFETY: `activate` is a valid activation object from MFTEnumEx.
@@ -303,6 +317,7 @@ impl MfEncoder {
             input_format: InputFormat::Nv12,
             provides_samples: false,
             output_buffer_size: 0,
+            codec,
             width,
             height,
             frame_duration,
@@ -313,7 +328,7 @@ impl MfEncoder {
             started: false,
             need_input: 0,
             ready: VecDeque::new(),
-            parameter_sets: ParameterSets::default(),
+            parameter_sets: ParameterSets::new(codec),
             _runtime: runtime,
         };
 
@@ -412,21 +427,31 @@ impl MfEncoder {
     }
 
     fn set_output_type(&self, fps: u32, bitrate: u32) -> Result<(), MfError> {
+        let (subtype, profile, context) = match self.codec {
+            Codec::H264 => (
+                MFVideoFormat_H264,
+                eAVEncH264VProfile_Base.0.cast_unsigned(),
+                "H.264 output media type",
+            ),
+            // HEVC takes its profile through the same MF_MT_MPEG2_PROFILE key.
+            Codec::Hevc => (
+                MFVideoFormat_HEVC,
+                eAVEncH265VProfile_Main_420_8.0.cast_unsigned(),
+                "HEVC output media type",
+            ),
+        };
         // SAFETY: creates an empty media type.
         let media_type = unsafe { MFCreateMediaType() }.context("MFCreateMediaType")?;
         // SAFETY: valid media type; every key gets the value type Media
         // Foundation documents for it (GUID or UINT32).
         attempt(|| unsafe {
             media_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            media_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+            media_type.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
             media_type.SetUINT32(&MF_MT_AVG_BITRATE, bitrate)?;
-            media_type.SetUINT32(
-                &MF_MT_MPEG2_PROFILE,
-                eAVEncH264VProfile_Base.0.cast_unsigned(),
-            )
+            media_type.SetUINT32(&MF_MT_MPEG2_PROFILE, profile)
         })
         .and_then(|()| self.set_video_attributes(&media_type, fps))
-        .context("H.264 output media type")?;
+        .context(context)?;
         // SAFETY: the MFT and the media type are valid. Encoders need the
         // output type before the input type.
         unsafe { self.transform.SetOutputType(self.output_id, &media_type, 0) }
@@ -782,8 +807,9 @@ impl MfEncoder {
     }
 
     fn push_output(&mut self, data: &[u8]) -> Result<(), MfError> {
-        let frame = normalize_access_unit(data, &mut self.parameter_sets)
-            .map_err(|()| MfError::new("H.264 output (not Annex B or no SPS/PPS)", E_UNEXPECTED))?;
+        let codec = self.codec;
+        let frame = normalize_access_unit(data, codec, &mut self.parameter_sets)
+            .map_err(|()| MfError::new("encoder output not Annex B or missing parameter sets", E_UNEXPECTED))?;
         let Some(frame) = frame else {
             return Ok(());
         };
@@ -814,11 +840,14 @@ impl Drop for MfEncoder {
     }
 }
 
-/// The hardware H.264 encoders, best first.
-fn hardware_encoders() -> Result<Vec<IMFActivate>, MfError> {
+/// The hardware encoders for `codec`, best first.
+fn hardware_encoders(codec: Codec) -> Result<Vec<IMFActivate>, MfError> {
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: MFVideoFormat_H264,
+        guidSubtype: match codec {
+            Codec::H264 => MFVideoFormat_H264,
+            Codec::Hevc => MFVideoFormat_HEVC,
+        },
     };
     let mut array: *mut Option<IMFActivate> = ptr::null_mut();
     let mut count = 0u32;
@@ -993,7 +1022,7 @@ mod tests {
     /// Creates a hardware encoder, or `None` (test skipped) where Media
     /// Foundation has no hardware H.264 encoder, e.g. in a VM or on CI.
     fn hardware_encoder(width: u16, height: u16) -> Option<MfEncoder> {
-        match MfEncoder::new(width, height, 15, 1_000_000) {
+        match MfEncoder::new(width, height, 15, 1_000_000, Codec::H264) {
             Ok(encoder) => Some(encoder),
             Err(error) => {
                 eprintln!("skipping Media Foundation test: {error}");

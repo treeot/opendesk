@@ -1,4 +1,4 @@
-use host_core::encode::{video_header, Encoder, H264Encoder, PixelFormat, RawFrame};
+use host_core::encode::{video_header, Codec, Encoder, H264Encoder, PixelFormat, RawFrame};
 use protocol::{crypto::{Opener, Sealer}, Tag};
 use protocol::kex::derive_keys;
 
@@ -19,7 +19,7 @@ fn captured_frame_roundtrips_through_e2ee() {
     };
     let encoded = encoder.encode(&raw).expect("encode");
 
-    let mut plaintext = video_header(0, 0, encoded.keyframe, 64, 64);
+    let mut plaintext = video_header(0, 0, encoded.keyframe, 64, 64, Codec::H264);
     plaintext.extend_from_slice(&encoded.data);
 
     let sealed = sealer.seal(&[Tag::Data as u8], &plaintext);

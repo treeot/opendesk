@@ -56,7 +56,11 @@ button, input { font: inherit; } button { cursor: pointer; }
 .host-panel__log li { line-height: 1.4; overflow-wrap: anywhere; }
 .host-panel__log time { color: var(--accent); font: 600 11px var(--mono); margin-right: 6px; }
 @media (max-width: 640px) { .host-panel { left: 16px; right: 16px; width: auto; } }
-.session-toolbar { position: absolute; z-index: 2; top: 18px; left: 50%; display: flex; align-items: center; gap: 18px; min-height: 48px; padding: 7px 9px 7px 15px; transform: translateX(-50%); color: var(--text); background: #141922; border: 1px solid #1f2630; border-radius: 999px; box-shadow: 0 12px 35px #0008; }
+.session-toolbar { position: absolute; z-index: 2; top: 18px; left: 50%; display: flex; align-items: center; gap: 18px; min-height: 48px; padding: 7px 9px 7px 15px; transform: translateX(-50%); color: var(--text); background: #141922; border: 1px solid #1f2630; border-radius: 999px; box-shadow: 0 12px 35px #0008; transition: transform .22s ease, opacity .22s ease; }
+.session-toolbar--hidden { transform: translateX(-50%) translateY(calc(-100% - 28px)); opacity: 0; pointer-events: none; }
+.session-peek { position: absolute; z-index: 3; top: 0; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; width: 56px; height: 20px; padding: 0; color: #c3cad5; background: #141922; border: 1px solid #1f2630; border-top: 0; border-radius: 0 0 10px 10px; box-shadow: 0 6px 18px #0007; opacity: .85; transition: height .15s ease, opacity .15s ease, color .15s ease; }
+.session-peek:hover { height: 24px; opacity: 1; color: #fff; }
+.session-peek svg { width: 16px; height: 16px; }
 .session-toolbar::before { position: absolute; top: -1px; right: 12px; left: 12px; height: 1px; content: ""; background: var(--accent); }
 .session-toolbar__connection, .session-toolbar__controls, .session-toolbar__actions { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
 .session-toolbar__connected-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 9px #22d3ee; }

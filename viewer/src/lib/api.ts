@@ -78,6 +78,10 @@ export const sendAuthCode = (code: string) => invoke<void>("send_auth_code", { c
 export const disconnect = () => invoke<void>("disconnect");
 export const sendInput = (bytes: Uint8Array) => invoke<void>("send_input", { bytes: Array.from(bytes) });
 export const selectMonitor = (id: number) => invoke<void>("select_monitor", { id });
+/** Cap the stream bitrate at `bps`, or 0 for the host's automatic behavior. */
+export const setMaxBitrate = (bps: number) => invoke<void>("set_max_bitrate", { bps });
+/** Tell the host which codecs this viewer can decode (lets it offer HEVC). */
+export const setDecoderCodecs = (hevc: boolean) => invoke<void>("set_decoder_codecs", { hevc });
 export const requestKeyframe = () => invoke<void>("request_keyframe");
 export const addVirtualDisplay = (width: number, height: number, hidpi: boolean) => invoke<void>("add_virtual_display", { width, height, hidpi });
 export const removeVirtualDisplay = (id: number) => invoke<void>("remove_virtual_display", { id });
@@ -177,6 +181,15 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 const on = <T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> => listen<T>(event, ({ payload }) => handler(payload));
+
+/** A native menu item was chosen; the payload is the item's id (see menu.rs). */
+export const onMenuAction = (handler: (action: string) => void) => on<string>("menu", handler);
+/** The host's cursor image; `rgba` is base64 of straight-alpha RGBA pixels. */
+export interface CursorShape { width: number; height: number; hot_x: number; hot_y: number; rgba: string }
+export const onCursorShape = (handler: (payload: CursorShape) => void) => on<CursorShape>("cursor_shape", handler);
+export const onCursorHidden = (handler: () => void) => on<void>("cursor_hidden", handler);
+/** Enable/disable the macOS Session menu and reflect clipboard/recording state. */
+export const setSessionMenu = (active: boolean, clipboardSync: boolean, recording: boolean) => invoke<void>("set_session_menu", { active, clipboardSync, recording });
 /** Hosting presence only; an outgoing session reports through onViewerStatus. */
 export const onStatusChanged = (handler: (payload: StatusChanged) => void) => on("status_changed", handler);
 export const onViewerStatus = (handler: (payload: StatusChanged) => void) => on("viewer_status", handler);

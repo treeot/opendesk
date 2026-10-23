@@ -39,6 +39,13 @@ interface ToolbarProps {
   onViewOnlyChange?: (viewOnly: boolean) => void;
   canSecureAttention?: boolean;
   onSecureAttention?: () => void;
+  /** Selected bitrate cap in bps; 0 is automatic. */
+  quality?: number;
+  onQualityChange?: (bps: number) => void;
+  /** Slide the bar out of view until the pointer reaches the top edge. */
+  hidden?: boolean;
+  onBarEnter?: () => void;
+  onBarLeave?: () => void;
 }
 
 interface IconButtonProps { label: string; text: string; icon: ReactNode; onClick?: () => void; title?: string; pressed?: boolean; expanded?: boolean; tone?: "danger"; badge?: number }
@@ -62,6 +69,7 @@ const speaker = <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4
 const icons = {
   fullscreen: <Icon><path d="M8 3H5a2 2 0 0 0-2 2v3" /><path d="M21 8V5a2 2 0 0 0-2-2h-3" /><path d="M3 16v3a2 2 0 0 0 2 2h3" /><path d="M16 21h3a2 2 0 0 0 2-2v-3" /></Icon>,
   monitor: <Icon><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></Icon>,
+  gauge: <Icon><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></Icon>,
   newWindow: <Icon><rect width="18" height="14" x="3" y="5" rx="2" /><path d="M3 9h18" /><path d="M14 13h4v4" /><path d="M18 13l-5 5" /></Icon>,
   restart: <Icon><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></Icon>,
   privacy: <Icon><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /><path d="M3 3l18 18" /></Icon>,
@@ -70,6 +78,7 @@ const icons = {
   muted: <Icon>{speaker}<line x1="22" x2="16" y1="9" y2="15" /><line x1="16" x2="22" y1="9" y2="15" /></Icon>,
   files: <Icon><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></Icon>,
   remove: <Icon><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="9" x2="15" y1="10" y2="10" /><line x1="12" x2="12" y1="17" y2="21" /></Icon>,
+  addMonitor: <Icon><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="12" x2="12" y1="7" y2="13" /><line x1="9" x2="15" y1="10" y2="10" /><line x1="8" x2="16" y1="21" y2="21" /></Icon>,
   record: <Icon><circle cx="12" cy="12" r="7" fill="currentColor" stroke="none" /></Icon>,
   stop: <Icon><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" /></Icon>,
   chat: <Icon><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" /></Icon>,
@@ -105,6 +114,14 @@ export function virtualDisplaySize(width: number, height: number, ratio: number)
 
 const ADD_DISPLAY = "add-display";
 
+/** Stream quality tiers: the bitrate cap in bps, 0 meaning automatic. */
+export const QUALITY_TIERS: { label: string; bps: number }[] = [
+  { label: "Auto", bps: 0 },
+  { label: "High", bps: 20_000_000 },
+  { label: "Balanced", bps: 8_000_000 },
+  { label: "Data-saver", bps: 3_000_000 },
+];
+
 function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
   return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
@@ -134,7 +151,7 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -154,7 +171,7 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
 
   return (
     <>
-      <div className="session-toolbar" role="toolbar" aria-label="Session controls">
+      <div className={`session-toolbar${hidden ? " session-toolbar--hidden" : ""}`} role="toolbar" aria-label="Session controls" onMouseEnter={onBarEnter} onMouseLeave={onBarLeave}>
         {viewer && <div className="session-toolbar__connection">
           <span className="session-toolbar__connected-dot" data-status={status} title={connectionLabels[status]} aria-hidden="true" />
           <span className="sr-only">{connectionLabels[status]}</span>
@@ -169,6 +186,14 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
             <select aria-label="Monitor" value={selectedMonitor ?? monitors[0].id} onChange={(event) => { if (event.target.value === ADD_DISPLAY) onAddDisplay(); else onMonitorChange(Number(event.target.value)); }}>
               {monitors.map((monitor, index) => <option key={monitor.id} value={monitor.id}>{monitorName(monitor.name, index)}{monitor.width && monitor.height ? ` · ${monitor.width}×${monitor.height}` : ""}{monitor.is_primary ? " · Primary" : ""}{monitor.is_virtual ? " · Virtual" : ""}</option>)}
               {canAddDisplay && <option value={ADD_DISPLAY}>Add display…</option>}
+            </select>
+          </label>}
+          {viewer && canAddDisplay && <IconButton label="Add screen" text="Add screen" title="Add a virtual screen to the other computer" icon={icons.addMonitor} onClick={onAddDisplay} />}
+          {viewer && <label className="session-toolbar__select-chip" title="Cap the stream quality. Auto follows your connection.">
+            <span className="sr-only">Quality</span>
+            {icons.gauge}
+            <select aria-label="Quality" value={quality} onChange={(event) => onQualityChange(Number(event.target.value))}>
+              {QUALITY_TIERS.map((tier) => <option key={tier.bps} value={tier.bps}>{tier.label}</option>)}
             </select>
           </label>}
           {viewer && canOpenMonitorWindow && <IconButton label="Open monitor in a window" text="New window" title="Open the selected monitor in its own window" icon={icons.newWindow} onClick={() => onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0)} />}

@@ -110,8 +110,9 @@ describe("Toolbar", () => {
   it("hides controls that do nothing yet", () => {
     render(<Toolbar remoteId="123" onDisconnect={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Fit / Scale" })).toBeNull();
-    expect(screen.queryByLabelText("Quality")).toBeNull();
     expect(screen.queryByRole("button", { name: "Keyboard" })).toBeNull();
+    // Quality is always available: older hosts simply ignore the cap.
+    expect(screen.getByLabelText("Quality")).toBeTruthy();
   });
 
   it("colours the connection dot by status", () => {

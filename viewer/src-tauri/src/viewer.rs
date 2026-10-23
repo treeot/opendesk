@@ -169,6 +169,19 @@ pub(crate) async fn set_privacy_mode(state: tauri::State<'_, AppState>, on: bool
     send_control(&state, Control::SetPrivacyMode { on }).await
 }
 
+/// Cap the stream bitrate at `bps`, or `0` for the host's automatic behavior.
+#[tauri::command]
+pub(crate) async fn set_max_bitrate(state: tauri::State<'_, AppState>, bps: u32) -> Result<(), String> {
+    send_control(&state, Control::SetMaxBitrate { bps }).await
+}
+
+/// Tell the host which codecs this viewer can decode, so it may switch the
+/// stream to HEVC where supported (it stays on H.264 otherwise).
+#[tauri::command]
+pub(crate) async fn set_decoder_codecs(state: tauri::State<'_, AppState>, hevc: bool) -> Result<(), String> {
+    send_control(&state, Control::DecoderCodecs { hevc }).await
+}
+
 /// Which of `ids` (saved devices) have a host online on the configured relays
 /// right now. Used by the address book's status dots.
 #[tauri::command]
@@ -339,6 +352,8 @@ pub(crate) fn connect(
                         }
                         Some(Control::PrivacyModeSupport) => emit(&monitor_app, "privacy_mode_support", ()),
                         Some(Control::PrivacyModeChanged { on }) => emit(&monitor_app, "privacy_mode_changed", PrivacyModeEvent { on }),
+                        Some(Control::CursorShape { width, height, hot_x, hot_y, rgba }) => emit(&monitor_app, "cursor_shape", CursorShapeEvent { width, height, hot_x, hot_y, rgba: b64(&rgba) }),
+                        Some(Control::CursorHidden) => emit(&monitor_app, "cursor_hidden", ()),
                         _ => {}
                     }
                 }

@@ -99,7 +99,7 @@ async fn run_positive_session() {
             PASSWORD,
             "e2e-positive",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             RecordingInjector(host_injector_count),
         )
         .await
@@ -147,7 +147,7 @@ async fn run_wrong_password_session() {
             PASSWORD,
             "e2e-negative",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             RecordingInjector(Arc::new(AtomicUsize::new(0))),
         )
         .await
@@ -221,7 +221,7 @@ async fn run_live_file_transfer(label: &str, size: usize, consent_delay: Duratio
             PASSWORD,
             "e2e-filexfer",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             NoopInjector::default(),
             Some(host_ready_tx),
         )
@@ -308,7 +308,7 @@ async fn live_clipboard_is_sealed_and_relayed_end_to_end() {
             PASSWORD,
             "e2e-clipboard",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             NoopInjector::default(),
             Some(host_ready_tx),
         )
@@ -407,7 +407,7 @@ async fn slow_injection_does_not_stall_video_frames() {
             PASSWORD,
             "e2e-slow-inject",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             host_injector,
         )
         .await
@@ -455,7 +455,7 @@ async fn host_session_ends_cleanly_on_viewer_bye() {
             PASSWORD,
             "e2e-bye",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             host_injector,
             None,
         )
@@ -513,7 +513,7 @@ async fn host_session_ends_when_viewer_disappears() {
             PASSWORD,
             "e2e-peer-gone",
             FakeCapturer::new(64, 64),
-            |width, height| H264Encoder::new(width, height, 15, 1_000_000),
+            |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
             NoopInjector::default(),
         )
         .await

@@ -2,6 +2,7 @@ pub mod browse;
 pub mod capture;
 pub mod audio;
 pub mod clipboard;
+pub mod cursor;
 pub mod datachan;
 pub mod encode;
 pub mod filexfer;

@@ -7,6 +7,7 @@ mod recording;
 mod files;
 mod host;
 mod machine;
+mod menu;
 mod startup;
 mod vdriver;
 mod windows_service;
@@ -768,6 +769,13 @@ fn disconnect(state: tauri::State<'_, AppState>, app: AppHandle) {
     emit_host_status(&app, "offline");
 }
 
+/// The web UI drives the Session menu: enabled while a session is live, with
+/// the clipboard-sync check and the Record label kept in step.
+#[tauri::command]
+fn set_session_menu(app: tauri::AppHandle, active: bool, clipboard_sync: bool, recording: bool) {
+    menu::set_session(&app, active, clipboard_sync, recording);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -859,6 +867,10 @@ pub fn run() {
             }
             #[cfg(not(windows))]
             startup::start(app.handle(), background);
+            #[cfg(target_os = "macos")]
+            if let Err(error) = menu::install(app.handle()) {
+                log::error!("could not install the application menu: {error}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -868,6 +880,7 @@ pub fn run() {
                 }
             }
         })
+        .on_menu_event(menu::on_event)
         .invoke_handler(tauri::generate_handler![
             get_identity,
             rotate_password,
@@ -907,6 +920,8 @@ pub fn run() {
             get_presence,
             request_remote_restart,
             set_privacy_mode,
+            set_max_bitrate,
+            set_decoder_codecs,
             browse_remote,
             browse_local,
             pull_remote,
@@ -935,7 +950,8 @@ pub fn run() {
             startup::close_keeps_running,
             startup::quit_app,
             reset_identity,
-            get_identity_conflicts
+            get_identity_conflicts,
+            set_session_menu
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -7,7 +7,18 @@
  * The caller MUST invoke `close` on teardown so the VideoDecoder is released
  * rather than leaked across session unmount/remount.
  */
-import { codecFromSps, DEFAULT_H264_CODEC, FramePolicy, parseFrame, RateLimiter } from "./video";
+import { codecForFrame, DEFAULT_H264_CODEC, DEFAULT_HEVC_CODEC, FramePolicy, parseFrame, RateLimiter } from "./video";
+
+/** Whether this browser/webview can decode HEVC, probed via WebCodecs. */
+export async function supportsHevcDecode(): Promise<boolean> {
+  try {
+    if (typeof VideoDecoder === "undefined" || !VideoDecoder.isConfigSupported) return false;
+    const support = await VideoDecoder.isConfigSupported({ codec: DEFAULT_HEVC_CODEC });
+    return support.supported === true;
+  } catch {
+    return false;
+  }
+}
 
 export interface Decoder {
   /** Feed one frame message (header plus access unit) from the backend. */
@@ -113,9 +124,11 @@ export function makeDecoder(canvas: HTMLCanvasElement, options: DecoderOptions):
         return;
       }
       try {
-        const sps = frame.keyframe ? codecFromSps(frame.data) : null;
-        const codecChanged = sps !== null && sps !== codec;
-        if (sps) codec = sps;
+        // Re-read the codec on keyframes, which carry the parameter sets: the
+        // exact H.264 profile from the SPS, or HEVC when the frame says so.
+        const want = frame.keyframe ? codecForFrame(frame) : codec;
+        const codecChanged = want !== codec;
+        codec = want;
         if (action.flush) decoder.reset();
         if (action.flush || codecChanged || decoder.state !== "configured") configure(decoder);
         decoder.decode(
