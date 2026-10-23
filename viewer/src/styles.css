@@ -58,6 +58,15 @@ button, input { font: inherit; } button { cursor: pointer; }
 @media (max-width: 640px) { .host-panel { left: 16px; right: 16px; width: auto; } }
 .session-toolbar { position: absolute; z-index: 2; top: 18px; left: 50%; display: flex; align-items: center; gap: 18px; min-height: 48px; padding: 7px 9px 7px 15px; transform: translateX(-50%); color: var(--text); background: #141922; border: 1px solid #1f2630; border-radius: 999px; box-shadow: 0 12px 35px #0008; transition: transform .22s ease, opacity .22s ease; }
 .session-toolbar--hidden { transform: translateX(-50%) translateY(calc(-100% - 28px)); opacity: 0; pointer-events: none; }
+.forward-panel { position: absolute; z-index: 4; top: 84px; right: 18px; width: 320px; display: flex; flex-direction: column; gap: 12px; padding: 16px; color: var(--text); background: #141922; border: 1px solid #1f2630; border-radius: 14px; box-shadow: 0 12px 35px #0008; }
+.forward-panel__head { display: flex; align-items: center; justify-content: space-between; }
+.forward-panel__head strong { font: 600 15px var(--heading); }
+.forward-panel__add { display: flex; align-items: center; gap: 8px; }
+.forward-panel__add input { width: 72px; min-width: 0; padding: 8px 10px; color: var(--text); background: #0f131a; border: 1px solid var(--border); border-radius: 6px; }
+.forward-panel__add input:focus { outline: 1px solid var(--accent); }
+.forward-panel__add .primary-button { padding: 8px 14px; }
+.forward-panel__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.forward-panel__list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; padding: 6px 8px; background: #0f131a; border: 1px solid var(--border); border-radius: 6px; }
 .session-peek { position: absolute; z-index: 3; top: 0; left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; width: 56px; height: 20px; padding: 0; color: #c3cad5; background: #141922; border: 1px solid #1f2630; border-top: 0; border-radius: 0 0 10px 10px; box-shadow: 0 6px 18px #0007; opacity: .85; transition: height .15s ease, opacity .15s ease, color .15s ease; }
 .session-peek:hover { height: 24px; opacity: 1; color: #fff; }
 .session-peek svg { width: 16px; height: 16px; }

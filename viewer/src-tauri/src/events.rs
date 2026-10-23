@@ -198,6 +198,7 @@ pub(crate) struct ViewerPermissionsEvent {
     pub(crate) files: bool,
     pub(crate) clipboard: bool,
     pub(crate) audio: bool,
+    pub(crate) forwarding: bool,
 }
 
 /// One line in the host's session activity log.

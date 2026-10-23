@@ -10,6 +10,7 @@ const CAPABILITIES: { key: api.Capability; label: string; hint: string }[] = [
   { key: "files", label: "File transfer", hint: "Accept files the viewer sends" },
   { key: "clipboard", label: "Clipboard", hint: "Share clipboard with the viewer" },
   { key: "audio", label: "Audio", hint: "Send this device's sound to the viewer" },
+  { key: "forwarding", label: "Port forwarding", hint: "Let the viewer reach this device's local ports (e.g. Ollama)" },
 ];
 
 const formatTime = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -24,7 +25,7 @@ interface HostControlPanelProps {
  * (host-enforced), a disconnect button, and the session activity log. */
 export default function HostControlPanel({ remoteId, onDisconnect }: HostControlPanelProps) {
   const notify = useNotify();
-  const [permissions, setPermissions] = useState<api.ViewerPermissions>({ control: true, files: true, clipboard: true, audio: true });
+  const [permissions, setPermissions] = useState<api.ViewerPermissions>({ control: true, files: true, clipboard: true, audio: true, forwarding: false });
   const [activity, setActivity] = useState<api.Activity[]>([]);
   const logRef = useRef<HTMLUListElement>(null);
 

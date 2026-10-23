@@ -32,7 +32,7 @@ export interface MonitorInfo { id: number; name: string; width: number; height: 
 /** Media path of a viewer session and its measured round trip; `rtt_ms` is null until there is a real sample. */
 export interface LinkStats { path: "direct" | "relay"; rtt_ms: number | null }
 /** Host-enforced capabilities for the connected viewer; all default to enabled and reset each session. */
-export interface ViewerPermissions { control: boolean; files: boolean; clipboard: boolean; audio: boolean }
+export interface ViewerPermissions { control: boolean; files: boolean; clipboard: boolean; audio: boolean; forwarding: boolean }
 export type Capability = keyof ViewerPermissions;
 /** One line in the host's session activity log; `at` is Unix milliseconds. */
 export interface Activity { at: number; kind: string; detail: string }
@@ -82,6 +82,11 @@ export const selectMonitor = (id: number) => invoke<void>("select_monitor", { id
 export const setMaxBitrate = (bps: number) => invoke<void>("set_max_bitrate", { bps });
 /** Tell the host which codecs this viewer can decode (lets it offer HEVC). */
 export const setDecoderCodecs = (hevc: boolean) => invoke<void>("set_decoder_codecs", { hevc });
+/** Forward local `127.0.0.1:localPort` to the host's `127.0.0.1:remotePort`. */
+export const startForward = (localPort: number, remotePort: number) => invoke<void>("start_forward", { localPort, remotePort });
+export const stopForward = (localPort: number) => invoke<void>("stop_forward", { localPort });
+/** Active forwards as `[localPort, remotePort]` pairs. */
+export const listForwards = () => invoke<[number, number][]>("list_forwards");
 export const requestKeyframe = () => invoke<void>("request_keyframe");
 export const addVirtualDisplay = (width: number, height: number, hidpi: boolean) => invoke<void>("add_virtual_display", { width, height, hidpi });
 export const removeVirtualDisplay = (id: number) => invoke<void>("remove_virtual_display", { id });

@@ -8,6 +8,7 @@ mod files;
 mod host;
 mod machine;
 mod menu;
+mod tunnel;
 mod startup;
 mod vdriver;
 mod windows_service;
@@ -76,6 +77,10 @@ pub(crate) struct ViewerPermissions {
     pub(crate) files: Arc<AtomicBool>,
     pub(crate) clipboard: Arc<AtomicBool>,
     pub(crate) audio: Arc<AtomicBool>,
+    /// Let the viewer forward a local TCP port to a loopback port on this host
+    /// (e.g. reach Ollama). Off by default and each session: it opens a network
+    /// path into the host, so the host user turns it on deliberately.
+    pub(crate) forwarding: Arc<AtomicBool>,
 }
 
 impl ViewerPermissions {
@@ -85,14 +90,16 @@ impl ViewerPermissions {
             files: Arc::new(AtomicBool::new(true)),
             clipboard: Arc::new(AtomicBool::new(true)),
             audio: Arc::new(AtomicBool::new(true)),
+            forwarding: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Back to all-on, for the start of a new session.
+    /// Back to defaults for a new session: everything on except forwarding.
     pub(crate) fn reset(&self) {
         for flag in [&self.control, &self.files, &self.clipboard, &self.audio] {
             flag.store(true, Ordering::Relaxed);
         }
+        self.forwarding.store(false, Ordering::Relaxed);
     }
 
     /// The atomic for one capability name, or `None` if the name is unknown.
@@ -102,6 +109,7 @@ impl ViewerPermissions {
             "files" => Some(&self.files),
             "clipboard" => Some(&self.clipboard),
             "audio" => Some(&self.audio),
+            "forwarding" => Some(&self.forwarding),
             _ => None,
         }
     }
@@ -112,6 +120,7 @@ impl ViewerPermissions {
             files: self.files.load(Ordering::Relaxed),
             clipboard: self.clipboard.load(Ordering::Relaxed),
             audio: self.audio.load(Ordering::Relaxed),
+            forwarding: self.forwarding.load(Ordering::Relaxed),
         }
     }
 }
@@ -243,6 +252,8 @@ fn dispatch_data(
     let clipboard_app = app.clone();
     let chat_app = app.clone();
     let browse_app = app.clone();
+    let tunnel_manager = app.state::<Arc<tunnel::TunnelManager>>().inner().clone();
+    let forwarding = app.state::<AppState>().lock().viewer_permissions.forwarding.clone();
     tauri::async_runtime::spawn(host_core::datachan::dispatch_data(
         incoming,
         move |sealed: &[u8]| lock_unpoisoned(&opener).open(&[Tag::Data as u8], sealed),
@@ -253,6 +264,7 @@ fn dispatch_data(
         },
         move |message| emit(&chat_app, "chat_message", ChatMessage { text: message.text }),
         move |message| handle_browse(&browse_app, &data_sender, &data_sealer, &files_allowed, is_host, message),
+        move |message| tunnel::handle(&tunnel_manager, is_host, &forwarding, message),
     ));
     (router, offers)
 }
@@ -336,6 +348,8 @@ fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String, is_h
     };
     let files_allowed = { app.state::<AppState>().lock().viewer_permissions.files.clone() };
     let sealer = Arc::new(Mutex::new(sealer));
+    // Port forwarding shares the sealed data channel; bind it for this session.
+    app.state::<Arc<tunnel::TunnelManager>>().activate(sender.clone(), sealer.clone());
     let clipboard_thread = spawn_clipboard_thread(sender.clone(), sealer.clone(), enabled, clipboard_allowed);
     let clipboard_tx = clipboard_thread.as_ref().map(|(tx, _)| tx.clone());
     let (file_router, offers) = dispatch_data(app.clone(), receiver, Arc::new(Mutex::new(opener)), clipboard_tx, sender.clone(), sealer.clone(), files_allowed, is_host);
@@ -352,6 +366,8 @@ fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String, is_h
 }
 
 fn clear_data_channel(app: &AppHandle) {
+    // Stop any port forwards and tear down tunnel streams for the ended session.
+    app.state::<Arc<tunnel::TunnelManager>>().deactivate();
     let state = app.state::<AppState>();
     // Take the thread handle out under the lock, then release the global state
     // lock BEFORE joining. The clipboard thread may be mid `block_on(send_frame)`
@@ -840,6 +856,7 @@ pub fn run() {
         .manage(VideoSink::default())
         .manage(AuxVideoSinks::default())
         .manage(unattended::PendingTotp::default())
+        .manage(std::sync::Arc::new(tunnel::TunnelManager::default()))
         .setup(move |app| {
             let app_data_dir = app
                 .path()
@@ -941,6 +958,9 @@ pub fn run() {
             set_privacy_mode,
             set_max_bitrate,
             set_decoder_codecs,
+            start_forward,
+            stop_forward,
+            list_forwards,
             browse_remote,
             browse_local,
             pull_remote,

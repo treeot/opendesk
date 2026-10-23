@@ -182,6 +182,25 @@ pub(crate) async fn set_decoder_codecs(state: tauri::State<'_, AppState>, hevc: 
     send_control(&state, Control::DecoderCodecs { hevc }).await
 }
 
+/// Viewer: forward local `127.0.0.1:local_port` to the host's `127.0.0.1:remote_port`.
+#[tauri::command]
+pub(crate) async fn start_forward(app: AppHandle, local_port: u16, remote_port: u16) -> Result<(), String> {
+    let manager = app.state::<std::sync::Arc<crate::tunnel::TunnelManager>>().inner().clone();
+    crate::tunnel::start_forward(manager, local_port, remote_port).await
+}
+
+/// Viewer: stop a forward by its local port.
+#[tauri::command]
+pub(crate) fn stop_forward(app: AppHandle, local_port: u16) {
+    crate::tunnel::stop_forward(app.state::<std::sync::Arc<crate::tunnel::TunnelManager>>().inner(), local_port);
+}
+
+/// Viewer: the active forwards as `(local, remote)` port pairs.
+#[tauri::command]
+pub(crate) fn list_forwards(app: AppHandle) -> Vec<(u16, u16)> {
+    crate::tunnel::list_forwards(app.state::<std::sync::Arc<crate::tunnel::TunnelManager>>().inner())
+}
+
 /// Which of `ids` (saved devices) have a host online on the configured relays
 /// right now. Used by the address book's status dots.
 #[tauri::command]
