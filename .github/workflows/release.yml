@@ -12,6 +12,15 @@ jobs:
   build:
     name: Build unsigned ${{ matrix.os }} bundle
     runs-on: ${{ matrix.os }}
+    env:
+      # Optional stable self-signed macOS cert (base64 .p12, its password, and
+      # the identity name). When set, macOS bundles are signed with it so a
+      # user's Screen Recording / Accessibility grants persist across updates
+      # (TCC keys on the cert, not the per-build hash). Gatekeeper still warns:
+      # this is not Apple notarization. Unset leaves builds ad-hoc as before.
+      MACOS_SIGN_CERT: ${{ secrets.MACOS_SIGN_CERT }}
+      MACOS_SIGN_CERT_PASSWORD: ${{ secrets.MACOS_SIGN_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,6 +107,26 @@ jobs:
             "$version" "$updater" "$wix" > "$config"
           cat "$config"
           echo "TAURI_RELEASE_CONFIG=$config" >> "$GITHUB_ENV"
+
+      # Optional: import a stable self-signed cert so macOS bundles are signed
+      # with the same identity every release, keeping users' permission grants.
+      # Skipped (ad-hoc build) when the secret is absent.
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && env.MACOS_SIGN_CERT != ''
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/opendesk-signing.keychain-db"
+          password="$(openssl rand -base64 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_SIGN_CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_SIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          # Put our keychain first in the search list so codesign finds the identity.
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | sed s/\"//g)
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "APPLE_SIGNING_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
 
       - name: Build unsigned Tauri bundles
         working-directory: viewer

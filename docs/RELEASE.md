@@ -107,3 +107,48 @@ accept the OS trust warnings. They carry no verified publisher identity.
 - macOS may show Gatekeeper warnings. In Finder, use Control-click → Open, or approve the app in System Settings → Privacy & Security.
 - Windows may show a SmartScreen warning. Use More info → Run anyway only if you trust the release source.
 - Linux desktop environments may warn about an untrusted downloaded file. Mark the AppImage executable (`chmod +x OpenDesk*.AppImage`) and launch it, or install the `.deb` with the system package installer.
+
+## Optional: stable macOS signing so permissions persist
+
+macOS ties Screen Recording and Accessibility grants to the app's code
+signature. Ad-hoc builds change identity every release, so users re-grant after
+every update. Signing every release with one stable self-signed certificate
+fixes that: TCC matches the certificate, not the per-build hash, so a grant
+survives updates. (Gatekeeper still warns on first launch; that needs real Apple
+Developer ID signing and notarization, which this project does not do.)
+
+Set it up once, then every release signs automatically:
+
+1. Create a self-signed code-signing certificate and export it as a password
+   protected `.p12`. On any Mac:
+
+   ```
+   cat > cert.conf <<'EOF'
+   [req]
+   distinguished_name = dn
+   x509_extensions = v3
+   prompt = no
+   [dn]
+   CN = OpenDesk Release
+   [v3]
+   keyUsage = critical, digitalSignature
+   extendedKeyUsage = critical, codeSigning
+   basicConstraints = critical, CA:false
+   EOF
+   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout key.pem -out cert.pem -config cert.conf
+   openssl pkcs12 -export -inkey key.pem -in cert.pem -name "OpenDesk Release" -out opendesk.p12 -passout pass:CHOOSE_A_PASSWORD
+   base64 -i opendesk.p12 | pbcopy   # the base64 is now on your clipboard
+   ```
+
+2. Add three repository secrets (Settings → Secrets and variables → Actions):
+   - `MACOS_SIGN_CERT` — the base64 from step 1.
+   - `MACOS_SIGN_CERT_PASSWORD` — the `.p12` password you chose.
+   - `MACOS_SIGN_IDENTITY` — `OpenDesk Release` (must match the certificate CN).
+
+3. Keep `opendesk.p12` and its password safe forever. Reusing the same
+   certificate on every release is what keeps users' grants; a new certificate
+   resets them once for everyone.
+
+The release workflow imports the certificate into a throwaway keychain and signs
+only when `MACOS_SIGN_CERT` is present, so leaving the secrets unset keeps the
+current ad-hoc behavior.
