@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "app": "tauri build --debug && open src-tauri/target/debug/bundle/macos/OpenDesk.app",
     "test": "vitest run"
   },
   "dependencies": {

@@ -4,6 +4,32 @@ Automated tests cover the protocol, relay, and host/viewer sessions end to end
 (`cargo test --workspace`). Screen capture, input injection, and audio need a
 real desktop session, so test them by hand before a release.
 
+## Keeping macOS permissions across rebuilds
+
+macOS ties Screen Recording and Accessibility grants to the app's code
+signature. `npm run tauri dev` and the default ad-hoc signing
+(`signingIdentity: "-"`) change identity on every rebuild, so the permissions
+reset and the Permissions screen shows them as required again. To make the
+grants persist, sign local builds with a stable self-signed certificate:
+
+1. Create the certificate once, in Keychain Access: Keychain Access menu →
+   Certificate Assistant → Create a Certificate. Name it `OpenDesk Dev`,
+   Identity Type "Self Signed Root", Certificate Type "Code Signing". Create it.
+2. Build and run a signed debug app (not `tauri dev`), picking up the cert:
+
+   ```
+   cd viewer
+   APPLE_SIGNING_IDENTITY="OpenDesk Dev" npm run app
+   ```
+
+   This builds `src-tauri/target/debug/bundle/macos/OpenDesk.app`, signs it with
+   the cert, and opens it. Grant Screen Recording and Accessibility once; later
+   rebuilds signed with the same cert keep them.
+
+The committed `signingIdentity` stays `-` so CI and releases are unaffected; the
+env var only changes your local build. This is for persistent permissions, not
+distribution (that still needs real signing and notarization).
+
 ## One machine (two instances)
 
 Debug builds read `OPENDESK_DATA_DIR`, so a second instance gets its own
