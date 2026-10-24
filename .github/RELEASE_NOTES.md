@@ -2,6 +2,14 @@ Beta build for testing. Expect rough edges, and please report what breaks.
 
 ## What's new
 
+- **File transfer in its own window:** the file browser now opens as a separate
+  pop-out window, with this computer and the remote side by side.
+- **Steadier connections:** a dropped session no longer freezes on the last
+  frame; the viewer shows a waiting state until the host accepts, reconnects
+  through a longer outage (a VPN switch or relay blip), and the viewer picks the
+  fastest relay when more than one is configured.
+- **Check for updates on demand:** a button on the home screen.
+- **Tidier toolbar:** less-used controls moved into a **More** menu.
 - **Reach a service on the remote (new):** port forwarding sends a local port
   to the other computer's own `localhost` (for example its Ollama on 11434),
   so you can use `localhost:11434` here. Turn on **Port forwarding** in the
