@@ -139,9 +139,10 @@ To run two instances on one machine, see [`docs/TESTING.md`](docs/TESTING.md).
 - [x] Browser viewer
 - [x] Virtual displays on macOS and Windows
 - [x] In-session text chat and view-only sessions
+- [x] Privacy mode and TCP tunneling (port forwarding over the data channel)
 - [ ] Windows sign-in screen, UAC prompts, lock screen and Ctrl+Alt+Del (shipped experimental; needs hardware/VM validation)
 - [ ] Hardware H.264 on Linux (VAAPI)
-- [ ] Wake-on-LAN, privacy mode, TCP tunneling
+- [ ] Wake-on-LAN
 
 ### Longer term
 
