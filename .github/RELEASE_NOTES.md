@@ -2,24 +2,27 @@ Beta build for testing. Expect rough edges, and please report what breaks.
 
 ## What's new
 
-- **Remote file manager (new):** the Files panel now has a two-pane browser,
-  your computer on the left and the other one on the right. Open folders on
-  both, and download a remote file with the arrow next to it (it saves to your
-  Downloads). "Send file…" still sends the other way.
-- **Address book shows who's online:** saved devices now have a green dot when
-  they're reachable, and online ones sort to the top.
-- **Restart the remote and reconnect:** when the other computer has unattended
-  access on, a **Restart** button reboots it and reconnects automatically once
-  it's back. Windows only for now.
-- **Privacy mode (Windows, new):** blank the other computer's screen and block
-  its local keyboard and mouse while you work; you still see and control it
-  normally. It always restores when the session ends, and someone at that
-  computer can take back control with Ctrl+Alt+Del.
-- These are new; please report anything rough, especially on Windows.
+- **Reach a service on the remote (new):** port forwarding sends a local port
+  to the other computer's own `localhost` (for example its Ollama on 11434),
+  so you can use `localhost:11434` here. Turn on **Port forwarding** in the
+  host's permissions first, then use the **Forward** button in the toolbar.
+- **Sharper video (new):** HEVC (H.265) is used when both computers support it,
+  for a clearer picture at the same bandwidth, and falls back to H.264 on its
+  own. A new **Quality** control in the toolbar caps the bitrate for slow links.
+- **The pointer matches the remote:** it now shows the other computer's actual
+  cursor (text beam, resize, hand) right away instead of waiting on the video.
+- **Smoother to drive:** fullscreen fits your screen with no bars, the toolbar
+  hides itself (reach the top edge to bring it back), and right-click and the
+  occasional stuck key are fixed.
+- **macOS menu bar** with the usual app, Edit, View, Window, and Help menus.
+- **Security:** view-only now also blocks privacy mode and restart; the file
+  prompt shows where a file will be saved; the relay is hardened against abuse;
+  and dependencies were updated for new advisories.
 
 If you installed an earlier beta, this one arrives as an "Update available"
-banner on the home screen. On macOS you may need to grant Screen Recording and
-Accessibility again after updating.
+banner on the home screen. After updating, macOS asks for Screen Recording and
+Accessibility once more. From this build on, signed releases keep those grants
+across future updates.
 
 ## Install
 
@@ -54,8 +57,12 @@ The full checklist is in
 
 These features are new and haven't run on real hardware yet:
 
-- **Windows:** hardware video encoding (NVIDIA / Intel / AMD). Check the log
-  for `video encoder:` to see which encoder was picked.
+- **HEVC (macOS and Windows):** the H.265 path has been built but not yet
+  decoded end to end on real hardware. If video looks wrong, it falls back to
+  H.264; please report it. The browser viewer uses HEVC only where it can.
+- **Port forwarding:** new; test reaching a local service on the remote.
+- **Windows:** hardware video encoding (NVIDIA / Intel / AMD) and the remote's
+  cursor shape. Check the log for `video encoder:` to see which encoder ran.
 - **Linux:** hearing the host's system sound (PulseAudio / PipeWire).
 - **macOS:** system sound needs macOS 14.6+; older versions send no audio.
 
