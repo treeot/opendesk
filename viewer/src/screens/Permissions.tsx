@@ -27,7 +27,10 @@ export default function Permissions({ onContinue }: PermissionsProps) {
 
   const statusCard = (title: string, granted: boolean, which: "screen" | "accessibility") => (
     <section className="permission-card" key={which}>
-      <div><h2>{title}</h2><p className={granted ? "permission-state granted" : "permission-state required"}><span className="permission-dot" aria-hidden="true" />{granted ? "Granted" : "Required"}</p></div>
+      <div className="permission-card__info">
+        <h2>{title}</h2>
+        <p className={granted ? "permission-state granted" : "permission-state required"}><span className="permission-dot" aria-hidden="true" />{granted ? "Granted" : "Required"}</p>
+      </div>
       {!granted && <button className="quiet-button" type="button" onClick={() => void api.openPermissionSettings(which).catch((error: unknown) => notify(friendlyError(error)))}>Open Settings</button>}
     </section>
   );
@@ -36,7 +39,7 @@ export default function Permissions({ onContinue }: PermissionsProps) {
     <main className="permissions-screen">
       <div className="permissions-content">
         <button className="quiet-button permissions-back" type="button" onClick={onContinue}><span aria-hidden="true">←</span> Back</button>
-        <span className="eyebrow">SETUP</span>
+        <span className="eyebrow permissions-kicker">SETUP</span>
         <h1>Permissions</h1>
         <p className="permissions-lead">Other devices can only see and control this computer once these are granted. You can still control other devices without them.</p>
         <div className="permission-cards">{statusCard("Screen Recording", screenGranted, "screen")}{statusCard("Accessibility", accessibilityGranted, "accessibility")}</div>
