@@ -47,10 +47,11 @@ describe("monitor picker", () => {
   it("offers Remove only while a virtual display is shown", () => {
     const onRemoveDisplay = vi.fn();
     const { rerender } = render(<Toolbar remoteId="1" onDisconnect={vi.fn()} monitors={monitors} selectedMonitor={1} onRemoveDisplay={onRemoveDisplay} />);
-    expect(screen.queryByRole("button", { name: "Remove display" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.queryByRole("menuitem", { name: "Remove this screen" })).toBeNull();
     expect(screen.getByRole("option", { name: /Virtual/ })).toBeTruthy();
     rerender(<Toolbar remoteId="1" onDisconnect={vi.fn()} monitors={monitors} selectedMonitor={5} onRemoveDisplay={onRemoveDisplay} />);
-    fireEvent.click(screen.getByRole("button", { name: "Remove display" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove this screen" }));
     expect(onRemoveDisplay).toHaveBeenCalledWith(5);
   });
 
@@ -64,9 +65,9 @@ describe("monitor picker", () => {
 describe("Toolbar", () => {
   afterEach(cleanup);
 
-  it("shows a visible text label on each viewer control", () => {
+  it("shows a visible text label on each primary viewer control", () => {
     render(<Toolbar remoteId="123456789" onDisconnect={vi.fn()} />);
-    for (const label of ["Fullscreen", "Clipboard", "Sound", "Files", "Record"]) {
+    for (const label of ["Fullscreen", "Sound", "Files", "Chat", "More"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
   });
@@ -87,24 +88,24 @@ describe("Toolbar", () => {
   it("calls the recording handler for start and stop", () => {
     const onRecordingToggle = vi.fn();
     const { rerender } = render(<Toolbar remoteId="123" onDisconnect={vi.fn()} onRecordingToggle={onRecordingToggle} />);
-    fireEvent.click(screen.getByRole("button", { name: "Record" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Record" }));
     rerender(<Toolbar remoteId="123" onDisconnect={vi.fn()} recordingActive onRecordingToggle={onRecordingToggle} />);
-    fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stop recording" }));
     expect(onRecordingToggle).toHaveBeenCalledTimes(2);
   });
 
-  it("exposes toggle state through aria-pressed and titles", () => {
+  it("exposes toggle state: audio in the bar, clipboard in the overflow menu", () => {
     const { rerender } = render(<Toolbar remoteId="123" onDisconnect={vi.fn()} clipboardSync audioMuted={false} />);
-    const clipboard = screen.getByRole("button", { name: "Sync clipboard" });
     const audio = screen.getByRole("button", { name: "Mute audio" });
-    expect(clipboard.getAttribute("aria-pressed")).toBe("true");
-    expect(clipboard.title).toMatch(/is on/);
     expect(audio.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: /Clipboard sync/ }).getAttribute("aria-pressed")).toBe("true");
     rerender(<Toolbar remoteId="123" onDisconnect={vi.fn()} clipboardSync={false} audioMuted />);
-    expect(clipboard.getAttribute("aria-pressed")).toBe("false");
-    expect(clipboard.title).toMatch(/is off/);
     expect(audio.getAttribute("aria-pressed")).toBe("true");
     expect(audio.title).toMatch(/muted/);
+    expect(screen.getByRole("menuitem", { name: /Clipboard sync/ }).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("hides controls that do nothing yet", () => {

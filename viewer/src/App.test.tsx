@@ -34,6 +34,10 @@ const { listeners, mocks } = vi.hoisted(() => {
 });
 vi.mock("./lib/api", () => mocks);
 vi.mock("./lib/decode", () => ({ makeDecoder: () => ({ push: vi.fn(), close: vi.fn() }), supportsHevcDecode: () => Promise.resolve(false) }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  WebviewWindow: Object.assign(function () { return { once: (_n: string, cb: () => void) => { cb(); return Promise.resolve(() => {}); }, show: () => Promise.resolve(), hide: () => Promise.resolve(), setFocus: () => Promise.resolve(), isVisible: () => Promise.resolve(false), close: () => Promise.resolve() }; }, { getByLabel: () => Promise.resolve(null) }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}), emit: () => Promise.resolve() }));
 
 import App from "./App";
 

@@ -41,13 +41,18 @@ export interface FileTransferProps {
   open: boolean;
   /** Called with true when an incoming offer or a transfer needs attention. */
   onOpenChange: (open: boolean) => void;
+  /** "panel" overlays the session; "window" fills its own pop-out window. */
+  variant?: "panel" | "window";
 }
 
 /**
  * Stays mounted for the whole session so offers and progress are never
- * missed; only the panel is hidden while closed.
+ * missed; only the panel is hidden while closed. In "window" variant it fills
+ * its own pop-out window and is always visible; the window chrome hides it.
  */
-export default function FileTransfer({ open, onOpenChange }: FileTransferProps) {
+export default function FileTransfer({ open, onOpenChange, variant = "panel" }: FileTransferProps) {
+  const isWindow = variant === "window";
+  const visible = isWindow || open;
   const [message, setMessage] = useState("");
   const [offers, setOffers] = useState<PendingOffer[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -136,14 +141,14 @@ export default function FileTransfer({ open, onOpenChange }: FileTransferProps) 
   };
 
   return <>
-    {dragging && !open && <div className="file-drop-hint" aria-hidden="true">Drop to send</div>}
-    <section className={`file-transfer${dragging ? " file-transfer--dragging" : ""}`} aria-label="File transfer" hidden={!open}>
+    {dragging && !visible && <div className="file-drop-hint" aria-hidden="true">Drop to send</div>}
+    <section className={`file-transfer${isWindow ? " file-transfer--window" : ""}${dragging ? " file-transfer--dragging" : ""}`} aria-label="File transfer" hidden={!visible}>
       <div className="file-transfer__send">
-        <div className="file-transfer__header"><span className="eyebrow">FILE TRANSFER</span><button className="icon-button file-transfer__close" type="button" onClick={() => onOpenChange(false)} aria-label="Close file transfer">×</button></div>
+        <div className="file-transfer__header"><span className="eyebrow">FILE TRANSFER</span>{!isWindow && <button className="icon-button file-transfer__close" type="button" onClick={() => onOpenChange(false)} aria-label="Close file transfer">×</button>}</div>
         <div className="file-transfer__control"><button className="primary-button" type="button" onClick={() => void choose()}>Send file…</button><small>or drop files anywhere on this window</small></div>
         {message && <p className="message" role="alert">{message}</p>}
       </div>
-      {open && <FileBrowser />}
+      {visible && <FileBrowser />}
       {offers.map((offer) => <div className="file-transfer__offer" role="dialog" aria-label={`Incoming file ${offer.name}`} key={offer.id}>
         <span className="eyebrow">INCOMING FILE</span><strong>{offer.name}</strong><span>{formatFileSize(offer.size)} · from {offer.from}</span>
         <div className="incoming-actions"><button className="ghost-button" type="button" disabled={offer.responding} onClick={() => void answer(offer, false)}>Reject</button><button className="primary-button" type="button" disabled={offer.responding} onClick={() => void answer(offer, true)}>Accept</button></div>

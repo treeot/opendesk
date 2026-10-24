@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { makeDecoder, supportsHevcDecode } from "../lib/decode";
 import { attachInput } from "../lib/input";
 import Toolbar, { monitorName, virtualDisplaySize } from "../components/Toolbar";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import FileTransfer from "../components/FileTransfer";
+import { listen } from "@tauri-apps/api/event";
 import PortForward from "../components/PortForward";
 import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import HostControlPanel from "../components/HostControlPanel";
@@ -54,11 +54,30 @@ async function openInNewWindow(id: number, name: string): Promise<void> {
   });
 }
 
+const FILES_LABEL = "file-transfer";
+
+/** Create the file-transfer window hidden so it never misses an offer. */
+async function ensureFilesWindow(): Promise<WebviewWindow> {
+  const existing = await WebviewWindow.getByLabel(FILES_LABEL);
+  if (existing) return existing;
+  const window = new WebviewWindow(FILES_LABEL, {
+    url: "index.html?files=1", title: "File transfer · OpenDesk", width: 960, height: 640, visible: false,
+  });
+  await new Promise<void>((resolve, reject) => {
+    void window.once("tauri://created", () => resolve());
+    void window.once("tauri://error", (event) => reject(new Error(String(event.payload))));
+  });
+  return window;
+}
+
 export default function Session({ remoteId, role, status = "in_session", onDisconnect }: SessionProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const notify = useNotify();
   const [filesOpen, setFilesOpen] = useState(false);
-  const onFilesOpenChange = useCallback((open: boolean) => setFilesOpen(open), []);
+  // The data channel opens before the host approves, so the viewer lands on a
+  // blank canvas. Track the first real frame to show a waiting state until then.
+  const [hasVideo, setHasVideo] = useState(false);
+  const hasVideoRef = useRef(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [forwardOpen, setForwardOpen] = useState(false);
   const [messages, setMessages] = useState<ChatEntry[]>([]);
@@ -355,6 +374,34 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     void openInNewWindow(id, name).catch((error: unknown) => notify(friendlyError(error)));
   };
 
+  // The file-transfer pop-out lives for the whole viewer session: created
+  // hidden so incoming offers reveal it, shown on demand, closed on teardown.
+  useEffect(() => {
+    if (role !== "viewer") return;
+    let alive = true;
+    void ensureFilesWindow().catch((error: unknown) => notify(friendlyError(error)));
+    const visibility = listen<boolean>("file-window-visibility", (event) => { if (alive) setFilesOpen(event.payload); });
+    // A file dropped on the session view still sends, and reveals the window.
+    const drop = api.onFileDrop(({ type, paths }) => {
+      if (type !== "drop" || paths.length === 0) return;
+      void ensureFilesWindow().then((window) => { void window.show(); void window.setFocus(); }).catch(() => {});
+      for (const path of paths) void api.sendFile(path).catch((error: unknown) => notify(friendlyError(error)));
+    });
+    return () => {
+      alive = false;
+      void visibility.then((off) => off());
+      void drop.then((off) => off());
+      void WebviewWindow.getByLabel(FILES_LABEL).then((window) => window?.close());
+    };
+  }, [role, notify]);
+
+  const toggleFilesWindow = () => {
+    void ensureFilesWindow().then(async (window) => {
+      if (await window.isVisible()) { await window.hide(); setFilesOpen(false); }
+      else { await window.show(); await window.setFocus(); setFilesOpen(true); }
+    }).catch((error: unknown) => notify(friendlyError(error)));
+  };
+
   const toggleAudioMuted = (muted: boolean) => {
     setAudioMuted(muted);
     void api.setAudioMuted(muted).catch((error: unknown) => { setAudioMuted(!muted); notify(friendlyError(error)); });
@@ -461,7 +508,11 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     // Request failures (e.g. the control channel is still opening) are
     // harmless: the decoder asks again on the next dropped frame.
     const decoder = makeDecoder(canvas, { requestKeyframe: () => void api.requestKeyframe().catch(() => {}) });
-    const stopVideo = api.startVideo(decoder.push);
+    const push = (frame: ArrayBuffer) => {
+      if (!hasVideoRef.current) { hasVideoRef.current = true; setHasVideo(true); }
+      decoder.push(frame);
+    };
+    const stopVideo = api.startVideo(push);
     const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes));
 
     return () => {
@@ -501,6 +552,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   return (
     <main className={`session-screen session-screen--${role}`}>
       {role === "viewer" && restarting && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Remote is restarting. Reconnecting automatically…</div>}
+      {role === "viewer" && !hasVideo && !restarting && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
       {role === "viewer" && <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />}
       {role === "viewer" && !barVisible && (
         <button type="button" className="session-peek" aria-label="Show session controls" title="Show session controls" onMouseEnter={revealBar} onFocus={revealBar} onClick={revealBar}>
@@ -509,8 +561,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={() => setFilesOpen((open) => !open)} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
-      {role === "viewer" && <FileTransfer open={filesOpen} onOpenChange={onFilesOpenChange} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} />}
     </main>

@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, decode } = vi.hoisted(() => ({
+const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, decode, filesWindow, listenFn } = vi.hoisted(() => ({
   onVirtualDisplaySupport: vi.fn<(handler: (payload: { max: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayAdded: vi.fn<(handler: (payload: { id: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayRefused: vi.fn<(handler: (payload: { code: string }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
@@ -58,7 +58,14 @@ const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused,
   onCursorShape: vi.fn(() => Promise.resolve(vi.fn())),
   onCursorHidden: vi.fn(() => Promise.resolve(vi.fn())),
   decode: vi.fn(),
+  filesWindow: { show: vi.fn(() => Promise.resolve()), hide: vi.fn(() => Promise.resolve()), setFocus: vi.fn(() => Promise.resolve()), isVisible: vi.fn(() => Promise.resolve(false)), close: vi.fn(() => Promise.resolve()), once: vi.fn((_name: string, cb: () => void) => { cb(); return Promise.resolve(vi.fn()); }) },
+  listenFn: vi.fn(() => Promise.resolve(vi.fn())),
 }));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  WebviewWindow: Object.assign(function () { return filesWindow; }, { getByLabel: vi.fn(() => Promise.resolve(filesWindow)) }),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: listenFn, emit: vi.fn(() => Promise.resolve()) }));
 
 vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs }));
 vi.mock("../lib/decode", async (importOriginal) => ({
@@ -121,13 +128,13 @@ describe("Session viewer transport", () => {
     expect((sendInput.mock.calls[0][0] as Uint8Array).length).toBe(15);
   });
 
-  it("keeps the file panel hidden until Files is pressed", () => {
+  it("opens the file-transfer window when Files is pressed", async () => {
     startVideo.mockImplementation(() => vi.fn());
+    filesWindow.show.mockClear();
+    filesWindow.isVisible.mockResolvedValue(false);
     const view = render(<Session remoteId="123" role="viewer" onDisconnect={vi.fn()} />);
-    const panel = view.getByLabelText("File transfer");
-    expect(panel.hidden).toBe(true);
     fireEvent.click(view.getByRole("button", { name: "Files" }));
-    expect(panel.hidden).toBe(false);
+    await waitFor(() => expect(filesWindow.show).toHaveBeenCalled());
   });
 
   it("reports where a finished recording was saved", async () => {
@@ -143,8 +150,10 @@ describe("Session viewer transport", () => {
     HTMLCanvasElement.prototype.captureStream = () => ({ getTracks: () => [] }) as unknown as MediaStream;
     const notify = vi.fn();
     const view = render(<NotifyContext.Provider value={notify}><Session remoteId="123" role="viewer" onDisconnect={vi.fn()} /></NotifyContext.Provider>);
-    fireEvent.click(view.getByRole("button", { name: "Record" }));
-    fireEvent.click(await view.findByRole("button", { name: "Stop recording" }));
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: "Record" }));
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(await view.findByRole("menuitem", { name: "Stop recording" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith("Recording saved to /Users/me/Downloads/session.webm", "info"));
     vi.unstubAllGlobals();
   });
@@ -156,7 +165,8 @@ describe("Session viewer transport", () => {
     startRecording.mockRejectedValueOnce("recording Downloads path must be a regular directory");
     const notify = vi.fn();
     const view = render(<NotifyContext.Provider value={notify}><Session remoteId="123" role="viewer" onDisconnect={vi.fn()} /></NotifyContext.Provider>);
-    fireEvent.click(view.getByRole("button", { name: "Record" }));
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: "Record" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith("Could not start recording: Recording Downloads path must be a regular directory."));
     vi.unstubAllGlobals();
   });
@@ -198,7 +208,8 @@ describe("Session viewer transport", () => {
     expect(select().value).toBe("7");
     // At the host's limit.
     expect(view.queryByRole("option", { name: "Add display…" })).toBeNull();
-    fireEvent.click(view.getByRole("button", { name: "Remove display" }));
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: "Remove this screen" }));
     expect(removeVirtualDisplay).toHaveBeenLastCalledWith(7);
     act(() => last(onVirtualDisplayRefused)({ code: "failed" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith("The other computer couldn't add a virtual display."));

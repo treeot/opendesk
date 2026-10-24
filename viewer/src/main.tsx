@@ -12,17 +12,22 @@ import "@fontsource/space-grotesk/600.css";
 import "@fontsource/space-grotesk/700.css";
 import App from "./App";
 import MonitorWindow from "./screens/MonitorWindow";
+import FileTransferWindow from "./screens/FileTransferWindow";
 
-// A monitor window opens with ?monitor=<host monitor id>&label=<name>; the main
-// app runs in every other window.
+// Secondary windows open with a query flag; the main app runs in every other
+// window. ?monitor=<id>&label=<name> for a monitor, ?files=1 for file transfer.
 const params = new URLSearchParams(window.location.search);
 const monitorParam = params.get("monitor");
 const monitor = monitorParam === null ? null : Number(monitorParam);
 
+function Root() {
+  if (params.get("files") === "1") return <FileTransferWindow />;
+  if (monitor !== null && Number.isFinite(monitor)) return <MonitorWindow monitor={monitor} label={params.get("label") ?? `Monitor ${monitor}`} />;
+  return <App />;
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {monitor !== null && Number.isFinite(monitor)
-      ? <MonitorWindow monitor={monitor} label={params.get("label") ?? `Monitor ${monitor}`} />
-      : <App />}
+    <Root />
   </StrictMode>,
 );

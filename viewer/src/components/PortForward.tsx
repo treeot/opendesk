@@ -43,7 +43,7 @@ export default function PortForward({ open, onClose }: { open: boolean; onClose:
         <button className="quiet-button" type="button" onClick={onClose} aria-label="Close port forwarding">Close</button>
       </div>
       <p className="caption">
-        Reach a service running on the remote over this connection. Example: forward local 11434 to remote 11434, then use <span className="mono">localhost:11434</span> here for the remote's Ollama. The host must allow port forwarding.
+        Reach a service on the remote. Forward a local port to a remote one, then use <span className="mono">localhost:PORT</span>. The host must allow forwarding.
       </p>
       <div className="forward-panel__add">
         <input className="mono" inputMode="numeric" placeholder="local" aria-label="Local port" value={local} onChange={(e) => setLocal(e.target.value)} />

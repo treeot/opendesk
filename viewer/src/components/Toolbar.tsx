@@ -87,7 +87,19 @@ const icons = {
   eye: <Icon><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></Icon>,
   keyboard: <Icon><rect width="20" height="16" x="2" y="4" rx="2" /><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M18 12h.01M8 16h8" /></Icon>,
   forward: <Icon><path d="M4 17V9a2 2 0 0 1 2-2h12" /><path d="m15 4 3 3-3 3" /><path d="M20 7v8a2 2 0 0 1-2 2H6" /><path d="m9 20-3-3 3-3" /></Icon>,
+  more: <Icon><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></Icon>,
 };
+
+/** One row inside the overflow menu: icon, label, optional on/off state. */
+function MoreItem({ label, icon, onClick, on, danger }: { label: string; icon: ReactNode; onClick: () => void; on?: boolean; danger?: boolean }) {
+  return (
+    <button className="session-toolbar__more-item" type="button" role="menuitem" data-tone={danger ? "danger" : undefined} aria-pressed={on} onClick={onClick}>
+      {icon}
+      <span className="session-toolbar__more-label">{label}</span>
+      {on !== undefined && <span className="session-toolbar__more-state">{on ? "On" : "Off"}</span>}
+    </button>
+  );
+}
 
 /** Readable monitor name: Windows reports device paths like `\\.\DISPLAY2`. */
 export function monitorName(name: string, index: number): string {
@@ -157,6 +169,7 @@ const connectionLabels: Record<Status, string> = { in_session: "Connected", conn
 
 export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
     const startedAt = Date.now();
@@ -171,7 +184,6 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
 
   const viewer = role === "viewer";
   const selectedVirtual = monitors.find((monitor) => monitor.id === (selectedMonitor ?? monitors[0]?.id) && monitor.is_virtual);
-  const clipboard = <IconButton label="Sync clipboard" pressed={clipboardSync} title={clipboardSync ? "Clipboard sync is on. Click to turn it off." : "Clipboard sync is off. Click to turn it on."} onClick={() => onClipboardSyncChange(!clipboardSync)}text="Clipboard" icon={icons.clipboard} />;
 
   return (
     <>
@@ -199,20 +211,25 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
               {QUALITY_TIERS.map((tier) => <option key={tier.bps} value={tier.bps}>{tier.label}</option>)}
             </select>
           </label>}
-          {viewer && canOpenMonitorWindow && <IconButton label="Open monitor in a window" text="New window" title="Open the selected monitor in its own window" icon={icons.newWindow} onClick={() => onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0)} />}
-          {viewer && selectedVirtual && <IconButton label="Remove display" text="Remove" title="Remove this virtual display from the other computer" icon={icons.remove} onClick={() => onRemoveDisplay(selectedVirtual.id)} />}
-          {clipboard}
           {viewer && <>
             <IconButton label="Mute audio" pressed={audioMuted} title={audioMuted ? "Audio is muted. Click to unmute." : "Audio is on. Click to mute."} onClick={() => onAudioMutedChange(!audioMuted)} text={audioMuted ? "Muted" : "Sound"} icon={audioMuted ? icons.muted : icons.sound} />
             <IconButton label="Files" pressed={filesOpen} expanded={filesOpen} title={filesOpen ? "Hide file transfer" : "Send or receive files"} onClick={onFilesToggle} text="Files" icon={icons.files} />
             <IconButton label="Chat" pressed={chatOpen} expanded={chatOpen} badge={chatUnread} title={chatOpen ? "Hide chat" : "Open chat"} onClick={onChatToggle} text="Chat" icon={icons.chat} />
-            <IconButton label="Port forwarding" pressed={forwardOpen} expanded={forwardOpen} title={forwardOpen ? "Hide port forwarding" : "Forward a port (reach a service on the remote)"} onClick={onForwardToggle} text="Forward" icon={icons.forward} />
-            <IconButton label="View only" pressed={viewOnly} title={viewOnly ? "View only is on. Click to send input again." : "View only is off. Click to stop sending input."} onClick={() => onViewOnlyChange(!viewOnly)} text="View only" icon={icons.eye} />
-            {canSecureAttention && <IconButton label="Send Ctrl+Alt+Del" text="Ctrl+Alt+Del" title="Send Ctrl+Alt+Del to the other computer" icon={icons.keyboard} onClick={onSecureAttention} />}
-            {canRestart && <IconButton label="Restart remote" text="Restart" title="Restart the other computer and reconnect when it comes back" icon={icons.restart} onClick={onRestart} />}
-            {canPrivacy && <IconButton label="Privacy mode" pressed={privacyOn} title={privacyOn ? "Privacy mode is on: the other screen is blank and its local input is blocked. Click to turn off." : "Blank the other screen and block its local keyboard and mouse"} icon={icons.privacy} text="Privacy" onClick={() => onPrivacyChange(!privacyOn)} />}
             {recordingActive && <span className="session-toolbar__recording-status" aria-label="Recording elapsed"><span className="session-toolbar__recording-dot" aria-hidden="true" />{formatDuration(recordingElapsed)}</span>}
-            <IconButton label={recordingActive ? "Stop recording" : "Record"} text={recordingActive ? "Stop" : "Record"} icon={recordingActive ? icons.stop : icons.record} tone="danger" onClick={onRecordingToggle} />
+            <div className="session-toolbar__more-wrap">
+              <IconButton label="More" text="More" icon={icons.more} pressed={moreOpen} expanded={moreOpen} title="More controls" onClick={() => setMoreOpen((open) => !open)} />
+              {moreOpen && <div className="session-toolbar__more" role="menu">
+                <MoreItem icon={icons.clipboard} label="Clipboard sync" on={clipboardSync} onClick={() => { onClipboardSyncChange(!clipboardSync); setMoreOpen(false); }} />
+                <MoreItem icon={icons.eye} label="View only" on={viewOnly} onClick={() => { onViewOnlyChange(!viewOnly); setMoreOpen(false); }} />
+                <MoreItem icon={icons.forward} label="Port forwarding" on={forwardOpen} onClick={() => { onForwardToggle(); setMoreOpen(false); }} />
+                {canOpenMonitorWindow && <MoreItem icon={icons.newWindow} label="Open monitor in a window" onClick={() => { onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0); setMoreOpen(false); }} />}
+                {selectedVirtual && <MoreItem icon={icons.remove} label="Remove this screen" onClick={() => { onRemoveDisplay(selectedVirtual.id); setMoreOpen(false); }} />}
+                {canSecureAttention && <MoreItem icon={icons.keyboard} label="Send Ctrl+Alt+Del" onClick={() => { onSecureAttention(); setMoreOpen(false); }} />}
+                {canRestart && <MoreItem icon={icons.restart} label="Restart remote" onClick={() => { onRestart(); setMoreOpen(false); }} />}
+                {canPrivacy && <MoreItem icon={icons.privacy} label="Privacy mode" on={privacyOn} onClick={() => { onPrivacyChange(!privacyOn); setMoreOpen(false); }} />}
+                <MoreItem icon={recordingActive ? icons.stop : icons.record} danger label={recordingActive ? "Stop recording" : "Record"} onClick={() => { onRecordingToggle(); setMoreOpen(false); }} />
+              </div>}
+            </div>
           </>}
         </div>
         <div className="session-toolbar__actions">
