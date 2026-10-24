@@ -387,6 +387,8 @@ mod tests {
         assert_eq!(classify_viewer_error("connection closed during KEX"), DisconnectReason::Transient);
         assert_eq!(classify_viewer_error("relay connection timed out"), DisconnectReason::Transient);
         assert_eq!(classify_viewer_error("relay closed while connecting"), DisconnectReason::Transient);
+        // A half-open pairing socket that is timed out must retry, not strand the viewer.
+        assert_eq!(classify_viewer_error("relay did not answer the connection request"), DisconnectReason::Transient);
         assert_eq!(classify_viewer_error("invalid SPAKE2 message"), DisconnectReason::AuthFailure);
         assert_eq!(classify_viewer_error("key confirmation failed"), DisconnectReason::AuthFailure);
         assert_eq!(classify_viewer_error("session rejected"), DisconnectReason::AuthFailure);

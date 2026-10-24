@@ -103,6 +103,13 @@ impl AuxVideoSinks {
 /// How often the session toolbar's connection badge is refreshed.
 const LINK_STATS_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How long to wait for the relay's pairing reply before treating the socket as
+/// dead. The relay answers a connect request at once (pairing or an error), so
+/// silence means a half-open socket (e.g. a VPN re-keying). Without this bound
+/// a reconnect attempt blocks here forever, past the give-up window, and the
+/// viewer freezes on the last frame instead of retrying or ending the session.
+const PAIRING_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Sends the session's path and RTT to the UI until aborted.
 fn spawn_link_stats(app: AppHandle, link: host_core::transport::LinkStatus) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
@@ -281,8 +288,10 @@ pub(crate) fn connect(
                 .await
                 .map_err(|error| error.to_string())?;
 
-            let Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(message))) =
-                ws.next().await
+            let paired = tokio::time::timeout(PAIRING_REPLY_TIMEOUT, ws.next())
+                .await
+                .map_err(|_| "relay did not answer the connection request".to_string())?;
+            let Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(message))) = paired
             else {
                 return Err::<(), String>("relay closed while connecting".into());
             };
