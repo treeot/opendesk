@@ -47,6 +47,7 @@ path is used whenever the network allows it.
 | 🪟 **Multi-monitor** | Pick a monitor, or add a virtual display on macOS and Windows |
 | 🌙 **Unattended access** | Stored password, optional 2FA code, start at sign-in with a tray icon |
 | 🔗 **Quick connect** | Save a device's password for one-click reconnect, or share an invite link |
+| ⏾ **Wake-on-LAN** | Save a device's MAC address to wake it over the local network before connecting |
 | 🌐 **Browser viewer** | Connect from any modern browser at [/connect](https://opendesk.treeot.dev/connect/) |
 | 🔄 **Auto-update** | Signed updates checked from GitHub Releases |
 
@@ -127,6 +128,11 @@ default relay. Docs pages are Markdown files in `site/src/content/docs/docs/`.
 
 </details>
 
+On Linux, hardware H.264 through VAAPI is an experimental, opt-in build. It
+needs the ffmpeg development libraries (`libavcodec`, `libavutil`) and a working
+VAAPI driver, and is enabled by building host-core with `--features vaapi`. If
+the encoder cannot start, hosting falls back to the openh264 software encoder.
+
 To run two instances on one machine, see [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Roadmap
@@ -140,9 +146,9 @@ To run two instances on one machine, see [`docs/TESTING.md`](docs/TESTING.md).
 - [x] Virtual displays on macOS and Windows
 - [x] In-session text chat and view-only sessions
 - [x] Privacy mode and TCP tunneling (port forwarding over the data channel)
+- [x] Wake-on-LAN for saved devices on the local network
 - [ ] Windows sign-in screen, UAC prompts, lock screen and Ctrl+Alt+Del (shipped experimental; needs hardware/VM validation)
-- [ ] Hardware H.264 on Linux (VAAPI)
-- [ ] Wake-on-LAN
+- [ ] Hardware H.264 on Linux (VAAPI) (shipped experimental behind `--features vaapi`; needs validation on Linux GPU hardware)
 
 ### Longer term
 
