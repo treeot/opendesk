@@ -2,30 +2,23 @@ Beta build for testing. Expect rough edges, and please report what breaks.
 
 ## What's new
 
-- **File transfer in its own window:** the file browser now opens as a separate
-  pop-out window, with this computer and the remote side by side.
-- **Steadier connections:** a dropped session no longer freezes on the last
-  frame; the viewer shows a waiting state until the host accepts, reconnects
-  through a longer outage (a VPN switch or relay blip), and the viewer picks the
-  fastest relay when more than one is configured.
-- **Check for updates on demand:** a button on the home screen.
-- **Tidier toolbar:** less-used controls moved into a **More** menu.
-- **Reach a service on the remote (new):** port forwarding sends a local port
-  to the other computer's own `localhost` (for example its Ollama on 11434),
-  so you can use `localhost:11434` here. Turn on **Port forwarding** in the
-  host's permissions first, then use the **Forward** button in the toolbar.
-- **Sharper video (new):** HEVC (H.265) is used when both computers support it,
-  for a clearer picture at the same bandwidth, and falls back to H.264 on its
-  own. A new **Quality** control in the toolbar caps the bitrate for slow links.
-- **The pointer matches the remote:** it now shows the other computer's actual
-  cursor (text beam, resize, hand) right away instead of waiting on the video.
-- **Smoother to drive:** fullscreen fits your screen with no bars, the toolbar
-  hides itself (reach the top edge to bring it back), and right-click and the
-  occasional stuck key are fixed.
-- **macOS menu bar** with the usual app, Edit, View, Window, and Help menus.
-- **Security:** view-only now also blocks privacy mode and restart; the file
-  prompt shows where a file will be saved; the relay is hardened against abuse;
-  and dependencies were updated for new advisories.
+- **Reorganized home and settings:** the home screen is now split into a
+  connect pane and an address book, with settings on their own screen behind a
+  gear icon. The address book shows your saved devices as tiles or a list
+  (toggle between them) with online status.
+- **Save a device's password:** tick **Remember password for this device** when
+  connecting to reconnect in one click next time. Saved passwords live in the
+  OS keyring, never in plain text.
+- **Share an invite link:** **Copy invite** puts a link on your clipboard that
+  fills in your ID for the other person; pasting one into the ID box connects
+  straight to it.
+- **Session recording:** record a session to a local WebM file, browse past
+  recordings, and cap how much disk space they use (settings → Recordings).
+- **Wake-on-LAN (new):** save a device's MAC address to wake it over the local
+  network before you connect, from the **Wake** button in the address book.
+- **Clearer permissions:** the hosting permissions setup was reworked, and the
+  home screen now warns up front when screen recording or accessibility is
+  missing so hosting does not silently fail.
 
 If you installed an earlier beta, this one arrives as an "Update available"
 banner on the home screen. After updating, macOS asks for Screen Recording and
@@ -68,7 +61,11 @@ These features are new and haven't run on real hardware yet:
 - **HEVC (macOS and Windows):** the H.265 path has been built but not yet
   decoded end to end on real hardware. If video looks wrong, it falls back to
   H.264; please report it. The browser viewer uses HEVC only where it can.
-- **Port forwarding:** new; test reaching a local service on the remote.
+- **Wake-on-LAN:** new; test waking a saved device on the same network.
+- **Hardware H.264 on Linux (VAAPI):** experimental and off by default. Build
+  host-core with `--features vaapi` (needs the ffmpeg development libraries and
+  a VAAPI driver); it falls back to software if the encoder cannot start.
+- **Port forwarding:** test reaching a local service on the remote.
 - **Windows:** hardware video encoding (NVIDIA / Intel / AMD) and the remote's
   cursor shape. Check the log for `video encoder:` to see which encoder ran.
 - **Linux:** hearing the host's system sound (PulseAudio / PipeWire).
