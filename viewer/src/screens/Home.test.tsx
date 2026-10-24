@@ -7,8 +7,9 @@ import { NotifyContext } from "../lib/notify";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn() };
+  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn() };
 });
+vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()) }));
 describe("Home", () => {
   afterEach(cleanup);
   beforeEach(() => {
@@ -17,6 +18,7 @@ describe("Home", () => {
     vi.mocked(api.getUnattendedStatus).mockResolvedValue({ enabled: false, has_password: false, twofa_enabled: false, ready: false, problem: null });
     vi.mocked(api.listContacts).mockResolvedValue([]);
     vi.mocked(api.listAllowed).mockResolvedValue([]);
+    vi.mocked(api.listRecordings).mockResolvedValue([]);
     vi.mocked(api.startHosting).mockResolvedValue(undefined); vi.mocked(api.connect).mockResolvedValue(undefined);
     vi.mocked(api.getWindowsServiceStatus).mockResolvedValue({ supported: false, installed: false, running: false });
     vi.mocked(api.getStartAtSignIn).mockResolvedValue(false); vi.mocked(api.setStartAtSignIn).mockResolvedValue(undefined);

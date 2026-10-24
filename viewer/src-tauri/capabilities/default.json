@@ -12,6 +12,8 @@
     "core:window:allow-close",
     "core:window:allow-is-visible",
     "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
     "dialog:allow-open",
     "updater:allow-check",
     "updater:allow-download",

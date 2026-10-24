@@ -29,10 +29,12 @@ const { listeners, mocks } = vi.hoisted(() => {
     setMaxBitrate: vi.fn(() => Promise.resolve()),
     setDecoderCodecs: vi.fn(() => Promise.resolve()),
     onCursorShape: on("cursor_shape"), onCursorHidden: on("cursor_hidden"),
+    listRecordings: () => Promise.resolve([]), deleteRecording: vi.fn(() => Promise.resolve()),
   };
   return { listeners, mocks };
 });
 vi.mock("./lib/api", () => mocks);
+vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()) }));
 vi.mock("./lib/decode", () => ({ makeDecoder: () => ({ push: vi.fn(), close: vi.fn() }), supportsHevcDecode: () => Promise.resolve(false) }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   WebviewWindow: Object.assign(function () { return { once: (_n: string, cb: () => void) => { cb(); return Promise.resolve(() => {}); }, show: () => Promise.resolve(), hide: () => Promise.resolve(), setFocus: () => Promise.resolve(), isVisible: () => Promise.resolve(false), close: () => Promise.resolve() }; }, { getByLabel: () => Promise.resolve(null) }),

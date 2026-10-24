@@ -984,6 +984,8 @@ pub fn run() {
             start_recording,
             append_recording,
             finish_recording,
+            list_recordings,
+            delete_recording,
             set_relays,
             list_relays,
             startup::close_keeps_running,

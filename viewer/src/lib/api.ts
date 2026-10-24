@@ -179,6 +179,11 @@ export const startRecording = (suggestedName: string) => invoke<number>("start_r
 export const appendRecording = (id: number, chunk: ArrayBuffer) => invoke<void>("append_recording", { id, chunk: toBase64(new Uint8Array(chunk)) });
 export const finishRecording = (id: number) => invoke<string>("finish_recording", { id });
 
+/** A finished session recording on disk, newest first. */
+export interface RecordingEntry { name: string; path: string; size: number; modified: number }
+export const listRecordings = () => invoke<RecordingEntry[]>("list_recordings");
+export const deleteRecording = (path: string) => invoke<void>("delete_recording", { path });
+
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));

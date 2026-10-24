@@ -164,3 +164,72 @@ pub(crate) fn finish_recording(recordings: tauri::State<'_, Recordings>, id: u32
     let sink = recordings.sinks().remove(&id).ok_or("unknown recording")?;
     Ok(sink.finish()?.to_string_lossy().into_owned())
 }
+
+/// The prefix every session recording's filename carries, so the list and the
+/// delete command only ever touch OpenDesk's own files in the Downloads folder.
+pub(crate) const RECORDING_PREFIX: &str = "opendesk-session-";
+
+/// One finished recording on disk, newest first in [`list_recordings`].
+#[derive(serde::Serialize)]
+pub(crate) struct RecordingEntry {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    /// Last-modified time in milliseconds since the Unix epoch.
+    pub modified: u64,
+}
+
+/// True for a regular `.webm` file written by OpenDesk (not a directory, not a
+/// symlink pointing elsewhere).
+fn is_recording(name: &str) -> bool {
+    name.starts_with(RECORDING_PREFIX) && name.ends_with(".webm")
+}
+
+#[tauri::command]
+pub(crate) fn list_recordings() -> Result<Vec<RecordingEntry>, String> {
+    let dir = recordings_dir()?;
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|error| error.to_string())? {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_recording(&name) { continue; }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() { continue; }
+        let modified = meta.modified().ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or(0);
+        entries.push(RecordingEntry { name, path: entry.path().to_string_lossy().into_owned(), size: meta.len(), modified });
+    }
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
+    Ok(entries)
+}
+
+#[tauri::command]
+pub(crate) fn delete_recording(path: String) -> Result<(), String> {
+    let dir = recordings_dir()?;
+    let target = PathBuf::from(&path);
+    // Only a real recording directly inside the recordings folder may be
+    // removed, so a crafted path can never delete anything else.
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !is_recording(&name) { return Err("not an OpenDesk recording".into()); }
+    let meta = fs::symlink_metadata(&target).map_err(|error| error.to_string())?;
+    if meta.file_type().is_symlink() || !meta.is_file() { return Err("not a recording file".into()); }
+    let canonical = fs::canonicalize(&target).map_err(|error| error.to_string())?;
+    if canonical.parent() != Some(dir.as_path()) { return Err("recording is outside the recordings folder".into()); }
+    fs::remove_file(&canonical).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod recording_list_tests {
+    use super::is_recording;
+
+    #[test]
+    fn only_opendesk_webm_files_are_recordings() {
+        assert!(is_recording("opendesk-session-2026-10-24.webm"));
+        assert!(!is_recording("opendesk-session-2026-10-24.mp4"));
+        assert!(!is_recording("holiday.webm"));
+        assert!(!is_recording("opendesk-session-"));
+        assert!(!is_recording("evil-opendesk-session-x.webm"));
+    }
+}
