@@ -4,6 +4,7 @@ pub mod control;
 pub use control::Control;
 pub mod crypto;
 pub use crypto::{Opener, Sealer};
+pub mod identity;
 pub mod kex;
 pub use kex::derive_keys;
 pub mod input;
