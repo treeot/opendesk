@@ -22,7 +22,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --locked -p protocol -p relay
       - run: cargo test --locked -p protocol -p relay
       - run: cargo clippy --locked -p protocol -p relay --all-targets -- -D warnings
@@ -36,7 +36,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --locked -p host-core
       # The end-to-end tests stand up real relay sockets and ICE. Running them
       # one at a time stops a loaded runner from starving pairing and the first
@@ -69,7 +69,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: viewer/src-tauri -> viewer/src-tauri/target
       - run: cargo check --locked --manifest-path viewer/src-tauri/Cargo.toml
@@ -102,7 +102,7 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Must match the wasm-bindgen version pinned in crates/web-core.
       - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
       - run: cargo clippy --locked -p web-core --target wasm32-unknown-unknown -- -D warnings
@@ -143,7 +143,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Linux audio/input deps
         if: runner.os == 'Linux'
         run: |
@@ -164,7 +164,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: viewer/src-tauri -> viewer/src-tauri/target
       - name: Linux Tauri + audio deps
