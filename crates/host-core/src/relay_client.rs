@@ -13,16 +13,40 @@ use tokio_tungstenite::{connect_async_with_config, tungstenite::Message, MaybeTl
 /// The WebSocket type returned by [`connect`].
 pub type RelayWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Selects relays in configured order and returns the first successful
-/// handshake. This is deliberately deterministic; ordering lets users keep a
-/// preferred primary while still failing over quickly to later regions.
+/// Races every configured relay at once and keeps whichever finishes its
+/// handshake first. The fastest handshake is the nearest, least-loaded relay,
+/// so a session on a far primary no longer pays its latency when a closer
+/// region is listed. Failed attempts drop out and the last error is returned
+/// only if every relay fails.
 pub async fn connect_best(urls: &[String]) -> Result<(String, RelayWebSocket), String> {
-    let mut last_error = "no relay URLs configured".to_owned();
-    for url in urls.iter().filter(|url| !url.trim().is_empty()) {
-        match timeout(Duration::from_secs(3), connect(url)).await {
-            Ok(Ok(ws)) => return Ok((url.clone(), ws)),
-            Ok(Err(error)) => last_error = error.to_string(),
-            Err(_) => last_error = format!("relay connection timed out: {url}"),
+    let attempts = urls.iter().filter(|url| !url.trim().is_empty()).map(|url| {
+        let url = url.clone();
+        async move {
+            match timeout(Duration::from_secs(3), connect(&url)).await {
+                Ok(Ok(ws)) => Ok((url.clone(), ws)),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err(format!("relay connection timed out: {url}")),
+            }
+        }
+    });
+    first_ok(attempts, "no relay URLs configured").await
+}
+
+/// Drives `attempts` concurrently and returns the first to resolve to `Ok`,
+/// cancelling the rest. If all fail, the last error is returned (or
+/// `empty_error` when there were none).
+async fn first_ok<T, Fut, I>(attempts: I, empty_error: &str) -> Result<T, String>
+where
+    I: IntoIterator<Item = Fut>,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    use futures_util::stream::{FuturesUnordered, StreamExt};
+    let mut racing: FuturesUnordered<Fut> = attempts.into_iter().collect();
+    let mut last_error = empty_error.to_owned();
+    while let Some(result) = racing.next().await {
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = error,
         }
     }
     Err(last_error)
@@ -348,6 +372,33 @@ mod tests {
         // Codes from newer relays stay a generic rejection.
         assert_eq!(super::refusal_message("relay rejected registration (something_new)"), None);
         assert_eq!(super::refusal_retry_after("relay closed while hosting"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_best_keeps_the_fastest_relay() {
+        use std::future::Future;
+        use std::pin::Pin;
+        let after = |ms: u64, result: Result<&'static str, String>| -> Pin<Box<dyn Future<Output = Result<&'static str, String>>>> {
+            Box::pin(async move { tokio::time::sleep(Duration::from_millis(ms)).await; result })
+        };
+        // A far relay (500 ms) is listed first and a broken one fails fast, but
+        // the closest relay's handshake (10 ms) is the one that is kept.
+        let winner = super::first_ok(
+            vec![after(500, Ok("far")), after(1, Err("down".into())), after(10, Ok("near"))],
+            "none",
+        ).await.unwrap();
+        assert_eq!(winner, "near");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_best_reports_the_last_error_when_all_fail() {
+        use std::future::Future;
+        use std::pin::Pin;
+        let fail = |ms: u64, msg: &'static str| -> Pin<Box<dyn Future<Output = Result<&'static str, String>>>> {
+            Box::pin(async move { tokio::time::sleep(Duration::from_millis(ms)).await; Err(msg.into()) })
+        };
+        let error = super::first_ok(vec![fail(1, "first"), fail(5, "last")], "none").await.unwrap_err();
+        assert_eq!(error, "last");
     }
 
     #[tokio::test]
