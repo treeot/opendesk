@@ -7,7 +7,7 @@ import { NotifyContext } from "../lib/notify";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), setContactPassword: vi.fn(), permissionStatus: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn() };
+  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), setContactPassword: vi.fn(), setContactMac: vi.fn(), wakeContact: vi.fn(), permissionStatus: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn() };
 });
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()) }));
 describe("Home", () => {
@@ -428,5 +428,27 @@ describe("Home", () => {
     render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
     fireEvent.click(screen.getByRole("button", { name: "Rotate" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith("New password generated.", "info"));
+  });
+
+  it("wakes a device with a saved MAC over Wake-on-LAN", async () => {
+    try { localStorage.setItem("opendesk.addressView", "list"); } catch { /* ignore */ }
+    vi.mocked(api.listContacts).mockResolvedValue([{ id: "905218437", alias: "Office", last_connected: null, mac: "01:23:45:67:89:AB" }]);
+    vi.mocked(api.wakeContact).mockResolvedValue(undefined);
+    render(<Home status="online" onConnect={vi.fn()} />);
+    const wake = await screen.findByRole("button", { name: "Wake Office" });
+    fireEvent.click(wake);
+    await waitFor(() => expect(api.wakeContact).toHaveBeenCalledWith("905218437"));
+  });
+
+  it("saves a MAC address for a device", async () => {
+    try { localStorage.setItem("opendesk.addressView", "list"); } catch { /* ignore */ }
+    vi.mocked(api.listContacts).mockResolvedValue([{ id: "905218437", alias: "Office", last_connected: null }]);
+    vi.mocked(api.setContactMac).mockResolvedValue({ id: "905218437", alias: "Office", last_connected: null, mac: "01:23:45:67:89:AB" });
+    render(<Home status="online" onConnect={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Wake-on-LAN settings for Office" }));
+    const input = await screen.findByLabelText("MAC address");
+    fireEvent.change(input, { target: { value: "01:23:45:67:89:AB" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.setContactMac).toHaveBeenCalledWith("905218437", "01:23:45:67:89:AB"));
   });
 });

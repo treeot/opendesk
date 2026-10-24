@@ -10,6 +10,10 @@ pub struct Contact {
     pub id: String,
     pub alias: String,
     pub last_connected: Option<u64>,
+    /// The device's MAC address, if set, used to wake it over the local network
+    /// (Wake-on-LAN). Stored as the user typed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
     /// Whether a password is saved for this device in the OS keyring. Runtime
     /// only: filled in when listing contacts, never written to contacts.json.
     #[serde(default, skip_serializing)]
@@ -66,10 +70,30 @@ impl ContactStore {
             self.save()?;
             return Ok(contact);
         }
-        let contact = Contact { id, alias, last_connected: None, has_saved_password: false };
+        let contact = Contact { id, alias, last_connected: None, mac: None, has_saved_password: false };
         self.contacts.push(contact.clone());
         self.save()?;
         Ok(contact)
+    }
+
+    /// Set (or clear, with an empty string) the MAC address used to wake a
+    /// contact over the local network. Returns the updated contact.
+    pub fn set_mac(&mut self, id: &str, mac: &str) -> io::Result<Contact> {
+        let contact = self
+            .contacts
+            .iter_mut()
+            .find(|contact| contact.id == id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "contact not found"))?;
+        let mac = mac.trim();
+        contact.mac = if mac.is_empty() { None } else { Some(mac.to_string()) };
+        let contact = contact.clone();
+        self.save()?;
+        Ok(contact)
+    }
+
+    /// The MAC address saved for a contact, if any.
+    pub fn mac(&self, id: &str) -> Option<String> {
+        self.contacts.iter().find(|contact| contact.id == id).and_then(|c| c.mac.clone())
     }
 
     pub fn remove(&mut self, id: &str) -> io::Result<()> {
@@ -136,6 +160,20 @@ mod tests {
         store.add("Office".into(), "123456789".into()).unwrap();
         store.touch("123456789").unwrap();
         assert!(store.list()[0].last_connected.is_some());
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn set_mac_sets_clears_and_persists() {
+        let (mut store, path) = test_store();
+        store.add("Office".into(), "123456789".into()).unwrap();
+        store.set_mac("123456789", "01:23:45:67:89:AB").unwrap();
+        assert_eq!(store.mac("123456789").as_deref(), Some("01:23:45:67:89:AB"));
+        // Survives a reload (it is serialized).
+        assert_eq!(ContactStore::load(&path).unwrap().mac("123456789").as_deref(), Some("01:23:45:67:89:AB"));
+        // An empty string clears it.
+        store.set_mac("123456789", "  ").unwrap();
+        assert_eq!(store.mac("123456789"), None);
         let _ = fs::remove_dir_all(path);
     }
 

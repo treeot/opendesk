@@ -491,6 +491,22 @@ fn touch_contact(state: tauri::State<'_, AppState>, peer_id: String) -> Result<(
     state.lock().contacts.touch(&peer_id).map_err(|e| e.to_string())
 }
 #[tauri::command]
+fn set_contact_mac(state: tauri::State<'_, AppState>, peer_id: String, mac: String) -> Result<Contact, String> {
+    if !mac.trim().is_empty() && host_core::wol::parse_mac(&mac).is_none() {
+        return Err("Enter a MAC address like 01:23:45:67:89:AB.".into());
+    }
+    state.lock().contacts.set_mac(&peer_id, &mac).map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn wake_contact(state: tauri::State<'_, AppState>, peer_id: String) -> Result<(), String> {
+    let mac = state
+        .lock()
+        .contacts
+        .mac(&peer_id)
+        .ok_or("No MAC address saved for this device.")?;
+    host_core::wol::wake(&mac).map_err(|e| e.to_string())
+}
+#[tauri::command]
 fn set_relay(state: tauri::State<'_, AppState>, app: AppHandle, url: String) -> Result<(), String> {
     let url = url.trim().to_owned();
     if url.is_empty() {
@@ -949,6 +965,8 @@ pub fn run() {
             remove_contact,
             touch_contact,
             set_contact_password,
+            set_contact_mac,
+            wake_contact,
             set_relay,
             get_unattended_status,
             windows_service_status,

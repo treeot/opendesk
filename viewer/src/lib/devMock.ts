@@ -21,7 +21,7 @@ const state = {
   },
   unattended: { enabled: true, has_password: true, twofa_enabled: false, ready: true, problem: null as string | null },
   contacts: [
-    { id: "730514826", alias: "Home PC", last_connected: Math.floor(Date.now() / 1000) - 3600 },
+    { id: "730514826", alias: "Home PC", last_connected: Math.floor(Date.now() / 1000) - 3600, mac: "A4:83:E7:2C:19:0F" as string | null },
     { id: "905218437", alias: "Office Workstation", last_connected: Math.floor(Date.now() / 1000) - 86400 * 2 },
     { id: "118273645", alias: "Mom's Laptop", last_connected: null as number | null },
   ],
@@ -44,6 +44,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_config: () => state.config,
   list_contacts: () => state.contacts.map((c) => ({ ...c, has_saved_password: state.savedPasswords.has(c.id) })),
   set_contact_password: ({ peerId, password }) => { if (password) state.savedPasswords.add(peerId as string); else state.savedPasswords.delete(peerId as string); },
+  set_contact_mac: ({ peerId, mac }) => {
+    const value = (mac as string).trim();
+    const contact = state.contacts.find((c) => c.id === peerId);
+    if (contact) contact.mac = value === "" ? null : value;
+    return contact;
+  },
+  wake_contact: () => undefined,
   list_allowed: () => state.allowed,
   add_allowed: ({ peerId }) => { if (!state.allowed.includes(peerId as string)) state.allowed.push(peerId as string); },
   remove_allowed: ({ peerId }) => { state.allowed = state.allowed.filter((id) => id !== peerId); },

@@ -36,7 +36,7 @@ export interface FileOffer { id: number; name: string; size: number; from: strin
 export interface FileProgress { id: number; transferred: number; total: number; direction: "send" | "receive" | string }
 export interface FileDone { id: number; path?: string | null }
 export interface FileError { id: number; message: string }
-export interface Contact { id: string; alias: string; last_connected: number | null; has_saved_password?: boolean }
+export interface Contact { id: string; alias: string; last_connected: number | null; mac?: string | null; has_saved_password?: boolean }
 export interface TotpEnrollment { uri: string; secret: string; qr_width: number; qr_modules: boolean[] }
 /** `is_virtual`: a virtual display this session added, which the viewer may remove. */
 export interface MonitorInfo { id: number; name: string; width: number; height: number; is_primary: boolean; is_virtual?: boolean }
@@ -63,6 +63,8 @@ export const removeContact = (peer_id: string) => invoke<void>("remove_contact",
 export const touchContact = (peer_id: string) => invoke<void>("touch_contact", { peerId: peer_id });
 /** Save (or, with null, forget) the password for a device in the OS keyring. */
 export const setContactPassword = (peer_id: string, password: string | null) => invoke<void>("set_contact_password", { peerId: peer_id, password });
+export const setContactMac = (peer_id: string, mac: string) => invoke<Contact>("set_contact_mac", { peerId: peer_id, mac });
+export const wakeContact = (peer_id: string) => invoke<void>("wake_contact", { peerId: peer_id });
 export const setRelay = (url: string) => invoke<void>("set_relay", { url });
 export const setRelays = (urls: string[]) => invoke<void>("set_relays", { urls });
 export const listRelays = () => invoke<string[]>("list_relays");

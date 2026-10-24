@@ -17,3 +17,4 @@ pub mod secure_attention;
 mod windows_service;
 pub mod transport;
 pub mod vdisplay;
+pub mod wol;
