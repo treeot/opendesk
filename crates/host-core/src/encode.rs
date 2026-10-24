@@ -15,9 +15,11 @@
 
 #[cfg(target_os = "windows")]
 mod mediafoundation;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", feature = "vaapi"), test))]
 mod nv12;
 pub mod stream;
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+mod vaapi;
 #[cfg(target_os = "macos")]
 mod videotoolbox;
 
@@ -422,6 +424,8 @@ pub enum EncoderBackend {
     /// A Media Foundation hardware encoder MFT (NVENC, Quick Sync, AMF;
     /// Windows).
     MediaFoundation,
+    /// VAAPI hardware encoding via libavcodec (Linux; experimental).
+    Vaapi,
 }
 
 impl std::fmt::Display for EncoderBackend {
@@ -430,6 +434,7 @@ impl std::fmt::Display for EncoderBackend {
             Self::OpenH264 => "openh264 (software)",
             Self::VideoToolbox => "VideoToolbox (hardware)",
             Self::MediaFoundation => "Media Foundation (hardware)",
+            Self::Vaapi => "VAAPI (hardware)",
         })
     }
 }
@@ -440,6 +445,8 @@ enum Backend {
     VideoToolbox(videotoolbox::VtEncoder),
     #[cfg(target_os = "windows")]
     MediaFoundation(mediafoundation::MfEncoder),
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    Vaapi(vaapi::VaapiEncoder),
 }
 
 /// H.264 encoder that uses the best backend available on this machine.
@@ -549,7 +556,23 @@ impl VideoEncoder {
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    fn hardware(width: u16, height: u16, fps: u32, bitrate: u32, codec: Codec) -> Option<Backend> {
+        // VAAPI here only produces H.264; an HEVC request falls back and
+        // best_available retries with H.264.
+        if codec != Codec::H264 {
+            return None;
+        }
+        match vaapi::VaapiEncoder::new(width, height, fps, bitrate) {
+            Ok(encoder) => Some(Backend::Vaapi(encoder)),
+            Err(error) => {
+                log::info!("VAAPI encoder unavailable ({error}); falling back");
+                None
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "vaapi"))))]
     fn hardware(_width: u16, _height: u16, _fps: u32, _bitrate: u32, _codec: Codec) -> Option<Backend> {
         None
     }
@@ -561,12 +584,14 @@ impl VideoEncoder {
             Backend::VideoToolbox(_) => EncoderBackend::VideoToolbox,
             #[cfg(target_os = "windows")]
             Backend::MediaFoundation(_) => EncoderBackend::MediaFoundation,
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Backend::Vaapi(_) => EncoderBackend::Vaapi,
         }
     }
 
     /// Replaces a failed hardware backend with openh264 and encodes `frame`
     /// with it. A fresh openh264 encoder always starts with a keyframe.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", feature = "vaapi")))]
     fn switch_to_software(&mut self, frame: &RawFrame) -> Option<EncodedFrame> {
         let mut software =
             match H264Encoder::new(self.width, self.height, self.fps, self.bitrate) {
@@ -608,6 +633,14 @@ impl Encoder for VideoEncoder {
                     self.switch_to_software(frame)
                 }
             },
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Backend::Vaapi(encoder) => match encoder.encode(frame) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    log::warn!("VAAPI encode failed ({error}); switching to openh264");
+                    self.switch_to_software(frame)
+                }
+            },
         }
     }
 
@@ -618,6 +651,8 @@ impl Encoder for VideoEncoder {
             Backend::VideoToolbox(encoder) => encoder.force_intra_frame(),
             #[cfg(target_os = "windows")]
             Backend::MediaFoundation(encoder) => encoder.force_intra_frame(),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Backend::Vaapi(encoder) => encoder.force_intra_frame(),
         }
     }
 
@@ -630,6 +665,8 @@ impl Encoder for VideoEncoder {
             Backend::VideoToolbox(encoder) => encoder.set_bitrate(bps),
             #[cfg(target_os = "windows")]
             Backend::MediaFoundation(encoder) => encoder.set_bitrate(bps),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Backend::Vaapi(encoder) => encoder.set_bitrate(bps),
         }
     }
 }

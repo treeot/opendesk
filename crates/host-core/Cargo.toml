@@ -26,6 +26,14 @@ cpal = "0.18"
 opus = "0.4"
 arboard = "3.6.1"
 log = "0.4"
+# Optional: hardware H.264 on Linux via VAAPI (the `vaapi` feature). Off by
+# default because it needs the system ffmpeg development libraries; enabling it
+# links libavcodec/libavutil. Experimental, needs validation on Linux hardware.
+ffmpeg-next = { version = "7.1", optional = true }
+
+[features]
+# Build the experimental VAAPI hardware encoder (Linux only at runtime).
+vaapi = ["dep:ffmpeg-next"]
 
 # PulseAudio host (pure Rust; also talks to pipewire-pulse) for capturing the
 # default sink's monitor. Not cpal's "pipewire" feature: it needs pipewire
