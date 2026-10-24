@@ -1,14 +1,25 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { devInvoke } from "./devMock";
+
+// True inside the real Tauri window; false in a plain browser (`npm run dev`),
+// where there is no bridge and we fall back to fake data so the UI still runs.
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+// Use the real bridge inside Tauri, and under vitest (where tests supply their
+// own tauri mocks). Only a plain browser dev server falls back to fake data.
+const useBridge = isTauri || import.meta.env?.MODE === "test";
+/** True in the plain-browser dev view (no Tauri bridge); drives fake-data mode. */
+export const isDevBrowser = !useBridge;
+const invoke: typeof tauriInvoke = useBridge ? tauriInvoke : ((command: string, args?: Record<string, unknown>) => devInvoke(command, args)) as typeof tauriInvoke;
 
 export type Status = "offline" | "online" | "connecting" | "in_session";
 export interface Identity { id: string; password: string }
 /** A relay refusing this device's ID: another device's ID there ("taken"), or a copy of this device online with it ("in_use"). */
 export interface IdentityConflict { relay: string; kind: "taken" | "in_use"; message: string }
-export interface AppConfig { relay_url: string; relay_urls: string[]; recent_ids: string[]; clipboard_sync: boolean; allow_virtual_displays: boolean }
+export interface AppConfig { relay_url: string; relay_urls: string[]; recent_ids: string[]; clipboard_sync: boolean; allow_virtual_displays: boolean; recordings_max_bytes?: number }
 /** `ready` means the keyring answered and connections skip approval; `problem` says why not when it is on. */
 export interface UnattendedStatus { enabled: boolean; has_password: boolean; twofa_enabled: boolean; ready: boolean; problem: string | null }
 export interface WindowsServiceStatus { supported: boolean; installed: boolean; running: boolean }
@@ -25,7 +36,7 @@ export interface FileOffer { id: number; name: string; size: number; from: strin
 export interface FileProgress { id: number; transferred: number; total: number; direction: "send" | "receive" | string }
 export interface FileDone { id: number; path?: string | null }
 export interface FileError { id: number; message: string }
-export interface Contact { id: string; alias: string; last_connected: number | null }
+export interface Contact { id: string; alias: string; last_connected: number | null; has_saved_password?: boolean }
 export interface TotpEnrollment { uri: string; secret: string; qr_width: number; qr_modules: boolean[] }
 /** `is_virtual`: a virtual display this session added, which the viewer may remove. */
 export interface MonitorInfo { id: number; name: string; width: number; height: number; is_primary: boolean; is_virtual?: boolean }
@@ -50,6 +61,8 @@ export const removeAllowed = (peer_id: string) => invoke<void>("remove_allowed",
 export const addContact = (alias: string, peer_id: string) => invoke<Contact>("add_contact", { alias, peerId: peer_id });
 export const removeContact = (peer_id: string) => invoke<void>("remove_contact", { peerId: peer_id });
 export const touchContact = (peer_id: string) => invoke<void>("touch_contact", { peerId: peer_id });
+/** Save (or, with null, forget) the password for a device in the OS keyring. */
+export const setContactPassword = (peer_id: string, password: string | null) => invoke<void>("set_contact_password", { peerId: peer_id, password });
 export const setRelay = (url: string) => invoke<void>("set_relay", { url });
 export const setRelays = (urls: string[]) => invoke<void>("set_relays", { urls });
 export const listRelays = () => invoke<string[]>("list_relays");
@@ -66,8 +79,8 @@ export const openPermissionSettings = (which: "screen" | "accessibility") => inv
 // Tauri v2 exposes Rust snake_case params to JS as camelCase (peerId/targetId).
 export const respondToRequest = (peer_id: string, allow: boolean, always: boolean) => invoke<void>("respond_to_request", { peerId: peer_id, allow, always });
 /** Read from the OS sign-in entry each time; there is no saved copy in our config. */
-export const getStartAtSignIn = () => isAutostartEnabled();
-export const setStartAtSignIn = (enabled: boolean) => enabled ? enableAutostart() : disableAutostart();
+export const getStartAtSignIn = () => useBridge ? isAutostartEnabled() : Promise.resolve(false);
+export const setStartAtSignIn = (enabled: boolean) => useBridge ? (enabled ? enableAutostart() : disableAutostart()) : Promise.resolve();
 /** True when closing the window hides it to the tray instead of quitting. */
 export const closeKeepsRunning = () => invoke<boolean>("close_keeps_running");
 export const quitApp = () => invoke<void>("quit_app");
@@ -162,11 +175,13 @@ export const disconnectViewer = () => invoke<void>("disconnect_viewer");
 export const sendFile = (path: string) => invoke<number>("send_file", { path });
 /** Native file picker; resolves to the chosen path or null when cancelled. */
 export const pickFile = async (): Promise<string | null> => {
+  if (!useBridge) return "/Users/you/Documents/demo-file.pdf";
   const selected = await openDialog({ multiple: false, directory: false, title: "Send file" });
   return typeof selected === "string" ? selected : null;
 };
 /** Files dropped anywhere on the window; `over` reports drag hover state. */
 export const onFileDrop = (handler: (event: { type: "over" | "drop" | "leave"; paths: string[] }) => void): Promise<UnlistenFn> =>
+  !useBridge ? Promise.resolve(() => {}) :
   getCurrentWebview().onDragDropEvent(({ payload }) => {
     if (payload.type === "drop") handler({ type: "drop", paths: payload.paths });
     else if (payload.type === "leave") handler({ type: "leave", paths: [] });
@@ -183,6 +198,8 @@ export const finishRecording = (id: number) => invoke<string>("finish_recording"
 export interface RecordingEntry { name: string; path: string; size: number; modified: number }
 export const listRecordings = () => invoke<RecordingEntry[]>("list_recordings");
 export const deleteRecording = (path: string) => invoke<void>("delete_recording", { path });
+/** Cap total recordings on disk at `bytes` (0 = no cap); prunes oldest first. */
+export const setRecordingsMaxBytes = (bytes: number) => invoke<void>("set_recordings_max_bytes", { bytes });
 
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -190,7 +207,8 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-const on = <T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> => listen<T>(event, ({ payload }) => handler(payload));
+const on = <T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> =>
+  useBridge ? listen<T>(event, ({ payload }) => handler(payload)) : Promise.resolve(() => {});
 
 /** A native menu item was chosen; the payload is the item's id (see menu.rs). */
 export const onMenuAction = (handler: (action: string) => void) => on<string>("menu", handler);

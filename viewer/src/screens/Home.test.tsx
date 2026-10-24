@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "./Home";
 import * as api from "../lib/api";
@@ -7,11 +7,16 @@ import { NotifyContext } from "../lib/notify";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn() };
+  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), setContactPassword: vi.fn(), permissionStatus: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn() };
 });
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()) }));
 describe("Home", () => {
   afterEach(cleanup);
+  // Settings controls now live behind the ⚙ Settings view and its tabs.
+  const openSettings = (tab?: "Access" | "Security" | "Network" | "Recordings" | "About") => {
+    fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
+    if (tab) fireEvent.click(screen.getByRole("button", { name: tab }));
+  };
   beforeEach(() => {
     vi.mocked(api.getIdentity).mockResolvedValue({ id: "123456789", password: "654321" });
     vi.mocked(api.getConfig).mockResolvedValue({ relay_url: "wss://relay", relay_urls: ["wss://relay"], recent_ids: [], clipboard_sync: false, allow_virtual_displays: true });
@@ -28,6 +33,20 @@ describe("Home", () => {
     vi.mocked(api.onIdentityConflicts).mockResolvedValue(() => {});
     vi.mocked(api.resetIdentity).mockReset();
     vi.mocked(api.getDisplayDriver).mockResolvedValue({ applies: false, installed: false, license: "" });
+    vi.mocked(api.permissionStatus).mockResolvedValue({ screen_recording: true, accessibility: true });
+  });
+  it("warns and links to permissions when hosting access is missing", async () => {
+    vi.mocked(api.permissionStatus).mockResolvedValue({ screen_recording: false, accessibility: true });
+    const onOpenPermissions = vi.fn();
+    render(<Home status="online" onConnect={vi.fn()} onOpenPermissions={onOpenPermissions} />);
+    const banner = await screen.findByText(/Screen Recording is off/);
+    fireEvent.click(banner);
+    expect(onOpenPermissions).toHaveBeenCalled();
+  });
+  it("shows no hosting warning when permissions are granted", async () => {
+    render(<Home status="online" onConnect={vi.fn()} onOpenPermissions={vi.fn()} />);
+    await screen.findByText("123456789");
+    expect(screen.queryByText(/Fix permissions/)).toBeNull();
   });
   it("renders the identity returned by the backend", async () => { render(<Home status="online" onConnect={vi.fn()} incomingRequest={null} onDismissRequest={vi.fn()} />); expect(await screen.findByText("123456789")).toBeTruthy(); });
   it("shows a replacement ID when the relay says the old one is taken", async () => {
@@ -40,6 +59,7 @@ describe("Home", () => {
   it("saves the virtual display setting and undoes a failed save", async () => {
     vi.mocked(api.setAllowVirtualDisplays).mockResolvedValueOnce(undefined).mockRejectedValueOnce("disk full");
     render(<Home status="online" onConnect={vi.fn()} incomingRequest={null} onDismissRequest={vi.fn()} />);
+    openSettings("Security");
     const toggle = () => screen.getByRole("checkbox", { name: "Let viewers add virtual displays" }) as HTMLInputElement;
     await waitFor(() => expect(toggle().checked).toBe(true));
     fireEvent.click(toggle());
@@ -56,6 +76,7 @@ describe("Home", () => {
       .mockResolvedValueOnce({ status: { applies: true, installed: true, license }, restart: false });
     vi.mocked(api.uninstallDisplayDriver).mockResolvedValueOnce({ status: { applies: true, installed: false, license }, restart: true });
     render(<Home status="online" onConnect={vi.fn()} incomingRequest={null} onDismissRequest={vi.fn()} />);
+    openSettings("Security");
     fireEvent.click(await screen.findByRole("button", { name: "Install virtual display driver" }));
     // Nothing happens until the licence is accepted.
     expect(screen.getByText(license)).toBeTruthy();
@@ -74,12 +95,14 @@ describe("Home", () => {
     vi.mocked(api.getConfig).mockResolvedValue({ relay_url: "wss://relay", relay_urls: ["wss://relay"], recent_ids: [], clipboard_sync: false, allow_virtual_displays: false });
     render(<Home status="online" onConnect={vi.fn()} incomingRequest={null} onDismissRequest={vi.fn()} />);
     expect(await screen.findByText("123456789")).toBeTruthy();
+    openSettings("Security");
     expect(screen.queryByRole("button", { name: "Install virtual display driver" })).toBeNull();
     cleanup();
     vi.mocked(api.getDisplayDriver).mockResolvedValue({ applies: false, installed: false, license: "" });
     vi.mocked(api.getConfig).mockResolvedValue({ relay_url: "wss://relay", relay_urls: ["wss://relay"], recent_ids: [], clipboard_sync: false, allow_virtual_displays: true });
     render(<Home status="online" onConnect={vi.fn()} incomingRequest={null} onDismissRequest={vi.fn()} />);
     expect(await screen.findByText("123456789")).toBeTruthy();
+    openSettings("Security");
     expect(screen.queryByRole("button", { name: "Install virtual display driver" })).toBeNull();
   });
 
@@ -95,10 +118,12 @@ describe("Home", () => {
   it("offers Quit only when closing the window keeps OpenDesk running", async () => {
     render(<Home status="online" onConnect={vi.fn()} />);
     await screen.findByText("123456789");
+    openSettings("About");
     expect(screen.queryByRole("button", { name: "Quit OpenDesk" })).toBeNull();
     cleanup();
     vi.mocked(api.closeKeepsRunning).mockResolvedValue(true);
     render(<Home status="online" onConnect={vi.fn()} />);
+    openSettings("About");
     fireEvent.click(await screen.findByRole("button", { name: "Quit OpenDesk" }));
     expect(api.quitApp).toHaveBeenCalledOnce();
   });
@@ -138,35 +163,62 @@ describe("Home", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hide password" }));
     expect(field.type).toBe("password");
   });
-  it("connects with the entered target ID and password", async () => {
+  it("connects with the entered target ID and password through the popup", async () => {
     const onConnect = vi.fn().mockResolvedValue(undefined);
     const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
     render(<Home status="online" onConnect={onConnect} incomingRequest={null} onDismissRequest={vi.fn()} />);
-    fireEvent.change(screen.getByPlaceholderText("000 000 000"), { target: { value: "987654321" } }); fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "remote-secret" } }); fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    fireEvent.change(screen.getByPlaceholderText("000 000 000"), { target: { value: "987654321" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Device password"), { target: { value: "remote-secret" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(onConnect).toHaveBeenCalledWith("987654321", "remote-secret"));
     expect(prompt).not.toHaveBeenCalled();
+  });
+  it("saves the password when 'remember' is checked before connecting", async () => {
+    vi.mocked(api.setContactPassword).mockResolvedValue(undefined);
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    render(<Home status="online" onConnect={onConnect} />);
+    fireEvent.change(screen.getByPlaceholderText("000 000 000"), { target: { value: "987654321" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Device password"), { target: { value: "remote-secret" } });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Remember password for this device" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(api.setContactPassword).toHaveBeenCalledWith("987654321", "remote-secret"));
+    expect(onConnect).toHaveBeenCalledWith("987654321", "remote-secret");
   });
   it("has no inline 2FA field; connecting uses ID and password only", async () => {
     const onConnect = vi.fn().mockResolvedValue(undefined);
     render(<Home status="online" onConnect={onConnect} incomingRequest={null} onDismissRequest={vi.fn()} />);
     expect(screen.queryByLabelText("2FA code (optional)")).toBeNull();
-    fireEvent.change(screen.getByPlaceholderText("000 000 000"), { target: { value: "987654321" } }); fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "remote-secret" } }); fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    fireEvent.change(screen.getByPlaceholderText("000 000 000"), { target: { value: "987654321" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Device password"), { target: { value: "remote-secret" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(onConnect).toHaveBeenCalledWith("987654321", "remote-secret"));
   });
 
-  it("fills a contact's ID and focuses the password instead of connecting", async () => {
-    vi.mocked(api.listContacts).mockResolvedValue([{ id: "111222333", alias: "Office", last_connected: null }]);
+  it("opens the password popup for a device without a saved password", async () => {
+    vi.mocked(api.listContacts).mockResolvedValue([{ id: "111222333", alias: "Office", last_connected: null, has_saved_password: false }]);
     const onConnect = vi.fn();
     render(<Home status="online" onConnect={onConnect} />);
-    fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "typed-for-someone-else" } });
     await screen.findByText("Office");
-    // The first "Connect" is the form submit; pick the contact row's button.
-    const contactConnect = screen.getAllByRole("button", { name: "Connect" }).find((button) => button.closest(".contact-row"))!;
-    fireEvent.click(contactConnect);
-    expect((screen.getByPlaceholderText("000 000 000") as HTMLInputElement).value).toBe("111222333");
-    expect((screen.getByPlaceholderText("Password") as HTMLInputElement).value).toBe("");
-    expect(document.activeElement).toBe(screen.getByPlaceholderText("Password"));
+    fireEvent.click(screen.getByRole("button", { name: "Connect to Office" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Office")).toBeTruthy();
     expect(onConnect).not.toHaveBeenCalled();
+  });
+
+  it("connects a saved-password device in one click, without the popup", async () => {
+    vi.mocked(api.listContacts).mockResolvedValue([{ id: "111222333", alias: "Office", last_connected: null, has_saved_password: true }]);
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    render(<Home status="online" onConnect={onConnect} />);
+    await screen.findByText("Office");
+    fireEvent.click(screen.getByRole("button", { name: "Connect to Office" }));
+    await waitFor(() => expect(onConnect).toHaveBeenCalledWith("111222333", ""));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("rejects contact IDs that are not 9 digits", async () => {
@@ -183,6 +235,7 @@ describe("Home", () => {
     vi.mocked(api.setUnattendedAccess).mockRejectedValue("unattended access password must be at least 12 characters");
     const notify = vi.fn();
     render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
+    openSettings("Access");
     const enabled = screen.getByRole("checkbox", { name: "Enabled" }) as HTMLInputElement;
     expect(screen.getByPlaceholderText("Set a password (12+ characters)")).toBeTruthy();
     expect(enabled.disabled).toBe(true);
@@ -201,6 +254,7 @@ describe("Home", () => {
     vi.mocked(api.confirmUnattended2fa).mockRejectedValueOnce("invalid 2FA code").mockResolvedValueOnce({ enabled: true, has_password: true, twofa_enabled: true, ready: true, problem: null });
     const notify = vi.fn();
     render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
+    openSettings("Access");
     const toggle = screen.getByRole("checkbox", { name: "Require 2FA code" }) as HTMLInputElement;
     await waitFor(() => expect(toggle.disabled).toBe(false));
     fireEvent.click(toggle);
@@ -225,6 +279,7 @@ describe("Home", () => {
     vi.mocked(api.getUnattendedStatus).mockResolvedValue({ enabled: true, has_password: true, twofa_enabled: false, ready: true, problem: null });
     vi.mocked(api.setUnattended2fa).mockResolvedValueOnce({ uri: "otpauth://x", secret: "ABCD", qr_width: 1, qr_modules: [true] }).mockResolvedValueOnce(null);
     render(<Home status="online" onConnect={vi.fn()} />);
+    openSettings("Access");
     const toggle = screen.getByRole("checkbox", { name: "Require 2FA code" }) as HTMLInputElement;
     await waitFor(() => expect(toggle.disabled).toBe(false));
     fireEvent.click(toggle);
@@ -237,14 +292,16 @@ describe("Home", () => {
   it("keeps the 2FA toggle disabled until unattended access is on", async () => {
     render(<Home status="online" onConnect={vi.fn()} />);
     await screen.findByText("123456789");
+    openSettings("Access");
     expect((screen.getByRole("checkbox", { name: "Require 2FA code" }) as HTMLInputElement).disabled).toBe(true);
   });
 
   describe("start at sign-in", () => {
-    const toggle = () => screen.getByRole("checkbox", { name: "Start OpenDesk when I sign in" }) as HTMLInputElement;
+    const toggle = () => screen.getByRole("checkbox", { name: "Start OpenDesk on startup" }) as HTMLInputElement;
 
     it("stays disabled with a hint until unattended access is saved", async () => {
       render(<Home status="online" onConnect={vi.fn()} />);
+      openSettings("Access");
       expect(await screen.findByText("Turn on and save unattended access first.")).toBeTruthy();
       expect(toggle().checked).toBe(false);
       expect(toggle().disabled).toBe(true);
@@ -253,6 +310,7 @@ describe("Home", () => {
     it("turns on through the OS once unattended access is ready", async () => {
       vi.mocked(api.getUnattendedStatus).mockResolvedValue({ enabled: true, has_password: true, twofa_enabled: false, ready: true, problem: null });
       render(<Home status="online" onConnect={vi.fn()} />);
+      openSettings("Access");
       await waitFor(() => expect(toggle().disabled).toBe(false));
       fireEvent.click(toggle());
       await waitFor(() => expect(toggle().checked).toBe(true));
@@ -263,6 +321,7 @@ describe("Home", () => {
     it("shows the state the OS reports and can always be turned off", async () => {
       vi.mocked(api.getStartAtSignIn).mockResolvedValue(true);
       render(<Home status="online" onConnect={vi.fn()} />);
+      openSettings("Access");
       await waitFor(() => expect(toggle().checked).toBe(true));
       expect(screen.getByText(/will just open its window at sign-in/)).toBeTruthy();
       expect(toggle().disabled).toBe(false);
@@ -276,6 +335,7 @@ describe("Home", () => {
       vi.mocked(api.setStartAtSignIn).mockRejectedValue("permission denied");
       const notify = vi.fn();
       render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
+      openSettings("Access");
       await waitFor(() => expect(toggle().disabled).toBe(false));
       fireEvent.click(toggle());
       await waitFor(() => expect(notify).toHaveBeenCalled());
@@ -287,6 +347,7 @@ describe("Home", () => {
       vi.mocked(api.getStartAtSignIn).mockRejectedValue("unsupported");
       render(<Home status="online" onConnect={vi.fn()} />);
       await screen.findByText("123456789");
+      openSettings("Access");
       expect(toggle().disabled).toBe(true);
     });
   });
@@ -294,12 +355,13 @@ describe("Home", () => {
   describe("when the system keyring fails", () => {
     const keyringLocked = "OpenDesk couldn't read the unattended access password from the system keyring. Until it can, connections need your approval. Unlock your login keychain in Keychain Access, then try again.";
     const broken: api.UnattendedStatus = { enabled: true, has_password: true, twofa_enabled: false, ready: false, problem: keyringLocked };
-    const startToggle = () => screen.getByRole("checkbox", { name: "Start OpenDesk when I sign in" }) as HTMLInputElement;
+    const startToggle = () => screen.getByRole("checkbox", { name: "Start OpenDesk on startup" }) as HTMLInputElement;
 
     it("says what's wrong and keeps start at sign-in off", async () => {
       vi.mocked(api.getUnattendedStatus).mockResolvedValue(broken);
       const notify = vi.fn();
       render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
+      openSettings("Access");
       expect((await screen.findByRole("alert")).textContent).toBe(keyringLocked);
       expect(notify).toHaveBeenCalledWith(keyringLocked, "error");
       expect(screen.getByText("Fix unattended access first.")).toBeTruthy();
@@ -310,6 +372,7 @@ describe("Home", () => {
       vi.mocked(api.getUnattendedStatus).mockResolvedValue(broken);
       vi.mocked(api.getStartAtSignIn).mockResolvedValue(true);
       render(<Home status="online" onConnect={vi.fn()} />);
+      openSettings("Access");
       expect(await screen.findByText(/isn't working, so OpenDesk will just open its window at sign-in/)).toBeTruthy();
       expect(startToggle().disabled).toBe(false);
     });
@@ -320,6 +383,7 @@ describe("Home", () => {
       const notify = vi.fn();
       render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
       await screen.findByText("123456789");
+      openSettings("Access");
       fireEvent.change(screen.getByLabelText("Unattended access password"), { target: { value: "long-password-1" } });
       const enabled = screen.getByRole("checkbox", { name: "Enabled" }) as HTMLInputElement;
       fireEvent.click(enabled);
@@ -333,6 +397,7 @@ describe("Home", () => {
       vi.mocked(api.getUnattendedStatus).mockResolvedValue({ ...broken, has_password: false, problem: "The unattended access password is missing from the system keyring, so connections need your approval. Enter the password again and save." });
       vi.mocked(api.setUnattendedAccess).mockResolvedValue({ enabled: true, has_password: true, twofa_enabled: false, ready: true, problem: null });
       render(<Home status="online" onConnect={vi.fn()} />);
+      openSettings("Access");
       await screen.findByRole("alert");
       fireEvent.change(screen.getByLabelText("Unattended access password"), { target: { value: "long-password-1" } });
       fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
@@ -346,6 +411,7 @@ describe("Home", () => {
       vi.mocked(api.getUnattendedStatus).mockResolvedValueOnce(lost).mockResolvedValue({ ...lost, twofa_enabled: false, ready: true, problem: null });
       vi.mocked(api.setUnattended2fa).mockResolvedValue(null);
       render(<Home status="online" onConnect={vi.fn()} />);
+      openSettings("Access");
       await screen.findByRole("alert");
       const twofa = screen.getByRole("checkbox", { name: "Require 2FA code" }) as HTMLInputElement;
       expect(twofa.checked).toBe(true);
