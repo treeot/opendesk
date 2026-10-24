@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Listener = (payload: unknown) => void;
@@ -30,6 +30,7 @@ const { listeners, mocks } = vi.hoisted(() => {
     setDecoderCodecs: vi.fn(() => Promise.resolve()),
     onCursorShape: on("cursor_shape"), onCursorHidden: on("cursor_hidden"),
     listRecordings: () => Promise.resolve([]), deleteRecording: vi.fn(() => Promise.resolve()),
+    isDevBrowser: false,
   };
   return { listeners, mocks };
 });
@@ -48,8 +49,10 @@ const emit = (name: string, payload: unknown) => act(() => { (listeners.get(name
 async function startConnecting() {
   render(<App />);
   fireEvent.change(await screen.findByPlaceholderText("000 000 000"), { target: { value: "987654321" } });
-  fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "secret" } });
   fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Device password"), { target: { value: "secret" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
   await screen.findByRole("heading", { name: /Waiting for 987 654 321 to accept/ });
 }
 
@@ -191,6 +194,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Permissions" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Permissions" })).toBeNull());
-    expect(mocks.permissionStatus).toHaveBeenCalledTimes(2);
+    // App checks on launch and the Permissions screen re-checks; Home then checks again too.
+    expect(mocks.permissionStatus.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -16,7 +16,7 @@ type Screen = "home" | "connecting" | "session" | "permissions";
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
   const screenRef = useRef<Screen>("home");
-  const [status, setStatus] = useState<api.Status>("offline");
+  const [status, setStatus] = useState<api.Status>(api.isDevBrowser ? "online" : "offline");
   const [viewerStatus, setViewerStatus] = useState<api.Status>("connecting");
   const [request, setRequest] = useState<api.IncomingRequest | null>(null);
   const [session, setSession] = useState<api.SessionStarted | null>(null);
