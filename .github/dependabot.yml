@@ -1,5 +1,6 @@
 # Monthly, one grouped PR per ecosystem, so updates are reviewed without
-# flooding CI. Security fixes still arrive as soon as an advisory is published.
+# flooding CI. Security advisories are grouped too, so a dependency shared
+# across directories arrives as a single PR rather than one per lockfile.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -7,19 +8,34 @@ updates:
     schedule: { interval: monthly }
     open-pull-requests-limit: 1
     groups:
-      cargo: { patterns: ["*"] }
+      cargo:
+        applies-to: version-updates
+        patterns: ["*"]
+      cargo-security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: npm
-    directories: [/viewer, /site]
+    directories: [/viewer, /site, /web]
     schedule: { interval: monthly }
     open-pull-requests-limit: 1
     groups:
-      npm: { patterns: ["*"] }
+      npm:
+        applies-to: version-updates
+        patterns: ["*"]
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
     open-pull-requests-limit: 1
     groups:
-      actions: { patterns: ["*"] }
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: docker
     directory: /crates/relay
     schedule: { interval: monthly }
