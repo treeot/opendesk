@@ -160,9 +160,19 @@ pub(crate) fn append_recording(recordings: tauri::State<'_, Recordings>, id: u32
 }
 
 #[tauri::command]
-pub(crate) fn finish_recording(recordings: tauri::State<'_, Recordings>, id: u32) -> Result<String, String> {
+pub(crate) fn finish_recording(recordings: tauri::State<'_, Recordings>, state: tauri::State<'_, AppState>, id: u32) -> Result<String, String> {
     let sink = recordings.sinks().remove(&id).ok_or("unknown recording")?;
-    Ok(sink.finish()?.to_string_lossy().into_owned())
+    let path = sink.finish()?.to_string_lossy().into_owned();
+    // Keep the recordings folder under the user's size cap (oldest first).
+    let cap = state.lock().config.config.recordings_max_bytes;
+    if let Err(error) = prune_recordings(cap) { log::warn!("could not prune recordings: {error}"); }
+    Ok(path)
+}
+
+#[tauri::command]
+pub(crate) fn set_recordings_max_bytes(state: tauri::State<'_, AppState>, bytes: u64) -> Result<(), String> {
+    state.lock().config.set_recordings_max_bytes(bytes).map_err(|error| error.to_string())?;
+    prune_recordings(bytes)
 }
 
 /// The prefix every session recording's filename carries, so the list and the
@@ -205,6 +215,48 @@ pub(crate) fn list_recordings() -> Result<Vec<RecordingEntry>, String> {
     Ok(entries)
 }
 
+/// Delete the oldest recordings until the folder holds at most `max_bytes`,
+/// always keeping the most recent one. 0 disables the cap. Best effort: a file
+/// that can't be removed stops pruning rather than erroring the caller.
+pub(crate) fn prune_recordings(max_bytes: u64) -> Result<(), String> {
+    if max_bytes == 0 {
+        return Ok(());
+    }
+    let dir = recordings_dir()?;
+    let entries = list_recordings()?; // newest first
+    let sizes: Vec<u64> = entries.iter().map(|entry| entry.size).collect();
+    let to_delete = prune_count(&sizes, max_bytes);
+    for oldest in entries.iter().rev().take(to_delete) {
+        let target = PathBuf::from(&oldest.path);
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !is_recording(&name) { continue; }
+        let Ok(meta) = fs::symlink_metadata(&target) else { continue };
+        if meta.file_type().is_symlink() || !meta.is_file() { continue; }
+        let Ok(canonical) = fs::canonicalize(&target) else { continue };
+        if canonical.parent() != Some(dir.as_path()) { continue; }
+        let _ = fs::remove_file(&canonical);
+    }
+    Ok(())
+}
+
+/// How many of the oldest recordings to delete to get the total at or under
+/// `max_bytes`, always keeping at least the newest one. `sizes` is newest-first.
+fn prune_count(sizes: &[u64], max_bytes: u64) -> usize {
+    if max_bytes == 0 || sizes.len() <= 1 {
+        return 0;
+    }
+    let mut total: u64 = sizes.iter().sum();
+    let mut deleted = 0;
+    for &size in sizes.iter().rev() {
+        if total <= max_bytes || sizes.len() - deleted <= 1 {
+            break;
+        }
+        total = total.saturating_sub(size);
+        deleted += 1;
+    }
+    deleted
+}
+
 #[tauri::command]
 pub(crate) fn delete_recording(path: String) -> Result<(), String> {
     let dir = recordings_dir()?;
@@ -222,7 +274,7 @@ pub(crate) fn delete_recording(path: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod recording_list_tests {
-    use super::is_recording;
+    use super::{is_recording, prune_count};
 
     #[test]
     fn only_opendesk_webm_files_are_recordings() {
@@ -231,5 +283,21 @@ mod recording_list_tests {
         assert!(!is_recording("holiday.webm"));
         assert!(!is_recording("opendesk-session-"));
         assert!(!is_recording("evil-opendesk-session-x.webm"));
+    }
+
+    #[test]
+    fn prune_count_removes_oldest_until_under_cap() {
+        // newest-first sizes; oldest are at the end.
+        assert_eq!(prune_count(&[30, 30, 30], 100), 0, "already under cap");
+        assert_eq!(prune_count(&[30, 30, 30], 70), 1, "drop one oldest to reach 60");
+        assert_eq!(prune_count(&[30, 30, 30], 50), 2, "drop two oldest to reach 30");
+        assert_eq!(prune_count(&[30, 30, 30], 0), 0, "zero means no cap");
+    }
+
+    #[test]
+    fn prune_count_always_keeps_the_newest() {
+        // Even when the newest alone exceeds the cap, it is never deleted.
+        assert_eq!(prune_count(&[500, 10, 10], 100), 2);
+        assert_eq!(prune_count(&[500], 100), 0);
     }
 }

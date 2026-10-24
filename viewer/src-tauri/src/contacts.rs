@@ -10,6 +10,10 @@ pub struct Contact {
     pub id: String,
     pub alias: String,
     pub last_connected: Option<u64>,
+    /// Whether a password is saved for this device in the OS keyring. Runtime
+    /// only: filled in when listing contacts, never written to contacts.json.
+    #[serde(default, skip_serializing)]
+    pub has_saved_password: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +66,7 @@ impl ContactStore {
             self.save()?;
             return Ok(contact);
         }
-        let contact = Contact { id, alias, last_connected: None };
+        let contact = Contact { id, alias, last_connected: None, has_saved_password: false };
         self.contacts.push(contact.clone());
         self.save()?;
         Ok(contact)

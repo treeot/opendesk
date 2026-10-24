@@ -61,9 +61,15 @@ pub struct Config {
     /// displays go when the session ends.
     #[serde(default = "default_true")]
     pub allow_virtual_displays: bool,
+    /// Keep at most this many bytes of session recordings on disk; the oldest
+    /// are deleted after each new recording to stay under it. 0 means no cap.
+    #[serde(default = "default_recordings_max_bytes")]
+    pub recordings_max_bytes: u64,
 }
 
 fn default_true() -> bool { true }
+/// 5 GiB of recordings by default.
+fn default_recordings_max_bytes() -> u64 { 5 * 1024 * 1024 * 1024 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -83,6 +89,7 @@ impl Default for Config {
             unattended_twofa_enabled: false,
             clipboard_sync: false,
             allow_virtual_displays: true,
+            recordings_max_bytes: default_recordings_max_bytes(),
         }
     }
 }
@@ -278,6 +285,11 @@ impl ConfigStore {
 
     pub fn set_allow_virtual_displays(&mut self, enabled: bool) -> io::Result<()> {
         self.config.allow_virtual_displays = enabled;
+        self.save()
+    }
+
+    pub fn set_recordings_max_bytes(&mut self, bytes: u64) -> io::Result<()> {
+        self.config.recordings_max_bytes = bytes;
         self.save()
     }
 }

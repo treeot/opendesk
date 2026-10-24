@@ -227,6 +227,17 @@ pub(crate) fn connect(
     if target_id.len() != 9 || !target_id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("target ID must be 9 digits".into());
     }
+    // An empty password means "use the one saved for this device", so the
+    // saved secret never has to pass through the UI.
+    let password = if password.is_empty() {
+        match crate::unattended::read_contact_password(&crate::unattended::Keyring, &target_id) {
+            crate::unattended::Lookup::Found(saved) => saved,
+            crate::unattended::Lookup::Missing => return Err("Enter the device password.".into()),
+            crate::unattended::Lookup::Unavailable(message) => return Err(message),
+        }
+    } else {
+        password
+    };
     state
         .lock()
         .config

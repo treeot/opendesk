@@ -281,6 +281,36 @@ pub fn set_password(password: &str) -> Result<(), String> {
     save_password(&Keyring, password)
 }
 
+const SAVED: &str = "the saved device password";
+
+/// Keyring entry for a saved remote-device password, namespaced so it never
+/// collides with the unattended-access secrets.
+fn contact_user(id: &str) -> String {
+    format!("contact:{id}")
+}
+
+pub fn read_contact_password(store: &impl SecretStore, id: &str) -> Lookup {
+    read(store, &contact_user(id), SAVED)
+}
+
+/// True when a password is saved for `id` and the keyring could be read.
+pub fn has_contact_password(store: &impl SecretStore, id: &str) -> bool {
+    matches!(read_contact_password(store, id), Lookup::Found(_))
+}
+
+pub fn save_contact_password(store: &impl SecretStore, id: &str, password: &str) -> Result<(), String> {
+    store.set(&contact_user(id), password).map_err(|error| keyring_failure(Action::Save, SAVED, &error))
+}
+
+/// A password that is already gone counts as removed, so forgetting one is
+/// idempotent even after the keyring lost it.
+pub fn delete_contact_password(store: &impl SecretStore, id: &str) -> Result<(), String> {
+    match store.delete(&contact_user(id)) {
+        Ok(()) | Err(Error::NoEntry) => Ok(()),
+        Err(error) => Err(keyring_failure(Action::Remove, SAVED, &error)),
+    }
+}
+
 const PASSWORD_MISSING: &str = "The unattended access password is missing from the system keyring, so connections need your approval. Enter the password again and save.";
 const TOTP_MISSING: &str = "The 2FA secret is missing from the system keyring, so connections need your approval. Turn off \"Require 2FA code\" and set it up again.";
 
@@ -622,6 +652,22 @@ mod tests {
         let store = FakeStore::default();
         enable_twofa(&store, &mut config, "SECRET").unwrap();
         assert!(config.unattended_twofa_enabled && twofa_active(&store, &config));
+    }
+
+    #[test]
+    fn saved_device_passwords_round_trip_and_are_namespaced() {
+        let store = FakeStore::default();
+        assert!(!has_contact_password(&store, "123456789"));
+        save_contact_password(&store, "123456789", "hunter2").unwrap();
+        assert!(has_contact_password(&store, "123456789"));
+        assert_eq!(read_contact_password(&store, "123456789"), Lookup::Found("hunter2".into()));
+        // A different device has its own entry, and the unattended user is untouched.
+        assert!(!has_contact_password(&store, "987654321"));
+        assert_eq!(read_password(&store), Lookup::Missing);
+        delete_contact_password(&store, "123456789").unwrap();
+        assert!(!has_contact_password(&store, "123456789"));
+        // Forgetting one that is already gone is fine.
+        assert_eq!(delete_contact_password(&store, "123456789"), Ok(()));
     }
 
     #[test]

@@ -433,11 +433,28 @@ fn get_config(state: tauri::State<'_, AppState>) -> AppConfig {
         recent_ids: state.config.config.recent_ids.clone(),
         clipboard_sync: state.config.config.clipboard_sync,
         allow_virtual_displays: state.config.config.allow_virtual_displays,
+        recordings_max_bytes: state.config.config.recordings_max_bytes,
     }
 }
 #[tauri::command]
 fn list_contacts(state: tauri::State<'_, AppState>) -> Vec<Contact> {
-    state.lock().contacts.list()
+    let mut contacts = state.lock().contacts.list();
+    // Reflect which devices have a password saved in the keyring (read outside
+    // the state lock); a locked or missing keyring just reads as "none".
+    for contact in contacts.iter_mut() {
+        contact.has_saved_password = unattended::has_contact_password(&unattended::Keyring, &contact.id);
+    }
+    contacts
+}
+#[tauri::command]
+fn set_contact_password(peer_id: String, password: Option<String>) -> Result<(), String> {
+    if peer_id.len() != 9 || !peer_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("peer ID must be 9 digits".into());
+    }
+    match password {
+        Some(password) if !password.is_empty() => unattended::save_contact_password(&unattended::Keyring, &peer_id, &password),
+        _ => unattended::delete_contact_password(&unattended::Keyring, &peer_id),
+    }
 }
 #[tauri::command]
 fn list_allowed(state: tauri::State<'_, AppState>) -> Vec<String> {
@@ -464,6 +481,9 @@ fn add_contact(
 }
 #[tauri::command]
 fn remove_contact(state: tauri::State<'_, AppState>, peer_id: String) -> Result<(), String> {
+    // Forget any saved password for the device too, so removing a contact
+    // leaves nothing behind in the keyring.
+    let _ = unattended::delete_contact_password(&unattended::Keyring, &peer_id);
     state.lock().contacts.remove(&peer_id).map_err(|e| e.to_string())
 }
 #[tauri::command]
@@ -928,6 +948,7 @@ pub fn run() {
             add_contact,
             remove_contact,
             touch_contact,
+            set_contact_password,
             set_relay,
             get_unattended_status,
             windows_service_status,
@@ -986,6 +1007,7 @@ pub fn run() {
             finish_recording,
             list_recordings,
             delete_recording,
+            set_recordings_max_bytes,
             set_relays,
             list_relays,
             startup::close_keeps_running,

@@ -18,6 +18,7 @@ pub(crate) struct AppConfig {
     pub(crate) recent_ids: Vec<String>,
     pub(crate) clipboard_sync: bool,
     pub(crate) allow_virtual_displays: bool,
+    pub(crate) recordings_max_bytes: u64,
 }
 #[derive(Serialize)]
 pub(crate) struct UnattendedStatus {
