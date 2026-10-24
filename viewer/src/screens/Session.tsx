@@ -434,7 +434,16 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     finally { recordingStartingRef.current = false; }
     try {
       const stream = canvas.captureStream(60);
-      const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+      // Prefer VP9 (30-50% smaller than VP8 for the same quality) and cap the
+      // bitrate to the frame size; desktop content is mostly static so VBR
+      // lands well below this ceiling. Fall back to the browser default if the
+      // chosen options are refused, so recording never fails to start.
+      const codec = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
+        .find((type) => MediaRecorder.isTypeSupported?.(type)) ?? "video/webm";
+      const bitrate = Math.round(Math.min(Math.max((canvas.width || 1920) * (canvas.height || 1080) * 1.2, 1_000_000), 6_000_000));
+      let recorder: MediaRecorder;
+      try { recorder = new MediaRecorder(stream, { mimeType: codec, videoBitsPerSecond: bitrate }); }
+      catch { recorder = new MediaRecorder(stream, { mimeType: "video/webm" }); }
       recordingStreamRef.current = stream;
       recorderRef.current = recorder;
       // Chain writes so chunks land on disk in order; each is dropped from

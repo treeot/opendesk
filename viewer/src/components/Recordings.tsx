@@ -8,15 +8,35 @@ const formatWhen = (ms: number) => ms ? new Date(ms).toLocaleString([], { dateSt
 
 /** Lists finished session recordings from the Downloads folder, newest first,
  * with play, reveal-in-folder, and delete. */
+const GB = 1024 * 1024 * 1024;
+const CAP_OPTIONS = [
+  { label: "No limit", bytes: 0 },
+  { label: "1 GB", bytes: 1 * GB },
+  { label: "2 GB", bytes: 2 * GB },
+  { label: "5 GB", bytes: 5 * GB },
+  { label: "10 GB", bytes: 10 * GB },
+  { label: "20 GB", bytes: 20 * GB },
+];
+
 export default function Recordings() {
   const notify = useNotify();
   const [recordings, setRecordings] = useState<api.RecordingEntry[]>([]);
+  const [capBytes, setCapBytes] = useState<number>(0);
 
   const refresh = useCallback(() => {
     void api.listRecordings().then(setRecordings).catch((error: unknown) => notify(friendlyError(error)));
   }, [notify]);
 
   useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { void api.getConfig().then((config) => setCapBytes(config.recordings_max_bytes ?? 0)).catch(() => undefined); }, []);
+
+  const used = recordings.reduce((sum, entry) => sum + entry.size, 0);
+  const changeCap = (bytes: number) => {
+    const previous = capBytes;
+    setCapBytes(bytes);
+    // Lowering the cap prunes oldest recordings, so refresh the list after.
+    void api.setRecordingsMaxBytes(bytes).then(refresh).catch((error: unknown) => { setCapBytes(previous); notify(friendlyError(error)); });
+  };
 
   const play = (entry: api.RecordingEntry) => void openPath(entry.path).catch((error: unknown) => notify(friendlyError(error)));
   const reveal = (entry: api.RecordingEntry) => void revealItemInDir(entry.path).catch((error: unknown) => notify(friendlyError(error)));
@@ -49,6 +69,14 @@ export default function Recordings() {
               </div>
             ))}
           </div>}
+      <div className="recordings-cap">
+        <span className="caption">Using {formatFileSize(used)}{capBytes ? ` of ${formatFileSize(capBytes)}` : ""}</span>
+        <label className="recordings-cap__select">Keep up to&nbsp;
+          <select value={capBytes} onChange={(event) => changeCap(Number(event.target.value))} aria-label="Recordings storage limit">
+            {CAP_OPTIONS.map((option) => <option key={option.bytes} value={option.bytes}>{option.label}</option>)}
+          </select>
+        </label>
+      </div>
     </section>
   );
 }

@@ -2,10 +2,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { listRecordings, deleteRecording, openPath, revealItemInDir } = vi.hoisted(() => ({
-  listRecordings: vi.fn(), deleteRecording: vi.fn(), openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()),
+const { listRecordings, deleteRecording, getConfig, setRecordingsMaxBytes, openPath, revealItemInDir } = vi.hoisted(() => ({
+  listRecordings: vi.fn(), deleteRecording: vi.fn(),
+  getConfig: vi.fn(() => Promise.resolve({ relay_url: "", relay_urls: [], recent_ids: [], clipboard_sync: false, allow_virtual_displays: true, recordings_max_bytes: 5 * 1024 * 1024 * 1024 })),
+  setRecordingsMaxBytes: vi.fn(() => Promise.resolve()),
+  openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()),
 }));
-vi.mock("../lib/api", () => ({ listRecordings, deleteRecording }));
+vi.mock("../lib/api", () => ({ listRecordings, deleteRecording, getConfig, setRecordingsMaxBytes }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath, revealItemInDir }));
 
 import Recordings from "./Recordings";
@@ -35,5 +38,13 @@ describe("Recordings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete opendesk-session-a.webm" }));
     expect(deleteRecording).toHaveBeenCalledWith("/Users/me/Downloads/opendesk-session-a.webm");
     await waitFor(() => expect(screen.queryByText("opendesk-session-a.webm")).toBeNull());
+  });
+
+  it("changes the storage cap", async () => {
+    listRecordings.mockResolvedValue([]);
+    render(<Recordings />);
+    const select = await screen.findByLabelText("Recordings storage limit");
+    fireEvent.change(select, { target: { value: String(2 * 1024 * 1024 * 1024) } });
+    expect(setRecordingsMaxBytes).toHaveBeenCalledWith(2 * 1024 * 1024 * 1024);
   });
 });
