@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 /// How long a viewer keeps retrying after a session drops transiently.
-pub const VIEWER_RECONNECT_WINDOW: Duration = Duration::from_secs(30);
+pub const VIEWER_RECONNECT_WINDOW: Duration = Duration::from_secs(60);
 /// Upper bound for the per-attempt backoff.
 pub const VIEWER_BACKOFF_CAP: Duration = Duration::from_secs(4);
 
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(delay, Duration::from_secs(2));
         assert!(notice.contains("attempt 3"), "{notice}");
         let NextStep::Stop { message } = after_failure("connection closed during session", true, 9, VIEWER_RECONNECT_WINDOW) else { panic!() };
-        assert!(message.ends_with("gave up reconnecting after 30s"), "{message}");
+        assert!(message.ends_with("gave up reconnecting after 60s"), "{message}");
     }
 
     #[test]
