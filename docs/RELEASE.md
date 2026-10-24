@@ -112,5 +112,7 @@ Optionally, macOS releases can be signed with a stable self-signed certificate
 so users' Screen Recording and Accessibility grants survive updates (TCC keys on
 the certificate, not the per-build hash; Gatekeeper still warns). Set the repo
 secrets `MACOS_SIGN_CERT` (base64 `.p12`), `MACOS_SIGN_CERT_PASSWORD`, and
-`MACOS_SIGN_IDENTITY` (the certificate's name). Reuse the same certificate every
-release. Unset, builds stay ad-hoc.
+`MACOS_SIGN_IDENTITY` (the certificate's name). Export the `.p12` with OpenSSL's
+`-legacy` flag (or LibreSSL's `/usr/bin/openssl`); OpenSSL 3's default PKCS#12
+algorithms fail macOS `security import` with a misleading "wrong password"
+error. Reuse the same certificate every release. Unset, builds stay ad-hoc.
