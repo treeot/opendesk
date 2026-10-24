@@ -225,12 +225,13 @@ describe("Session viewer transport", () => {
 describe("Session host role", () => {
   afterEach(() => { cleanup(); setViewerPermission.mockClear(); disconnectViewer.mockClear(); });
 
-  it("shows the toolbar plus the host control panel", () => {
+  it("shows the host control panel with chat, no viewer toolbar", () => {
     const view = render(<Session remoteId="123" role="host" onDisconnect={vi.fn()} />);
     expect(view.container.querySelector("canvas")).toBeNull();
-    // No viewer-side file transfer drawer for the host.
+    // No viewer-side file transfer drawer or viewer toolbar for the host.
     expect(view.container.querySelector(".file-transfer")).toBeNull();
-    expect(view.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual(["Disconnect viewer", "Sync clipboard", "Disconnect"]);
+    expect(view.container.querySelector(".session-toolbar")).toBeNull();
+    expect(view.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual(["Chat", "Disconnect viewer"]);
     expect(view.getByLabelText("Session timer")).toBeTruthy();
     expect(view.getByLabelText("Viewer controls")).toBeTruthy();
   });

@@ -115,6 +115,7 @@ export function virtualDisplaySize(width: number, height: number, ratio: number)
   return { width: pixelsW - (pixelsW % 2), height: pixelsH - (pixelsH % 2), hidpi: scale >= 1.5 };
 }
 
+
 const ADD_DISPLAY = "add-display";
 
 /** Stream quality tiers: the bitrate cap in bps, 0 meaning automatic. */
@@ -188,10 +189,9 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
             {icons.monitor}
             <select aria-label="Monitor" value={selectedMonitor ?? monitors[0].id} onChange={(event) => { if (event.target.value === ADD_DISPLAY) onAddDisplay(); else onMonitorChange(Number(event.target.value)); }}>
               {monitors.map((monitor, index) => <option key={monitor.id} value={monitor.id}>{monitorName(monitor.name, index)}{monitor.width && monitor.height ? ` · ${monitor.width}×${monitor.height}` : ""}{monitor.is_primary ? " · Primary" : ""}{monitor.is_virtual ? " · Virtual" : ""}</option>)}
-              {canAddDisplay && <option value={ADD_DISPLAY}>Add display…</option>}
+              {canAddDisplay && <option value={ADD_DISPLAY}>Add screen…</option>}
             </select>
           </label>}
-          {viewer && canAddDisplay && <IconButton label="Add screen" text="Add screen" title="Add a virtual screen to the other computer" icon={icons.addMonitor} onClick={onAddDisplay} />}
           {viewer && <label className="session-toolbar__select-chip" title="Cap the stream quality. Auto follows your connection.">
             <span className="sr-only">Quality</span>
             {icons.gauge}
