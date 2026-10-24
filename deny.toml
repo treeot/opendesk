@@ -28,6 +28,9 @@ allow = [
     "BSL-1.0",
     # webpki-root-certs (Mozilla CA bundle), via the Tauri updater's HTTP client.
     "CDLA-Permissive-2.0",
+    # ffmpeg-next / ffmpeg-sys-next, pulled in only by the optional `vaapi`
+    # feature. WTFPL is a public-domain-equivalent permissive licence.
+    "WTFPL",
 ]
 confidence-threshold = 0.9
 
