@@ -65,7 +65,7 @@ impl SecureDesktopCapturer {
             }
             let bitmap = CreateCompatibleBitmap(source, width, height);
             if bitmap.is_invalid() {
-                DeleteDC(memory);
+                let _ = DeleteDC(memory);
                 ReleaseDC(None, source);
                 return None;
             }
@@ -98,8 +98,8 @@ impl SecureDesktopCapturer {
                 0
             };
             SelectObject(memory, previous);
-            DeleteObject(bitmap.into());
-            DeleteDC(memory);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(memory);
             ReleaseDC(None, source);
             (copied && rows == height).then_some(RawFrame {
                 width: self.width,
