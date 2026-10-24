@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { friendlyError, useNotify } from "../lib/notify";
+
+/** A manual "Check for updates" request, dispatched from the Home screen. */
+export const CHECK_NOW_EVENT = "opendesk:check-for-updates";
 
 /** How often a running app looks for a new release. */
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -26,6 +30,7 @@ export interface UpdateBannerProps {
  * logged and otherwise ignored: an update is never worth a scary dialog.
  */
 export default function UpdateBanner({ enabled, visible }: UpdateBannerProps) {
+  const notify = useNotify();
   const [update, setUpdate] = useState<Update | null>(null);
   const [phase, setPhase] = useState<Phase>("available");
   const [progress, setProgress] = useState<number | null>(null);
@@ -36,26 +41,34 @@ export default function UpdateBanner({ enabled, visible }: UpdateBannerProps) {
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
 
+  // A manual check (from the Home button) reports its result and ignores a
+  // previous dismissal; the background check stays silent and respects it.
+  const runCheck = useCallback(async (manual: boolean) => {
+    if (updateRef.current) { if (manual) notify(`Update available: v${updateRef.current.version}`, "info"); return; }
+    if (manual) notify("Checking for updates…", "info");
+    try {
+      const found = await check({ timeout: CHECK_TIMEOUT_MS });
+      if (!found) { if (manual) notify("OpenDesk is up to date.", "info"); return; }
+      if (!manual && found.version === dismissed.current) { void found.close().catch(() => {}); return; }
+      updateRef.current = found;
+      setUpdate(found);
+      setPhase("available");
+      if (manual) notify(`Update available: v${found.version}`, "info");
+    } catch (error) {
+      if (manual) notify(friendlyError(error), "error");
+      else console.warn("Update check failed:", error);
+    }
+  }, [notify]);
+
   useEffect(() => {
-    if (!enabled) return;
-    let active = true;
-    const run = async () => {
-      if (updateRef.current) return;
-      try {
-        const found = await check({ timeout: CHECK_TIMEOUT_MS });
-        if (!found) return;
-        if (!active || found.version === dismissed.current) { void found.close().catch(() => {}); return; }
-        updateRef.current = found;
-        setUpdate(found);
-        setPhase("available");
-      } catch (error) {
-        console.warn("Update check failed:", error);
-      }
-    };
-    void run();
-    const timer = window.setInterval(() => void run(), CHECK_INTERVAL_MS);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [enabled]);
+    // The manual trigger works regardless of the background schedule.
+    const onManual = () => void runCheck(true);
+    window.addEventListener(CHECK_NOW_EVENT, onManual);
+    if (!enabled) return () => window.removeEventListener(CHECK_NOW_EVENT, onManual);
+    void runCheck(false);
+    const timer = window.setInterval(() => void runCheck(false), CHECK_INTERVAL_MS);
+    return () => { window.clearInterval(timer); window.removeEventListener(CHECK_NOW_EVENT, onManual); };
+  }, [enabled, runCheck]);
 
   const restart = useCallback(async (target: Update) => {
     setPhase("installing");

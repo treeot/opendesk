@@ -6,7 +6,8 @@ const { check, relaunch } = vi.hoisted(() => ({ check: vi.fn(), relaunch: vi.fn(
 vi.mock("@tauri-apps/plugin-updater", () => ({ check }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch }));
 
-import UpdateBanner, { CHECK_INTERVAL_MS, CHECK_TIMEOUT_MS, DOWNLOAD_STALL_MS, DOWNLOAD_TIMEOUT_MS } from "./UpdateBanner";
+import UpdateBanner, { CHECK_INTERVAL_MS, CHECK_NOW_EVENT, CHECK_TIMEOUT_MS, DOWNLOAD_STALL_MS, DOWNLOAD_TIMEOUT_MS } from "./UpdateBanner";
+import { NotifyContext } from "../lib/notify";
 
 type DownloadEvent = { event: "Started"; data: { contentLength?: number } } | { event: "Progress"; data: { chunkLength: number } } | { event: "Finished" };
 
@@ -141,6 +142,25 @@ describe("UpdateBanner", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(screen.getByText("The update didn't install. Try again later.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("checks on demand and reports when up to date, even when disabled", async () => {
+    check.mockResolvedValue(null);
+    const notify = vi.fn();
+    render(<NotifyContext.Provider value={notify}><UpdateBanner enabled={false} visible /></NotifyContext.Provider>);
+    expect(check).not.toHaveBeenCalled();
+    act(() => { window.dispatchEvent(new Event(CHECK_NOW_EVENT)); });
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    expect(notify).toHaveBeenCalledWith("OpenDesk is up to date.", "info");
+  });
+
+  it("shows a banner found by an on-demand check", async () => {
+    check.mockResolvedValue(fakeUpdate("0.1.0-beta.7"));
+    render(<UpdateBanner enabled visible />);
+    await waitFor(() => expect(check).toHaveBeenCalled());
+    check.mockResolvedValue(fakeUpdate("0.1.0-beta.7"));
+    act(() => { window.dispatchEvent(new Event(CHECK_NOW_EVENT)); });
+    expect(await screen.findByText("Update available: v0.1.0-beta.7")).toBeTruthy();
   });
 
   it("remembers a dismissed version and checks again later", async () => {
