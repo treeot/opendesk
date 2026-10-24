@@ -43,8 +43,10 @@ path is used whenever the network allows it.
 | 🖥️ **Hardware H.264** | VideoToolbox on macOS, Media Foundation on Windows, openh264 elsewhere |
 | 🔊 **System sound** | macOS 14.6+, Windows, Linux (PulseAudio / PipeWire) |
 | 📁 **Files and clipboard** | Encrypted file transfer with consent and hash check; text clipboard sync |
+| 🎬 **Session recording** | Record to a local WebM file, browse past recordings, and cap the disk space they use |
 | 🪟 **Multi-monitor** | Pick a monitor, or add a virtual display on macOS and Windows |
 | 🌙 **Unattended access** | Stored password, optional 2FA code, start at sign-in with a tray icon |
+| 🔗 **Quick connect** | Save a device's password for one-click reconnect, or share an invite link |
 | 🌐 **Browser viewer** | Connect from any modern browser at [/connect](https://opendesk.treeot.dev/connect/) |
 | 🔄 **Auto-update** | Signed updates checked from GitHub Releases |
 
@@ -58,9 +60,12 @@ path is used whenever the network allows it.
 2. **Install the app** on both computers from
    [Releases](https://github.com/treeot/opendesk/releases) and set the relay to
    `wss://relay.example.com/ws`.
-3. **Host:** click **Start hosting** and note the nine-digit ID.
-4. **Viewer:** enter that ID and the session password, then accept on the host
-   (or set up unattended access to skip that).
+3. **Host:** click **Start hosting** and note the nine-digit ID, or use **Copy
+   invite** to share a link that fills it in.
+4. **Viewer:** enter that ID (or paste the invite link) and the session
+   password, then accept on the host. Tick **Remember password for this
+   device** to reconnect in one click, or set up unattended access to skip the
+   prompt entirely.
 
 The [getting started guide](https://opendesk.treeot.dev/docs/getting-started/)
 covers each step in more detail.
@@ -130,6 +135,7 @@ To run two instances on one machine, see [`docs/TESTING.md`](docs/TESTING.md).
 - [x] Hardware H.264 on macOS and Windows
 - [x] Files, clipboard, audio, recording, multi-monitor
 - [x] Unattended access with 2FA, start at sign-in
+- [x] Saved device passwords and shareable invite links
 - [x] Browser viewer
 - [x] Virtual displays on macOS and Windows
 - [x] In-session text chat and view-only sessions
