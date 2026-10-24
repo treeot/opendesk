@@ -622,7 +622,9 @@ pub(crate) fn spawn_host_thread(
                     rotate_at = None;
                 }
                 if after.rotate_after_reconnect_window {
-                    rotate_at = Some(tokio::time::Instant::now() + host_core::reconnect::VIEWER_RECONNECT_WINDOW);
+                    // Hold the password past the viewer's whole reconnect window
+                    // (plus a grace margin) so a late reconnect still authenticates.
+                    rotate_at = Some(tokio::time::Instant::now() + host_core::reconnect::VIEWER_RECONNECT_WINDOW + host_core::reconnect::HOST_PASSWORD_GRACE);
                 }
                 if ended.stopped {
                     break;

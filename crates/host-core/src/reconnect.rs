@@ -2,8 +2,15 @@ use std::time::Duration;
 
 /// How long a viewer keeps retrying after a session (or the initial attempt)
 /// drops transiently. Time-based rather than attempt-based so a host that is
-/// re-registering with the relay has a realistic chance to come back.
-pub const VIEWER_RECONNECT_WINDOW: Duration = Duration::from_secs(30);
+/// re-registering with the relay has a realistic chance to come back. Long
+/// enough to ride out a VPN re-key or relay blip, which can take most of a
+/// minute.
+pub const VIEWER_RECONNECT_WINDOW: Duration = Duration::from_secs(60);
+
+/// Extra time the host keeps a dropped session's one-time password valid beyond
+/// the viewer's reconnect window, so a reconnect that lands near the end of the
+/// window still authenticates instead of racing the password rotation.
+pub const HOST_PASSWORD_GRACE: Duration = Duration::from_secs(15);
 
 /// Upper bound for the viewer's per-attempt backoff.
 pub const VIEWER_BACKOFF_CAP: Duration = Duration::from_secs(4);
@@ -303,17 +310,18 @@ mod tests {
             attempt += 1;
         }
         assert_eq!(elapsed, VIEWER_RECONNECT_WINDOW);
-        // 0.5+1+2+4 = 7.5s, then 4s steps: far more than the old 5 attempts.
-        assert_eq!(attempt, 10);
+        // 0.5+1+2+4 = 7.5s, then 4s steps up to the 60s window: a final clamped
+        // step lands exactly on the window.
+        assert_eq!(attempt, 18);
     }
 
     #[test]
     fn viewer_retry_window_clamps_and_expires() {
         assert_eq!(viewer_retry_delay(0, Duration::ZERO), Some(Duration::from_millis(500)));
         assert_eq!(viewer_retry_delay(5, Duration::from_secs(10)), Some(Duration::from_secs(4)));
-        assert_eq!(viewer_retry_delay(5, Duration::from_secs(29)), Some(Duration::from_secs(1)));
+        assert_eq!(viewer_retry_delay(5, Duration::from_secs(59)), Some(Duration::from_secs(1)));
         assert_eq!(viewer_retry_delay(0, VIEWER_RECONNECT_WINDOW), None);
-        assert_eq!(viewer_retry_delay(0, Duration::from_secs(45)), None);
+        assert_eq!(viewer_retry_delay(0, Duration::from_secs(75)), None);
     }
 
     #[test]
