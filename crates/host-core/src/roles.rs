@@ -425,10 +425,7 @@ async fn viewer_kex(
                 // offers another password before giving up.
                 loop {
                     match tokio::time::timeout_at(deadline, recv_control(control_rx)).await.ok().flatten() {
-                        Some(body) => match parse_kex(&body) {
-                            Some((KEX_RETRY, _)) => break,
-                            _ => {}
-                        },
+                        Some(body) => if matches!(parse_kex(&body), Some((KEX_RETRY, _))) { break; },
                         None => {
                             drain_before_close(sender).await;
                             return Err("key confirmation failed".to_owned());
