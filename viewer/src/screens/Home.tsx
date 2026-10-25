@@ -64,6 +64,8 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
   // Connect screen vs. the tabbed settings screen (AnyDesk-style split).
   const [view, setView] = useState<"connect" | "settings">("connect");
   const [settingsTab, setSettingsTab] = useState<"access" | "security" | "network" | "recordings" | "about">("access");
+  const [version, setVersion] = useState("");
+  useEffect(() => { void api.appVersion().then(setVersion).catch(() => undefined); }, []);
   // Address book layout, remembered per device.
   const [addressView, setAddressView] = useState<"grid" | "list">(() => { try { return localStorage.getItem("opendesk.addressView") === "list" ? "list" : "grid"; } catch { return "grid"; } });
   const chooseAddressView = (next: "grid" | "list") => { setAddressView(next); try { localStorage.setItem("opendesk.addressView", next); } catch { /* private mode */ } };
@@ -363,7 +365,7 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
 
   const networkCard = <section className="card relay-card"><span className="eyebrow">RELAY REGIONS</span><h2>Relay endpoints</h2><textarea className="relay-editor mono" value={relayText} onChange={(event) => setRelayText(event.target.value)} aria-label="Relay URLs" rows={Math.max(2, relays.length)} /><button className="quiet-button" type="button" onClick={() => void saveRelays()}>Save relay list</button><p className="caption">One WebSocket URL per line. OpenDesk contacts them all at once and uses whichever answers fastest, so add relays near the people you connect with.</p></section>;
 
-  const aboutCard = <section className="card about-card"><span className="eyebrow">ABOUT</span><h2>OpenDesk</h2><p className="caption">Open-source remote desktop. End-to-end encrypted sessions over your own relay.</p><div className="about-actions"><button className="quiet-button" type="button" onClick={() => window.dispatchEvent(new Event(CHECK_NOW_EVENT))}>Check for updates</button><button className="quiet-button" type="button" onClick={onOpenPermissions}>Permissions</button>{closeKeepsRunning && <button className="quiet-button" type="button" onClick={() => void api.quitApp().catch(() => undefined)}>Quit OpenDesk</button>}</div></section>;
+  const aboutCard = <section className="card about-card"><span className="eyebrow">ABOUT</span><h2>OpenDesk</h2>{version && <p className="caption mono about-version">Version {version}</p>}<p className="caption">Open-source remote desktop. End-to-end encrypted sessions over your own relay.</p><div className="about-actions"><button className="quiet-button" type="button" onClick={() => window.dispatchEvent(new Event(CHECK_NOW_EVENT))}>Check for updates</button><button className="quiet-button" type="button" onClick={onOpenPermissions}>Permissions</button>{closeKeepsRunning && <button className="quiet-button" type="button" onClick={() => void api.quitApp().catch(() => undefined)}>Quit OpenDesk</button>}</div></section>;
 
   const settingsTabs: { id: typeof settingsTab; label: string }[] = [
     { id: "access", label: "Access" },

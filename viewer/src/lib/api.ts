@@ -77,6 +77,8 @@ export const setUnattendedAccess = (enabled: boolean, password: string | null) =
 export const setUnattended2fa = (enabled: boolean) => invoke<TotpEnrollment | null>("set_unattended_2fa", { enabled });
 export const confirmUnattended2fa = (code: string) => invoke<UnattendedStatus>("confirm_unattended_2fa", { code });
 export const permissionStatus = () => invoke<PermissionStatus>("permission_status");
+/** The app version for the About screen (release tag in built apps). */
+export const appVersion = () => invoke<string>("app_version");
 export const openPermissionSettings = (which: "screen" | "accessibility") => invoke<void>("open_permission_settings", { which });
 // Tauri v2 exposes Rust snake_case params to JS as camelCase (peerId/targetId).
 export const respondToRequest = (peer_id: string, allow: boolean, always: boolean) => invoke<void>("respond_to_request", { peerId: peer_id, allow, always });

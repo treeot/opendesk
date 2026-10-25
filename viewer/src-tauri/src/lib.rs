@@ -711,6 +711,12 @@ fn set_unattended_access(
     state.config.save().map_err(|error| error.to_string())?;
     Ok(unattended_status(&state.config.config))
 }
+/// The app version to show in the About screen. In release builds this is the
+/// release tag the workflow stamps into the config (e.g. 0.1.0-beta.14).
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
 #[tauri::command]
 fn permission_status() -> PermissionStatus {
     PermissionStatus {
@@ -1035,6 +1041,7 @@ pub fn run() {
             upload_to_remote,
             request_keyframe,
             set_clipboard_sync,
+            app_version,
             set_allow_virtual_displays,
             add_virtual_display,
             remove_virtual_display,

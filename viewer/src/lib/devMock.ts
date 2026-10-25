@@ -82,6 +82,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   confirm_unattended_2fa: () => { state.unattended.twofa_enabled = true; return state.unattended; },
   permission_status: () => ({ screen_recording: true, accessibility: true }),
+  app_version: () => "0.1.0-dev",
   close_keeps_running: () => false,
   get_presence: ({ ids }) => (ids as string[]).filter((_, i) => i % 2 === 0),
   virtual_display_driver_status: () => ({ applies: false, installed: false, license: "" }),
