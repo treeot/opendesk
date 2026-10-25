@@ -14,8 +14,22 @@ Beta build for testing. Expect rough edges, and please report what breaks.
   straight to it.
 - **Session recording:** record a session to a local WebM file, browse past
   recordings, and cap how much disk space they use (settings → Recordings).
-- **Wake-on-LAN (new):** save a device's MAC address to wake it over the local
-  network before you connect, from the **Wake** button in the address book.
+- **Wake-on-LAN:** wake a saved device over the local network from the **Wake**
+  button. Its MAC is captured automatically the first time you connect, so there
+  is nothing to type; you can still set it by hand for a device you have never
+  connected to.
+- **Either password connects:** with unattended access on, you can connect with
+  the on-screen session password or your unattended access password. Both work,
+  and 2FA still applies if it is on.
+- **Clipboard sync on by default:** copy and paste moves between you and the
+  remote during a session. Turn it off per session if you would rather it did
+  not.
+- **Open invite links in the app:** `opendesk://` invite links now open OpenDesk
+  and fill in the ID, once this build is installed.
+- **Recordings moved:** session recordings now save to your Movies (macOS) or
+  Videos (Windows and Linux) folder instead of Downloads.
+- **Remembered port forwards:** forwards you set for a device come back on the
+  next connection to it.
 - **Clearer permissions:** the hosting permissions setup was reworked, and the
   home screen now warns up front when screen recording or accessibility is
   missing so hosting does not silently fail.
@@ -61,7 +75,12 @@ These features are new and haven't run on real hardware yet:
 - **HEVC (macOS and Windows):** the H.265 path has been built but not yet
   decoded end to end on real hardware. If video looks wrong, it falls back to
   H.264; please report it. The browser viewer uses HEVC only where it can.
-- **Wake-on-LAN:** new; test waking a saved device on the same network.
+- **Wake-on-LAN:** test waking a saved device on the same network after
+  connecting to it once (the MAC is captured on that first connection).
+- **Windows sign-in screen:** the SYSTEM service that reaches the lock and
+  sign-in screen (Settings → Unattended access → **Run OpenDesk at the Windows
+  sign-in screen**) is experimental; test enabling it and connecting while the
+  host is locked.
 - **Hardware H.264 on Linux (VAAPI):** experimental and off by default. Build
   host-core with `--features vaapi` (needs the ffmpeg development libraries and
   a VAAPI driver); it falls back to software if the encoder cannot start.
