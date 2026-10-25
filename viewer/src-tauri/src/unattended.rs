@@ -171,7 +171,14 @@ pub fn stage_machine_store(data_dir: &Path) -> Result<(), String> {
     // down too: it sits in ProgramData until the service promotes it.
     let plain = serde_json::to_vec(&secrets).map_err(|error| error.to_string())?;
     let sealed = dpapi::protect(&plain).ok_or("could not encrypt the staged secrets")?;
-    write_locked(&data_dir.join("service-secrets.json"), &sealed)
+    // Stage inside the user's own AppData with a plain write. The blob is already
+    // DPAPI-sealed and the folder is user-profile protected, so it needs no extra
+    // ACL. Do NOT use write_locked here: its SYSTEM+Administrators-only lockdown is
+    // meant for the ProgramData store and would strip the current user's access to
+    // their own app data, breaking the next write with Access denied (os error 5).
+    let staged = data_dir.join("service-secrets.json");
+    if let Some(parent) = staged.parent() { std::fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+    std::fs::write(&staged, &sealed).map_err(|error| error.to_string())
 }
 
 /// Remove the machine secret store. Called when the sign-in service is
