@@ -121,7 +121,7 @@ describe("Home", () => {
     render(<Home status="online" onConnect={vi.fn()} />);
     await screen.findByText("123456789");
     openSettings("About");
-    expect(await screen.findByText("Version 0.1.0-test")).toBeTruthy();
+    expect(await screen.findByText("v0.1.0-test")).toBeTruthy();
   });
 
   it("offers Quit only when closing the window keeps OpenDesk running", async () => {
