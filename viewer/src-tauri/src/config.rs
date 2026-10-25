@@ -50,9 +50,11 @@ pub struct Config {
     pub unattended_enabled: bool,
     #[serde(default)]
     pub unattended_twofa_enabled: bool,
-    /// Clipboard sync during sessions. Off unless the user turns it on, since
-    /// it shares clipboard contents with the remote peer in both directions.
-    #[serde(default)]
+    /// Clipboard sync during sessions. On by default so copy and paste works
+    /// across the session like other remote desktops; the host can still block
+    /// the viewer's clipboard per session, and turning it off stops sharing in
+    /// both directions.
+    #[serde(default = "default_true")]
     pub clipboard_sync: bool,
     /// Viewers may add virtual displays during a session (macOS, or Windows
     /// with the driver from Home), and a computer with no screen gets
@@ -87,7 +89,7 @@ impl Default for Config {
             legacy_unattended_password: None,
             unattended_enabled: false,
             unattended_twofa_enabled: false,
-            clipboard_sync: false,
+            clipboard_sync: true,
             allow_virtual_displays: true,
             recordings_max_bytes: default_recordings_max_bytes(),
         }
@@ -720,14 +722,14 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_sync_defaults_off_and_persists() {
+    fn clipboard_sync_defaults_on_and_persists() {
         let dir = test_dir();
         let mut store = ConfigStore::load(&dir).unwrap();
-        assert!(!store.config.clipboard_sync);
-        store.set_clipboard_sync(true).unwrap();
-        assert!(ConfigStore::load(&dir).unwrap().config.clipboard_sync);
+        assert!(store.config.clipboard_sync);
+        store.set_clipboard_sync(false).unwrap();
+        assert!(!ConfigStore::load(&dir).unwrap().config.clipboard_sync);
         let legacy: Config = serde_json::from_str(r#"{"id":"123456789","relay_url":"wss://x","allow_list":[],"recent_ids":[]}"#).unwrap();
-        assert!(!legacy.clipboard_sync);
+        assert!(legacy.clipboard_sync, "old configs get the new on-by-default");
         let _ = fs::remove_dir_all(dir);
     }
 }
