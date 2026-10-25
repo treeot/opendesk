@@ -2,15 +2,50 @@ import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { friendlyError, useNotify } from "../lib/notify";
 
+/** Forwards saved for a device, so they return on the next connection. */
+const savedKey = (remoteId?: string) => (remoteId ? `opendesk.forwards.${remoteId}` : null);
+const loadSaved = (remoteId?: string): [number, number][] => {
+  const key = savedKey(remoteId);
+  if (!key) return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "[]");
+    if (!Array.isArray(value)) return [];
+    return value.filter((p): p is [number, number] => Array.isArray(p) && p.length === 2 && Number.isInteger(p[0]) && Number.isInteger(p[1]));
+  } catch { return []; }
+};
+const saveForwards = (remoteId: string | undefined, list: [number, number][]) => {
+  const key = savedKey(remoteId);
+  if (!key) return;
+  try { localStorage.setItem(key, JSON.stringify(list)); } catch { /* storage may be blocked */ }
+};
+
 /** Viewer panel to forward local TCP ports to the host's loopback (e.g. Ollama). */
-export default function PortForward({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function PortForward({ open, onClose, remoteId }: { open: boolean; onClose: () => void; remoteId?: string }) {
   const notify = useNotify();
   const [forwards, setForwards] = useState<[number, number][]>([]);
   const [local, setLocal] = useState("");
   const [remote, setRemote] = useState("");
 
-  const refresh = () => void api.listForwards().then(setForwards).catch(() => {});
-  useEffect(() => { if (open) refresh(); }, [open]);
+  const refresh = () => api.listForwards().then((list) => { setForwards(list); return list; }).catch(() => [] as [number, number][]);
+  // On open, restore this device's saved forwards if none are running yet.
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void (async () => {
+      const current = await refresh();
+      if (!active || current.length > 0) return;
+      const saved = loadSaved(remoteId);
+      if (saved.length === 0) return;
+      let failed = 0;
+      for (const [l, r] of saved) {
+        try { await api.startForward(l, r); } catch { failed += 1; }
+      }
+      if (!active) return;
+      await refresh();
+      if (failed > 0) notify("Some saved forwards could not start. Is forwarding allowed on the host?", "info");
+    })();
+    return () => { active = false; };
+  }, [open, remoteId]);
   if (!open) return null;
 
   const port = (value: string) => {
@@ -26,14 +61,14 @@ export default function PortForward({ open, onClose }: { open: boolean; onClose:
       await api.startForward(l, r);
       setLocal("");
       setRemote("");
-      refresh();
+      saveForwards(remoteId, await refresh());
     } catch (error) {
       notify(friendlyError(error));
     }
   };
 
   const stop = async (l: number) => {
-    try { await api.stopForward(l); refresh(); } catch (error) { notify(friendlyError(error)); }
+    try { await api.stopForward(l); saveForwards(remoteId, await refresh()); } catch (error) { notify(friendlyError(error)); }
   };
 
   return (
