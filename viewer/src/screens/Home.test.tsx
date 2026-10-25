@@ -231,18 +231,20 @@ describe("Home", () => {
     expect(api.addContact).not.toHaveBeenCalled();
   });
 
-  it("enables the unattended checkbox only with a password, and reverts it when saving fails", async () => {
+  it("lets you enable first, prompts for a password, and reverts when saving fails", async () => {
     vi.mocked(api.setUnattendedAccess).mockRejectedValue("unattended access password must be at least 12 characters");
     const notify = vi.fn();
     render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
     openSettings("Access");
     const enabled = screen.getByRole("checkbox", { name: "Enabled" }) as HTMLInputElement;
-    expect(screen.getByPlaceholderText("Set a password (12+ characters)")).toBeTruthy();
-    expect(enabled.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Unattended access password"), { target: { value: "short" } });
     expect(enabled.disabled).toBe(false);
     fireEvent.click(enabled);
     expect(enabled.checked).toBe(true);
+    // Saving with no password yet tells you what to do instead of calling the backend.
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(notify).toHaveBeenCalledWith("Set a password to turn on unattended access.", "error"));
+    expect(api.setUnattendedAccess).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Unattended access password"), { target: { value: "short" } });
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith("Use at least 12 characters for the unattended access password.", "error"));
     expect(enabled.checked).toBe(false);
