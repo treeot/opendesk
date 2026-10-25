@@ -232,6 +232,7 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!/^\d{9}$/.test(targetId)) { setMessage("Enter the 9-digit ID."); return; }
+    if (targetId === identity?.id) { setMessage("That's this device's own ID."); return; }
     openConnectPopup(targetId);
   };
   const submitPopup = async (event: FormEvent) => {
@@ -263,6 +264,7 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
 
   // Saved-password devices connect in one click; the rest open the popup.
   const startConnect = (contact: api.Contact) => {
+    if (contact.id === identity?.id) { setMessage("That's this device's own ID."); return; }
     if (contact.has_saved_password) void runConnect(contact.id, "");
     else openConnectPopup(contact.id, contact.alias);
   };

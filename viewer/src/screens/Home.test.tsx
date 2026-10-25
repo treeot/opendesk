@@ -469,4 +469,15 @@ describe("Home", () => {
     await screen.findByRole("button", { name: "Connect to Office" });
     expect(screen.queryByRole("button", { name: "Wake-on-LAN settings for Office" })).toBeNull();
   });
+
+  it("refuses connecting to this device's own ID", async () => {
+    const notify = vi.fn();
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={onConnect} /></NotifyContext.Provider>);
+    await screen.findByText("123456789");
+    fireEvent.change(screen.getByLabelText("Remote device ID"), { target: { value: "123456789" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(notify).toHaveBeenCalledWith("That's this device's own ID.", "error");
+    expect(onConnect).not.toHaveBeenCalled();
+  });
 });

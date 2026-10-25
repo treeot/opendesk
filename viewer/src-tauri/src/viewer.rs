@@ -227,6 +227,9 @@ pub(crate) fn connect(
     if target_id.len() != 9 || !target_id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("target ID must be 9 digits".into());
     }
+    if target_id == state.lock().config.config.id {
+        return Err("That's this device's own ID. Connect from a different computer.".into());
+    }
     // An empty password means "use the one saved for this device", so the
     // saved secret never has to pass through the UI.
     let password = if password.is_empty() {
