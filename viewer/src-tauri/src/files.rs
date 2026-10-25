@@ -63,6 +63,23 @@ pub(crate) fn downloads_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Downloads"))
 }
 
+/// The user's videos folder: `~/Movies` on macOS, `~/Videos` elsewhere (honours
+/// `XDG_VIDEOS_DIR` on Linux). Unlike Downloads, macOS does not guard this
+/// folder behind a privacy prompt, so writing recordings here is silent.
+pub(crate) fn videos_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("XDG_VIDEOS_DIR") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let folder = if cfg!(target_os = "macos") { "Movies" } else { "Videos" };
+    home.map(|path| path.join(folder))
+        .unwrap_or_else(|| PathBuf::from(folder))
+}
+
 pub(crate) fn route_file_consent(
     pending: &mut HashMap<u64, oneshot::Sender<bool>>,
     id: u64,

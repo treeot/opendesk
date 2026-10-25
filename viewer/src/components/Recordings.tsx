@@ -6,7 +6,7 @@ import { formatFileSize } from "./FileTransfer";
 
 const formatWhen = (ms: number) => ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
 
-/** Lists finished session recordings from the Downloads folder, newest first,
+/** Lists finished session recordings from the recordings folder, newest first,
  * with play, reveal-in-folder, and delete. */
 const GB = 1024 * 1024 * 1024;
 const CAP_OPTIONS = [

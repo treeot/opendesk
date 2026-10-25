@@ -1176,9 +1176,9 @@ mod tests {
     }
 
     #[test]
-    fn recording_path_stays_in_downloads_directory() {
+    fn recording_path_stays_in_recordings_directory() {
         let path = recording_path("../../capture");
-        assert_eq!(path.parent(), Some(downloads_dir().as_path()));
+        assert_eq!(path.parent(), Some(recordings_base_dir().as_path()));
         assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("capture.webm"));
     }
 

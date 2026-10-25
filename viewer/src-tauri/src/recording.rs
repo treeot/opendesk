@@ -5,9 +5,15 @@ use super::*;
 /// Maximum size of one session recording on disk.
 pub(crate) const MAX_RECORDING_SIZE: usize = 2 * 1024 * 1024 * 1024;
 
+/// The folder session recordings are written to: an `OpenDesk` subfolder of the
+/// user's videos folder, keeping them tidy and out of the TCC-guarded Downloads.
+pub(crate) fn recordings_base_dir() -> PathBuf {
+    videos_dir().join("OpenDesk")
+}
+
 #[allow(dead_code)]
 pub(crate) fn recording_path(suggested_name: &str) -> PathBuf {
-    downloads_dir().join(sanitize_recording_name(suggested_name))
+    recordings_base_dir().join(sanitize_recording_name(suggested_name))
 }
 
 pub(crate) fn validate_recording_size_len(size: usize) -> Result<(), String> {
@@ -126,11 +132,11 @@ impl Recordings {
 }
 
 pub(crate) fn recordings_dir() -> Result<PathBuf, String> {
-    let directory = downloads_dir();
+    let directory = recordings_base_dir();
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let metadata = fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err("recording Downloads path must be a regular directory".into());
+        return Err("recordings path must be a regular directory".into());
     }
     fs::canonicalize(&directory).map_err(|error| error.to_string())
 }
@@ -176,7 +182,7 @@ pub(crate) fn set_recordings_max_bytes(state: tauri::State<'_, AppState>, bytes:
 }
 
 /// The prefix every session recording's filename carries, so the list and the
-/// delete command only ever touch OpenDesk's own files in the Downloads folder.
+/// delete command only ever touch OpenDesk's own files in the recordings folder.
 pub(crate) const RECORDING_PREFIX: &str = "opendesk-session-";
 
 /// One finished recording on disk, newest first in [`list_recordings`].
