@@ -6,6 +6,7 @@
   font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;
 }
 * { box-sizing: border-box; }
+html, body { overflow-x: hidden; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); }
 button, input { font: inherit; } button { cursor: pointer; }
 /* It's a desktop app, not a web page: don't let chrome and labels be
@@ -43,7 +44,7 @@ input, textarea, [contenteditable="true"], .chat-panel__bubble { user-select: te
 .device-tile__remove { position: absolute; top: 8px; left: 8px; z-index: 1; display: none; width: 22px; height: 22px; padding: 0; color: var(--text); background: #0b0e12cc; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; line-height: 1; cursor: pointer; }.device-tile:hover .device-tile__remove { display: block; }.device-tile__remove:hover { color: #ef4050; border-color: #ef4050; }
 .device-tile__wake { position: absolute; bottom: 8px; right: 8px; z-index: 1; display: none; padding: 3px 8px; color: var(--text); background: #0b0e12cc; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; line-height: 1.4; cursor: pointer; }.device-tile:hover .device-tile__wake { display: block; }.device-tile__wake:hover { color: var(--accent); border-color: var(--accent); }
 /* Cards share a row height; a shorter card spreads its content to fill it. */
-.home-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }.home-col { display: grid; gap: 16px; align-content: stretch; }
+.home-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }.home-grid > *, .settings-layout > * { min-width: 0; }.home-col { display: grid; gap: 16px; align-content: stretch; min-width: 0; }
 /* Label row with a right-aligned action (e.g. "Get a new ID"). */
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.card-head .quiet-button { white-space: nowrap; }.card-head__actions { display: flex; gap: 8px; }
 .identity-card .id-row { padding: 16px 0 30px; }
