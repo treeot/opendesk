@@ -56,6 +56,10 @@ pub(crate) fn respond_to_request(
 /// hosting started.
 pub(crate) struct HostSessionParams {
     pub(crate) password: String,
+    /// A second accepted password. When unattended access is on, the rotating
+    /// session password is accepted alongside the unattended one, so either
+    /// connects.
+    pub(crate) session_password: Option<String>,
     pub(crate) unattended_enabled: bool,
     pub(crate) twofa_enabled: bool,
     pub(crate) totp_secret: Option<String>,
@@ -78,9 +82,14 @@ pub(crate) fn host_session_params(s: &mut RuntimeState) -> HostSessionParams {
     let check = unattended::check_config(&s.config.config);
     let unattended_enabled = check.ready();
     let twofa_enabled = unattended_enabled && s.config.config.unattended_twofa_enabled;
-    let password = check.password.unwrap_or_else(|| current_password(s));
+    // With unattended access on, accept its password and the rotating session
+    // password; otherwise the session password is the only one.
+    let (password, session_password) = match check.password {
+        Some(unattended) => (unattended, Some(current_password(s))),
+        None => (current_password(s), None),
+    };
     let allow_virtual_displays = s.config.config.allow_virtual_displays;
-    HostSessionParams { password, unattended_enabled, twofa_enabled, totp_secret: check.totp_secret, unattended_problem: check.problem, allow_virtual_displays }
+    HostSessionParams { password, session_password, unattended_enabled, twofa_enabled, totp_secret: check.totp_secret, unattended_problem: check.problem, allow_virtual_displays }
 }
 
 /// Wakes hosting loops when the saved relay list or the device ID changes,
@@ -352,7 +361,7 @@ pub(crate) async fn run_paired_host_session(
     // when host-core asks for approval.
     let authenticated = Arc::new(AtomicBool::new(false));
     let authenticated_flag = authenticated.clone();
-    let HostSessionParams { password, unattended_enabled, twofa_enabled, totp_secret, unattended_problem, allow_virtual_displays } = params;
+    let HostSessionParams { password, session_password, unattended_enabled, twofa_enabled, totp_secret, unattended_problem, allow_virtual_displays } = params;
     // Every session starts with all four viewer permissions enabled, and a
     // fresh per-session disconnect signal distinct from the stop-hosting one.
     let (gates, mut disconnect_rx) = {
@@ -423,7 +432,7 @@ pub(crate) async fn run_paired_host_session(
     let notice_app = app.clone();
     displays.notify = Some(Arc::new(move |notice| emit(&notice_app, "host_notice", HostNoticeEvent { message: display_notice(notice) })));
     let mut session = Box::pin(host_core::roles::run_default_host_session_with_displays(
-        ws, &password, &ice_session, unattended_enabled, twofa_enabled, totp_secret.as_deref(), approve, data_ready_tx, displays, gates,
+        ws, &password, session_password.as_deref(), &ice_session, unattended_enabled, twofa_enabled, totp_secret.as_deref(), approve, data_ready_tx, displays, gates,
     ));
     let mut streamed = false;
     // The host user disconnected this viewer but wants to keep hosting; it ends

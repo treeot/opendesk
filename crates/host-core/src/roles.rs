@@ -24,6 +24,15 @@ use tokio_tungstenite::WebSocketStream;
 
 const KEX_MSG: u8 = 0x01;
 const KEX_CONFIRM: u8 = 0x02;
+/// The host asks the viewer to redo the exchange with its next password. A host
+/// with more than one accepted password (unattended plus the rotating session
+/// password) sends this after a confirm mismatch instead of closing. Older
+/// peers never send or expect it, so they just see the single-password flow.
+const KEX_RETRY: u8 = 0x03;
+/// A viewer tries at most this many passwords, matching the host's largest
+/// accepted set (unattended + session). It bounds retries so a peer can never
+/// drive an unbounded exchange loop.
+const MAX_KEX_ATTEMPTS: usize = 2;
 /// A paired peer must complete both SPAKE2 exchanges promptly; this bounds
 /// resources held by connections that never authenticate.
 const KEX_DEADLINE: Duration = Duration::from_secs(10);
@@ -323,6 +332,116 @@ async fn drain_before_close(sender: &transport::reliable::ReliableSender) {
     }
 }
 
+/// Host side of the authenticated key exchange. Tries each candidate password
+/// in order (unattended first, then the rotating session password). On a
+/// confirm mismatch with candidates still left, it asks the viewer to redo the
+/// exchange with the next one; a viewer that doesn't understand the retry just
+/// drops, which is exactly the pre-dual single-password behaviour. Returns the
+/// agreed shared secret, or an error if no candidate matched.
+async fn host_kex(
+    sender: &transport::reliable::ReliableSender,
+    control_rx: &mut mpsc::Receiver<Vec<u8>>,
+    candidates: &[&str],
+    deadline: tokio::time::Instant,
+) -> SessionResult<[u8; 32]> {
+    for (index, password) in candidates.iter().enumerate() {
+        let last = index + 1 == candidates.len();
+        let (state, my_msg) = protocol::pake::start(password.as_bytes(), true);
+        sender.send_frame(Tag::Kex, &kex_body(KEX_MSG, &my_msg)).await?;
+        let shared = loop {
+            match tokio::time::timeout_at(deadline, recv_control(control_rx)).await.ok().flatten() {
+                Some(body) => if let Some((KEX_MSG, msg)) = parse_kex(&body) {
+                    break protocol::pake::finish(state, msg).ok_or(SessionError("invalid SPAKE2 message"))?;
+                },
+                None => return Err(Box::new(SessionError("connection closed during KEX"))),
+            }
+        };
+        let my_confirm = protocol::pake::confirm_tag(&shared, true);
+        sender.send_frame(Tag::Kex, &kex_body(KEX_CONFIRM, &my_confirm)).await?;
+        let matched = loop {
+            match tokio::time::timeout_at(deadline, recv_control(control_rx)).await.ok().flatten() {
+                Some(body) => if let Some((KEX_CONFIRM, tag)) = parse_kex(&body) {
+                    break protocol::pake::verify_peer(&shared, false, tag);
+                },
+                None => return Err(Box::new(SessionError("connection closed during KEX confirmation"))),
+            }
+        };
+        if matched {
+            return Ok(shared);
+        }
+        if last {
+            // Let our confirmation out first: without it the viewer reads a
+            // dropped connection and retries instead of reporting the wrong
+            // password.
+            drain_before_close(sender).await;
+            return Err(Box::new(SessionError("key confirmation failed")));
+        }
+        // Mismatch, but another password is left: ask the viewer to redo it.
+        sender.send_frame(Tag::Kex, &kex_body(KEX_RETRY, &[])).await?;
+    }
+    Err(Box::new(SessionError("key confirmation failed")))
+}
+
+/// Viewer side of the authenticated key exchange. Runs the exchange with the
+/// one password the user supplied; if the host asks to retry (it accepts more
+/// than one password and this one was not it), runs it again, up to
+/// [`MAX_KEX_ATTEMPTS`]. Returns the agreed shared secret.
+async fn viewer_kex(
+    sender: &transport::reliable::ReliableSender,
+    control_rx: &mut mpsc::Receiver<Vec<u8>>,
+    password: &str,
+    deadline: tokio::time::Instant,
+) -> Result<[u8; 32], String> {
+    for _ in 0..MAX_KEX_ATTEMPTS {
+        let (state, my_msg) = protocol::pake::start(password.as_bytes(), false);
+        sender.send_frame(Tag::Kex, &kex_body(KEX_MSG, &my_msg)).await.map_err(|error| error.to_string())?;
+        let shared = loop {
+            match tokio::time::timeout_at(deadline, recv_control(control_rx)).await.ok().flatten() {
+                Some(body) => if let Some((KEX_MSG, msg)) = parse_kex(&body) {
+                    break protocol::pake::finish(state, msg).ok_or_else(|| "invalid SPAKE2 message".to_owned())?;
+                },
+                None => return Err("connection closed during KEX".to_owned()),
+            }
+        };
+        let my_confirm = protocol::pake::confirm_tag(&shared, false);
+        sender.send_frame(Tag::Kex, &kex_body(KEX_CONFIRM, &my_confirm)).await.map_err(|error| error.to_string())?;
+        // The host sends its confirm, then (on a mismatch with a password left)
+        // a retry. Read whichever comes.
+        let verified = loop {
+            match tokio::time::timeout_at(deadline, recv_control(control_rx)).await.ok().flatten() {
+                Some(body) => match parse_kex(&body) {
+                    Some((KEX_CONFIRM, tag)) => break Some(protocol::pake::verify_peer(&shared, true, tag)),
+                    Some((KEX_RETRY, _)) => break None,
+                    _ => {}
+                },
+                None => return Err("connection closed during KEX confirmation".to_owned()),
+            }
+        };
+        match verified {
+            Some(true) => return Ok(shared),
+            None => continue, // host already asked to retry
+            Some(false) => {
+                // Our confirm will be rejected. Wait to see whether the host
+                // offers another password before giving up.
+                loop {
+                    match tokio::time::timeout_at(deadline, recv_control(control_rx)).await.ok().flatten() {
+                        Some(body) => match parse_kex(&body) {
+                            Some((KEX_RETRY, _)) => break,
+                            _ => {}
+                        },
+                        None => {
+                            drain_before_close(sender).await;
+                            return Err("key confirmation failed".to_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    drain_before_close(sender).await;
+    Err("key confirmation failed".to_owned())
+}
+
 /// Splits ICE signaling from the other control frames, starting with
 /// `early` (frames that arrived before the session started).
 fn split_session_control(mut rx: mpsc::Receiver<Vec<u8>>, early: Vec<Vec<u8>>, session: String) -> (mpsc::Receiver<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
@@ -513,7 +632,7 @@ where
     Fut: Future<Output = bool>,
 {
     run_host_session_with_data_and_accept_and_2fa_with_factory(
-        ws, password, ice_session, once_capturer(capturer), encoder_factory,
+        ws, password, None, ice_session, once_capturer(capturer), encoder_factory,
         move || Box::new(injector) as Box<dyn InputInjector>,
         unattended_enabled, twofa_enabled, totp_secret, approve, data_ready, SessionTimings::default(), HostDisplays::default(),
         SessionGates::default(),
@@ -531,7 +650,7 @@ fn once_capturer<C: Send + 'static>(capturer: C) -> impl Fn() -> Option<C> + Clo
 
 #[allow(clippy::too_many_arguments)]
 async fn run_host_session_with_data_and_accept_and_2fa_with_factory<S, C, E, F, IF, A, Fut, CF>(
-    ws: WebSocketStream<S>, password: &str, ice_session: &str, capture_factory: CF,
+    ws: WebSocketStream<S>, password: &str, alt_password: Option<&str>, ice_session: &str, capture_factory: CF,
     encoder_factory: F, injector_factory: IF, unattended_enabled: bool,
     twofa_enabled: bool, totp_secret: Option<&str>, approve: A,
     data_ready: Option<oneshot::Sender<DataHandle>>, timings: SessionTimings, displays: HostDisplays,
@@ -551,34 +670,11 @@ where
     let sender = reliable.sender();
     let mut control_rx = reliable.take_control_rx().ok_or(SessionError("control receiver unavailable"))?;
     let data_rx = reliable.take_data_rx().ok_or(SessionError("data receiver unavailable"))?;
-    let (state, my_msg) = protocol::pake::start(password.as_bytes(), true);
-    sender.send_frame(Tag::Kex, &kex_body(KEX_MSG, &my_msg)).await?;
     let kex_deadline = tokio::time::Instant::now() + KEX_DEADLINE;
-    let shared = loop {
-        match tokio::time::timeout_at(kex_deadline, recv_control(&mut control_rx)).await.ok().flatten() {
-            Some(body) => if let Some((KEX_MSG, msg)) = parse_kex(&body) {
-                break protocol::pake::finish(state, msg).ok_or(SessionError("invalid SPAKE2 message"))?;
-            },
-            None => return Err(Box::new(SessionError("connection closed during KEX"))),
-        }
-    };
-    let my_confirm = protocol::pake::confirm_tag(&shared, true);
-    sender.send_frame(Tag::Kex, &kex_body(KEX_CONFIRM, &my_confirm)).await?;
-    loop {
-        match tokio::time::timeout_at(kex_deadline, recv_control(&mut control_rx)).await.ok().flatten() {
-            Some(body) => if let Some((KEX_CONFIRM, tag)) = parse_kex(&body) {
-                if !protocol::pake::verify_peer(&shared, false, tag) {
-                    // Let our confirmation out first: without it the viewer
-                    // reads a dropped connection and retries instead of
-                    // reporting the wrong password.
-                    drain_before_close(&sender).await;
-                    return Err(Box::new(SessionError("key confirmation failed")));
-                }
-                break;
-            },
-            None => return Err(Box::new(SessionError("connection closed during KEX confirmation"))),
-        }
-    }
+    // Accept the primary password and, when the host offers one, a second
+    // (the rotating session password alongside the unattended one).
+    let candidates: Vec<&str> = std::iter::once(password).chain(alt_password).collect();
+    let shared = host_kex(&sender, &mut control_rx, &candidates, kex_deadline).await?;
     let (control_send_key, control_recv_key) = protocol::kex::derive_control_keys(&shared, true);
     let control_sealer: SharedSealer = Arc::new(Mutex::new(Sealer::new(control_send_key)));
     let mut control_opener = Opener::strict(control_recv_key);
@@ -1727,33 +1823,8 @@ where
     let sender = reliable.sender();
     let mut control_rx = reliable.take_control_rx().ok_or_else(|| "control receiver unavailable".to_owned())?;
     let data_rx = reliable.take_data_rx().ok_or_else(|| "data receiver unavailable".to_owned())?;
-    let (state, my_msg) = protocol::pake::start(password.as_bytes(), false);
-    sender.send_frame(Tag::Kex, &kex_body(KEX_MSG, &my_msg)).await.map_err(|error| error.to_string())?;
     let kex_deadline = tokio::time::Instant::now() + KEX_DEADLINE;
-
-    let shared = loop {
-        match tokio::time::timeout_at(kex_deadline, recv_control(&mut control_rx)).await.ok().flatten() {
-            Some(body) => if let Some((KEX_MSG, msg)) = parse_kex(&body) {
-                break protocol::pake::finish(state, msg).ok_or_else(|| "invalid SPAKE2 message".to_owned())?;
-            },
-            None => return Err("connection closed during KEX".to_owned()),
-        }
-    };
-
-    let my_confirm = protocol::pake::confirm_tag(&shared, false);
-    sender.send_frame(Tag::Kex, &kex_body(KEX_CONFIRM, &my_confirm)).await.map_err(|error| error.to_string())?;
-    loop {
-        match tokio::time::timeout_at(kex_deadline, recv_control(&mut control_rx)).await.ok().flatten() {
-            Some(body) => if let Some((KEX_CONFIRM, tag)) = parse_kex(&body) {
-                if !protocol::pake::verify_peer(&shared, true, tag) {
-                    drain_before_close(&sender).await;
-                    return Err("key confirmation failed".to_owned());
-                }
-                break;
-            },
-            None => return Err("connection closed during KEX confirmation".to_owned()),
-        }
-    }
+    let shared = viewer_kex(&sender, &mut control_rx, password, kex_deadline).await?;
     reliable.enable_application_traffic();
 
     let (send_key, recv_key) = derive_keys(&shared, false);
@@ -2121,7 +2192,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     run_host_session_with_data_and_accept_and_2fa_with_factory(
-        ws, password, ice_session, ScapCapturer::create,
+        ws, password, None, ice_session, ScapCapturer::create,
         default_encoder,
         default_injector, false, false, None, || async { true }, None, SessionTimings::default(), HostDisplays::default(),
         SessionGates::default(),
@@ -2173,7 +2244,7 @@ where
     Fut: Future<Output = bool>,
 {
     run_default_host_session_with_displays(
-        ws, password, ice_session, unattended_enabled, twofa_enabled, totp_secret, approve, data_ready,
+        ws, password, None, ice_session, unattended_enabled, twofa_enabled, totp_secret, approve, data_ready,
         HostDisplays::platform(false), SessionGates::default(),
     ).await
 }
@@ -2183,7 +2254,7 @@ where
 /// gates (control/audio), which the caller may flip live during the session.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_default_host_session_with_displays<S, A, Fut>(
-    ws: WebSocketStream<S>, password: &str, ice_session: &str,
+    ws: WebSocketStream<S>, password: &str, alt_password: Option<&str>, ice_session: &str,
     unattended_enabled: bool, twofa_enabled: bool, totp_secret: Option<&str>,
     approve: A, data_ready: oneshot::Sender<DataHandle>, displays: HostDisplays,
     gates: SessionGates,
@@ -2196,6 +2267,7 @@ where
     run_host_session_with_data_and_accept_and_2fa_with_factory(
         ws,
         password,
+        alt_password,
         ice_session,
         ScapCapturer::create,
         default_encoder,
@@ -2240,6 +2312,67 @@ mod tests {
     fn allow_list_auto_accept_depends_only_on_membership() {
         assert!(should_auto_accept_allowlisted(true));
         assert!(!should_auto_accept_allowlisted(false));
+    }
+
+    async fn run_kex(host_candidates: &[&str], viewer_password: &str) -> (SessionResult<[u8; 32]>, Result<[u8; 32], String>) {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (viewer_ws, host_ws) = tokio::io::duplex(64 * 1024);
+        let viewer_ws = WebSocketStream::from_raw_socket(viewer_ws, Role::Client, None).await;
+        let host_ws = WebSocketStream::from_raw_socket(host_ws, Role::Server, None).await;
+        let mut host_reliable = ReliableChannel::spawn(host_ws);
+        let host_sender = host_reliable.sender();
+        let mut host_rx = host_reliable.take_control_rx().unwrap();
+        let mut viewer_reliable = ReliableChannel::spawn(viewer_ws);
+        let viewer_sender = viewer_reliable.sender();
+        let mut viewer_rx = viewer_reliable.take_control_rx().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let candidates: Vec<String> = host_candidates.iter().map(|value| value.to_string()).collect();
+        let host = tokio::spawn(async move {
+            let refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+            host_kex(&host_sender, &mut host_rx, &refs, deadline).await
+        });
+        let viewer_password = viewer_password.to_owned();
+        let viewer = tokio::spawn(async move {
+            viewer_kex(&viewer_sender, &mut viewer_rx, &viewer_password, deadline).await
+        });
+        let host_result = host.await.unwrap();
+        let viewer_result = viewer.await.unwrap();
+        // Keep the channels alive until the exchange finishes.
+        drop(host_reliable);
+        drop(viewer_reliable);
+        (host_result, viewer_result)
+    }
+
+    #[tokio::test]
+    async fn kex_agrees_on_a_single_password() {
+        let (host, viewer) = run_kex(&["only-pw-123456"], "only-pw-123456").await;
+        assert_eq!(host.unwrap(), viewer.unwrap());
+    }
+
+    #[tokio::test]
+    async fn kex_rejects_a_wrong_single_password() {
+        let (host, viewer) = run_kex(&["only-pw-123456"], "nope-000000").await;
+        assert!(host.is_err());
+        assert!(viewer.is_err());
+    }
+
+    #[tokio::test]
+    async fn dual_password_host_accepts_the_first_password() {
+        let (host, viewer) = run_kex(&["unattended-123456", "session-99"], "unattended-123456").await;
+        assert_eq!(host.unwrap(), viewer.unwrap());
+    }
+
+    #[tokio::test]
+    async fn dual_password_host_accepts_the_second_password_via_retry() {
+        let (host, viewer) = run_kex(&["unattended-123456", "session-99"], "session-99").await;
+        assert_eq!(host.unwrap(), viewer.unwrap());
+    }
+
+    #[tokio::test]
+    async fn dual_password_host_rejects_a_password_that_is_neither() {
+        let (host, viewer) = run_kex(&["unattended-123456", "session-99"], "guess-777777").await;
+        assert!(host.is_err());
+        assert!(viewer.is_err());
     }
 
     #[test]
@@ -2961,7 +3094,7 @@ mod tests {
         {
             tokio::spawn(async move {
                 run_host_session_with_data_and_accept_and_2fa_with_factory(
-                    ws, PASSWORD, SESSION, || Some(FakeCapturer::new(64, 64)),
+                    ws, PASSWORD, None, SESSION, || Some(FakeCapturer::new(64, 64)),
                     |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
                     || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
                     false, false, None, approve, ready, timings, HostDisplays::default(), SessionGates::default(),
@@ -3158,7 +3291,7 @@ mod tests {
             let (_relay, host_ws, viewer_ws) = TestRelay::start(Duration::from_secs(3600)).await;
             let host = tokio::spawn(async move {
                 run_host_session_with_data_and_accept_and_2fa_with_factory(
-                    host_ws, PASSWORD, SESSION, || None::<FakeCapturer>,
+                    host_ws, PASSWORD, None, SESSION, || None::<FakeCapturer>,
                     |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
                     || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
                     false, false, None, || async { true }, None, timings, HostDisplays::default(), SessionGates::default(),
@@ -3244,7 +3377,7 @@ mod tests {
         fn spawn_scripted_host_with(ws: WebSocketStream<DuplexStream>, timings: SessionTimings, capturer: Scripted, displays: HostDisplays) -> JoinHandle<SessionResult<()>> {
             tokio::spawn(async move {
                 run_host_session_with_data_and_accept_and_2fa_with_factory(
-                    ws, PASSWORD, SESSION, once_capturer(capturer),
+                    ws, PASSWORD, None, SESSION, once_capturer(capturer),
                     |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
                     || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
                     false, false, None, || async { true }, None, timings, displays, SessionGates::default(),
