@@ -118,6 +118,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   // fullscreen and remove on leaving, plus the monitor to restore afterwards.
   const selectedMonitorRef = useRef<number | undefined>(undefined);
   useEffect(() => { selectedMonitorRef.current = selectedMonitor; }, [selectedMonitor]);
+  const monitorsRef = useRef<api.MonitorInfo[]>([]);
+  useEffect(() => { monitorsRef.current = monitors; }, [monitors]);
   const canAddDisplayRef = useRef(false);
   const fitDisplayIdRef = useRef<number | undefined>(undefined);
   const pendingFitRef = useRef(false);
@@ -283,7 +285,12 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     if (role !== "viewer") return;
     const onChange = () => {
       if (document.fullscreenElement !== null) {
-        if (canAddDisplayRef.current && fitDisplayIdRef.current === undefined && !pendingFitRef.current) {
+        // Don't add a fit-to-screen display when the current monitor is already
+        // a virtual one: it was shaped on purpose, and adding another just
+        // spawns a redundant screen. Fullscreen stays on the existing display.
+        const current = monitorsRef.current.find((monitor) => monitor.id === selectedMonitorRef.current);
+        const alreadyVirtual = current?.is_virtual ?? false;
+        if (canAddDisplayRef.current && !alreadyVirtual && fitDisplayIdRef.current === undefined && !pendingFitRef.current) {
           preFitMonitorRef.current = selectedMonitorRef.current;
           pendingFitRef.current = true;
           const { width, height, hidpi } = virtualDisplaySize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
