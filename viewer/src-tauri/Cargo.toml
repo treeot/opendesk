@@ -41,6 +41,7 @@ opus = "0.4"
 log = "0.4"
 tauri-plugin-log = "2.10"
 tauri-plugin-dialog = "2"
+tauri-plugin-deep-link = "2"
 qrcode = { version = "0.14", default-features = false }
 tauri-plugin-updater = "2.13.3"
 tauri-plugin-process = "2.4.0"

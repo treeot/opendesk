@@ -51,6 +51,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return contact;
   },
   wake_contact: () => undefined,
+  take_deep_link: () => null,
   list_allowed: () => state.allowed,
   add_allowed: ({ peerId }) => { if (!state.allowed.includes(peerId as string)) state.allowed.push(peerId as string); },
   remove_allowed: ({ peerId }) => { state.allowed = state.allowed.filter((id) => id !== peerId); },

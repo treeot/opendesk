@@ -4,6 +4,7 @@ mod permissions;
 mod unattended;
 mod events;
 mod recording;
+mod deeplink;
 mod files;
 mod host;
 mod machine;
@@ -866,7 +867,15 @@ pub fn run() {
         // Must be registered first. A second launch would register the same
         // device ID and fight the running host, so it just brings the
         // existing window forward and exits.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| startup::show_main_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Windows/Linux deliver a deep link to the running app as an argv
+            // entry; macOS uses the on_open_url handler instead.
+            match deeplink::id_from_args(args.iter().map(String::as_str)) {
+                Some(id) => deeplink::deliver(app, id),
+                None => startup::show_main_window(app),
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // Checks the manifest in `plugins.updater` (tauri.conf.json); the
@@ -893,6 +902,7 @@ pub fn run() {
         .manage(AuxVideoSinks::default())
         .manage(unattended::PendingTotp::default())
         .manage(std::sync::Arc::new(tunnel::TunnelManager::default()))
+        .manage(deeplink::PendingDeepLink::default())
         .setup(move |app| {
             let app_data_dir = app
                 .path()
@@ -943,6 +953,24 @@ pub fn run() {
             if let Err(error) = menu::install(app.handle()) {
                 log::error!("could not install the application menu: {error}");
             }
+            // Deep links: deliver opendesk:// invites while the app runs.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if let Some(id) = deeplink::extract_invite_id(url.as_str()) {
+                            deeplink::deliver(&handle, id);
+                        }
+                    }
+                });
+                // Register the scheme at runtime for dev builds; packaged
+                // builds register it through the bundler/Info.plist.
+                #[cfg(any(windows, target_os = "linux"))]
+                if let Err(error) = app.deep_link().register_all() {
+                    log::warn!("could not register the opendesk:// scheme: {error}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -967,6 +995,7 @@ pub fn run() {
             set_contact_password,
             set_contact_mac,
             wake_contact,
+            deeplink::take_deep_link,
             set_relay,
             get_unattended_status,
             windows_service_status,

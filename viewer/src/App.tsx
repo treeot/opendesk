@@ -88,6 +88,7 @@ export default function App() {
       api.onError(({ message }) => active && notify(friendlyError(message))),
       api.onTwofaPrompt(({ reason }) => { if (active) setTwofa(reason); }),
       api.onHostNotice(({ message }) => active && notify(message, "info")),
+      api.onDeepLink((id) => { if (active) { setTarget(id); go("home"); } }),
       api.onMenuAction((action) => {
         if (!active) return;
         if (action === "settings") go("home");
@@ -104,6 +105,12 @@ export default function App() {
       void unlisten.then((fns) => fns.forEach((fn) => fn()));
     };
   }, [go, notify]);
+
+  // An invite link that launched the app leaves a pending device ID; claim it
+  // once and prefill the connect field.
+  useEffect(() => {
+    void api.takeDeepLink().then((id) => { if (id) setTarget(id); }).catch(() => {});
+  }, []);
 
   // Once per launch, show the macOS permission checklist when something is
   // missing. Other platforms always report both as granted.

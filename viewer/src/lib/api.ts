@@ -214,6 +214,10 @@ const on = <T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn
 
 /** A native menu item was chosen; the payload is the item's id (see menu.rs). */
 export const onMenuAction = (handler: (action: string) => void) => on<string>("menu", handler);
+/** A device ID delivered by an opendesk:// invite link while the app runs. */
+export const onDeepLink = (handler: (id: string) => void) => on<string>("deep-link", handler);
+/** Claim a device ID from an invite link that opened the app (cold start). */
+export const takeDeepLink = () => invoke<string | null>("take_deep_link");
 /** The host's cursor image; `rgba` is base64 of straight-alpha RGBA pixels. */
 export interface CursorShape { width: number; height: number; hot_x: number; hot_y: number; rgba: string }
 export const onCursorShape = (handler: (payload: CursorShape) => void) => on<CursorShape>("cursor_shape", handler);

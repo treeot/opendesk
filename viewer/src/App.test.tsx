@@ -26,6 +26,7 @@ const { listeners, mocks } = vi.hoisted(() => {
     setViewerPermission: vi.fn(() => Promise.resolve()), disconnectViewer: vi.fn(() => Promise.resolve()),
     onViewerPermissions: on("viewer_permissions"), onActivity: on("activity"),
     onMenuAction: on("menu"), setSessionMenu: vi.fn(() => Promise.resolve()),
+    onDeepLink: on("deep-link"), takeDeepLink: () => Promise.resolve(null),
     setMaxBitrate: vi.fn(() => Promise.resolve()),
     setDecoderCodecs: vi.fn(() => Promise.resolve()),
     onCursorShape: on("cursor_shape"), onCursorHidden: on("cursor_hidden"),
@@ -57,6 +58,13 @@ async function startConnecting() {
 }
 
 describe("App", () => {
+  it("prefills the connect field from an opendesk:// deep link", async () => {
+    render(<App />);
+    const field = await screen.findByPlaceholderText("000 000 000");
+    emit("deep-link", "905218437");
+    await waitFor(() => expect((field as HTMLInputElement).value).toBe("905218437"));
+  });
+
   beforeEach(() => {
     mocks.permissionStatus.mockResolvedValue({ screen_recording: true, accessibility: true });
     mocks.connect.mockResolvedValue(undefined);

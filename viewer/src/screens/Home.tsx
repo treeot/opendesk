@@ -31,6 +31,8 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
   const [allowedDevices, setAllowedDevices] = useState<string[]>([]);
   const [allowedId, setAllowedId] = useState("");
   const [targetId, setTargetId] = useState(initialTargetId);
+  // Prefill when a deep link arrives after mount (App updates this prop).
+  useEffect(() => { if (initialTargetId) setTargetId(initialTargetId); }, [initialTargetId]);
   const [alias, setAlias] = useState("");
   const [contactId, setContactId] = useState("");
   const [busy, setBusy] = useState(false);
