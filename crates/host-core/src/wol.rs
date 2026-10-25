@@ -14,6 +14,19 @@ use std::net::{SocketAddr, UdpSocket};
 /// both common; the packet is matched by its contents, not the port.
 const WOL_PORT: u16 = 9;
 
+/// This machine's primary MAC address as `aa:bb:cc:dd:ee:ff`, for a viewer to
+/// save so it can wake this device later. Returns `None` when no usable
+/// interface has one (the all-zero address is skipped). Picks the first
+/// interface the OS reports, which is the machine's default LAN adapter.
+pub fn local_mac() -> Option<String> {
+    let address = mac_address::get_mac_address().ok().flatten()?;
+    let bytes = address.bytes();
+    if bytes == [0u8; 6] {
+        return None;
+    }
+    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(":"))
+}
+
 /// Parse a MAC address written with `:`, `-`, or `.` separators, or as 12 bare
 /// hex digits, into its six bytes. Case-insensitive.
 pub fn parse_mac(mac: &str) -> Option<[u8; 6]> {

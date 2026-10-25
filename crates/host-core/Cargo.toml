@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
+mac_address = "1.1"
 protocol = { path = "../protocol" }
 tokio = { workspace = true }
 # wss:// relays: rustls with the OS trust store. tokio-tungstenite pulls in

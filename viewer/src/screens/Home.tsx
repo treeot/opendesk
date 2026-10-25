@@ -99,7 +99,9 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
     // Relays that refuse a known ID; the user decides whether to get a new one.
     void api.getIdentityConflicts().then((loaded) => { if (mounted) setConflicts(loaded); }).catch(() => undefined);
     const conflictListener = api.onIdentityConflicts(({ conflicts: current }) => { if (mounted) setConflicts(current); }).catch(() => undefined);
-    return () => { mounted = false; for (const listener of [passwordListener, idListener, conflictListener]) void listener.then((unlisten) => unlisten?.()); };
+    // A connected host reported its MAC; reflect it so the tile shows Wake.
+    const macListener = api.onContactMac(({ id, mac }) => { if (mounted) setContacts((current) => current.map((contact) => contact.id === id ? { ...contact, mac } : contact)); }).catch(() => undefined);
+    return () => { mounted = false; for (const listener of [passwordListener, idListener, conflictListener, macListener]) void listener.then((unlisten) => unlisten?.()); };
   }, []);
 
   // Watch macOS hosting permissions and re-check on focus (granting them

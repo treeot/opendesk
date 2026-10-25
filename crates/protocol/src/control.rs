@@ -160,6 +160,11 @@ pub enum Control {
     /// header always says which codec a frame actually uses. Older hosts ignore
     /// it and stay on H.264.
     DecoderCodecs { hevc: bool },
+    /// Host → viewer, after the first `MonitorList`: the host's LAN MAC address,
+    /// so a viewer that saved this device can wake it over the LAN later without
+    /// the user typing it in. Sent only when the host could read one; older
+    /// peers can't parse it and ignore it.
+    HostMac { mac: String },
 }
 
 /// Most IDs one `Presence` query may ask about.

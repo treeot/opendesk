@@ -802,6 +802,11 @@ where
     if crate::privacy::available() {
         reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &Control::PrivacyModeSupport)).await?;
     }
+    // Tell the viewer our MAC so it can wake this device over the LAN later,
+    // without the user typing it. Old viewers ignore it.
+    if let Some(mac) = crate::wol::local_mac() {
+        reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &Control::HostMac { mac })).await?;
+    }
     let path = transport.path();
     let (transport_tx, transport_rx) = transport.into_split();
     if let Some(ready) = data_ready {
@@ -2051,7 +2056,7 @@ async fn run_viewer_media_loop_with_control(
                     Some(Control::MonitorList { .. } | Control::VirtualDisplaySupport { .. } | Control::VirtualDisplayAdded { .. } | Control::VirtualDisplayRefused { .. } | Control::SecureAttentionSupport
                         | Control::MultiMonitorSupport { .. } | Control::MonitorStreamOpened { .. } | Control::MonitorStreamClosed { .. } | Control::MonitorStreamRefused { .. }
                         | Control::RestartSupport | Control::Restarting
-                        | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. }) => {
+                        | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. } | Control::HostMac { .. }) => {
                         if let Some(sink) = &monitor_sink { let _ = sink.send(plaintext).await; }
                     }
                     Some(Control::Pong { sent_us }) if relay_ping.is_some() => {
@@ -3448,7 +3453,12 @@ mod tests {
                 Some(Control::MonitorList { monitors }) => monitors,
                 other => panic!("expected a monitor list, got {other:?}"),
             };
-            let first = timeout(Duration::from_secs(20), monitor_lists.recv()).await.unwrap().unwrap();
+            // The host also sends its MAC (Wake-on-LAN) when this machine has one;
+            // it rides the same sink, so skip it here.
+            let is_mac = |body: &[u8]| matches!(Control::from_bytes(body), Some(Control::HostMac { .. }));
+            let first = timeout(Duration::from_secs(20), async {
+                loop { let body = monitor_lists.recv().await.unwrap(); if !is_mac(&body) { break body; } }
+            }).await.unwrap();
             assert_eq!(list(first), vec![monitor(1)]);
             timeout(Duration::from_secs(20), frames.recv()).await.unwrap().unwrap();
 
@@ -3456,7 +3466,7 @@ mod tests {
             let second = timeout(Duration::from_secs(3), async {
                 loop {
                     tokio::select! {
-                        body = monitor_lists.recv() => break body.unwrap(),
+                        body = monitor_lists.recv() => { let body = body.unwrap(); if is_mac(&body) { continue; } break body; },
                         _ = frames.recv() => {}
                     }
                 }
@@ -3518,8 +3528,15 @@ mod tests {
             }
 
             async fn next(&mut self) -> Control {
-                let body = timeout(Duration::from_secs(10), self.messages.recv()).await.expect("no message from the host").expect("sink closed");
-                Control::from_bytes(&body).expect("a control message")
+                loop {
+                    let body = timeout(Duration::from_secs(10), self.messages.recv()).await.expect("no message from the host").expect("sink closed");
+                    let control = Control::from_bytes(&body).expect("a control message");
+                    // The host advertises its MAC (for Wake-on-LAN) whenever this
+                    // machine has one, which is environment-dependent; it is not
+                    // part of what these display tests check.
+                    if matches!(control, Control::HostMac { .. }) { continue; }
+                    return control;
+                }
             }
 
             async fn end(self) -> Arc<vdisplay::fake::FakeDisplays> {

@@ -282,6 +282,8 @@ export const onFileDone = (handler: (payload: FileDone) => void) => on("file_don
 export const onFileError = (handler: (payload: FileError) => void) => on("file_error", handler);
 export const onPasswordRotated = (handler: (payload: { password: string }) => void) => on("password_rotated", handler);
 export const onIdentityChanged = (handler: (payload: { id: string }) => void) => on("identity_changed", handler);
+/** A connected host reported its MAC and it was saved to this contact (for Wake-on-LAN). */
+export const onContactMac = (handler: (payload: { id: string; mac: string }) => void) => on("contact_mac", handler);
 export const onIdentityConflicts = (handler: (payload: { conflicts: IdentityConflict[] }) => void) => on("identity_conflicts", handler);
 /** Host-enforced viewer permissions changed; keeps the control panel in sync. */
 export const onViewerPermissions = (handler: (payload: ViewerPermissions) => void) => on("viewer_permissions", handler);

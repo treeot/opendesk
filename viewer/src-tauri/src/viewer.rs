@@ -372,6 +372,7 @@ pub(crate) fn connect(
 
             let monitor_app = task_app.clone();
             let monitor_restart = Arc::clone(&restart_expected);
+            let monitor_target = target.clone();
             let _monitor_task = AbortOnDrop::new(tauri::async_runtime::spawn(async move {
                 while let Some(body) = monitor_rx.recv().await {
                     match Control::from_bytes(&body) {
@@ -393,6 +394,16 @@ pub(crate) fn connect(
                         Some(Control::PrivacyModeChanged { on }) => emit(&monitor_app, "privacy_mode_changed", PrivacyModeEvent { on }),
                         Some(Control::CursorShape { width, height, hot_x, hot_y, rgba }) => emit(&monitor_app, "cursor_shape", CursorShapeEvent { width, height, hot_x, hot_y, rgba: b64(&rgba) }),
                         Some(Control::CursorHidden) => emit(&monitor_app, "cursor_hidden", ()),
+                        Some(Control::HostMac { mac }) => {
+                            // Save the host's MAC to a saved contact for Wake-on-LAN, but
+                            // only to fill an empty slot: a user-set MAC is left alone, and
+                            // devices that aren't saved contacts (set_mac errors) are skipped.
+                            let state = monitor_app.state::<AppState>();
+                            let saved = { let mut guard = state.lock(); if guard.contacts.mac(&monitor_target).is_none() { guard.contacts.set_mac(&monitor_target, &mac).ok() } else { None } };
+                            if let Some(contact) = saved {
+                                emit(&monitor_app, "contact_mac", ContactMacEvent { id: monitor_target.clone(), mac: contact.mac.clone().unwrap_or_default() });
+                            }
+                        }
                         _ => {}
                     }
                 }

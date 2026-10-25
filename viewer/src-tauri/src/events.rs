@@ -39,6 +39,12 @@ pub(crate) struct PermissionStatus {
 pub(crate) struct StatusEvent {
     pub(crate) state: &'static str,
 }
+/// The host reported its MAC during a session and it was saved to this contact.
+#[derive(Serialize, Clone)]
+pub(crate) struct ContactMacEvent {
+    pub(crate) id: String,
+    pub(crate) mac: String,
+}
 #[derive(Serialize, Clone)]
 pub(crate) struct IncomingRequest {
     pub(crate) peer_id: String,

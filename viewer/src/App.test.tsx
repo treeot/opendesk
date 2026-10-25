@@ -7,7 +7,7 @@ const { listeners, mocks } = vi.hoisted(() => {
   const listeners = new Map<string, (payload: unknown) => void>();
   const on = (name: string) => (handler: (payload: unknown) => void) => { listeners.set(name, handler); return Promise.resolve(() => {}); };
   const mocks = {
-    onStatusChanged: on("status_changed"), onViewerStatus: on("viewer_status"), onIncomingRequest: on("incoming_request"), onSessionStarted: on("session_started"),
+    onStatusChanged: on("status_changed"), onViewerStatus: on("viewer_status"), onIncomingRequest: on("incoming_request"), onSessionStarted: on("session_started"), onContactMac: on("contact_mac"),
     onSessionEnded: on("session_ended"), onError: on("error"), onTwofaPrompt: on("twofa_prompt"),
     startVideo: () => () => {}, requestKeyframe: vi.fn(), onAudioFrame: on("audio_frame"), onMonitorList: on("monitor_list"), onLinkStats: on("link_stats"),
     onVirtualDisplaySupport: on("virtual_display_support"), onVirtualDisplayAdded: on("virtual_display_added"), onVirtualDisplayRefused: on("virtual_display_refused"), onHostNotice: on("host_notice"),
