@@ -444,13 +444,21 @@ describe("Home", () => {
 
   it("saves a MAC address for a device", async () => {
     try { localStorage.setItem("opendesk.addressView", "list"); } catch { /* ignore */ }
-    vi.mocked(api.listContacts).mockResolvedValue([{ id: "905218437", alias: "Office", last_connected: null }]);
-    vi.mocked(api.setContactMac).mockResolvedValue({ id: "905218437", alias: "Office", last_connected: null, mac: "01:23:45:67:89:AB" });
+    vi.mocked(api.listContacts).mockResolvedValue([{ id: "905218437", alias: "Office", last_connected: 1_700_000_000 }]);
+    vi.mocked(api.setContactMac).mockResolvedValue({ id: "905218437", alias: "Office", last_connected: 1_700_000_000, mac: "01:23:45:67:89:AB" });
     render(<Home status="online" onConnect={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Wake-on-LAN settings for Office" }));
     const input = await screen.findByLabelText("MAC address");
     fireEvent.change(input, { target: { value: "01:23:45:67:89:AB" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.setContactMac).toHaveBeenCalledWith("905218437", "01:23:45:67:89:AB"));
+  });
+
+  it("hides the Wake-on-LAN button until a device has been connected to", async () => {
+    try { localStorage.setItem("opendesk.addressView", "list"); } catch { /* ignore */ }
+    vi.mocked(api.listContacts).mockResolvedValue([{ id: "905218437", alias: "Office", last_connected: null }]);
+    render(<Home status="online" onConnect={vi.fn()} />);
+    await screen.findByRole("button", { name: "Connect to Office" });
+    expect(screen.queryByRole("button", { name: "Wake-on-LAN settings for Office" })).toBeNull();
   });
 });
