@@ -28,6 +28,12 @@ use reconnect::{rejection_error, HOST_ENDED_MESSAGE};
 
 const KEX_MSG: u8 = 0x01;
 const KEX_CONFIRM: u8 = 0x02;
+/// The host asks to redo the exchange with its next password (it accepts more
+/// than one). Mirrors host-core; older hosts never send it.
+const KEX_RETRY: u8 = 0x03;
+/// A viewer tries at most this many passwords, matching the host's largest
+/// accepted set (unattended + session).
+const MAX_KEX_ATTEMPTS: usize = 2;
 /// Both SPAKE2 exchanges must finish this soon after pairing.
 pub const KEX_DEADLINE_MS: f64 = 10_000.0;
 /// How often the viewer sends a sealed keepalive once authenticated.
@@ -148,6 +154,9 @@ enum Phase {
     Pairing,
     KexMessage(pake::PakeState),
     KexConfirm([u8; 32]),
+    /// Our password was not the one the host tried; waiting to see if it offers
+    /// another before giving up.
+    KexAwaitRetry,
     Session(Box<Live>),
     Ended,
 }
@@ -157,13 +166,24 @@ pub struct ViewerSession {
     auth_code: String,
     phase: Phase,
     kex_deadline: f64,
+    kex_attempts: usize,
 }
 
 impl ViewerSession {
     /// A session that has sent [`connect_frame`] and waits for the relay to
     /// pair it. An empty `auth_code` means none.
     pub fn new(password: &str, auth_code: &str) -> Self {
-        Self { password: password.to_owned(), auth_code: auth_code.trim().to_owned(), phase: Phase::Pairing, kex_deadline: f64::INFINITY }
+        Self { password: password.to_owned(), auth_code: auth_code.trim().to_owned(), phase: Phase::Pairing, kex_deadline: f64::INFINITY, kex_attempts: 0 }
+    }
+
+    /// Begin (or redo) the key exchange with our one password, bounded by
+    /// [`MAX_KEX_ATTEMPTS`]. Sends our SPAKE2 message.
+    fn start_kex_attempt(&mut self, now_ms: f64) -> Vec<Event> {
+        let (state, my_message) = pake::start(self.password.as_bytes(), false);
+        self.kex_attempts += 1;
+        self.phase = Phase::KexMessage(state);
+        self.kex_deadline = now_ms + KEX_DEADLINE_MS;
+        vec![Event::Send(kex_frame(KEX_MSG, &my_message))]
     }
 
     pub fn is_ended(&self) -> bool { matches!(self.phase, Phase::Ended) }
@@ -197,11 +217,31 @@ impl ViewerSession {
             Phase::KexConfirm(shared) => {
                 match frame::unwrap(message) {
                     Some((Tag::Kex, [KEX_CONFIRM, tag @ ..])) => {
-                        if !pake::verify_peer(&shared, true, tag) { return self.end("key confirmation failed") }
-                        self.authenticated(&shared, now_ms)
+                        if pake::verify_peer(&shared, true, tag) {
+                            return self.authenticated(&shared, now_ms);
+                        }
+                        // Our password was wrong for this attempt. Wait for the
+                        // host to offer another one, unless we are out of tries.
+                        if self.kex_attempts < MAX_KEX_ATTEMPTS {
+                            self.phase = Phase::KexAwaitRetry;
+                            Vec::new()
+                        } else {
+                            self.end("key confirmation failed")
+                        }
                     }
+                    Some((Tag::Kex, [KEX_RETRY, ..])) if self.kex_attempts < MAX_KEX_ATTEMPTS => self.start_kex_attempt(now_ms),
                     _ => {
                         self.phase = Phase::KexConfirm(shared);
+                        Vec::new()
+                    }
+                }
+            }
+            Phase::KexAwaitRetry => {
+                match frame::unwrap(message) {
+                    Some((Tag::Kex, [KEX_RETRY, ..])) if self.kex_attempts < MAX_KEX_ATTEMPTS => self.start_kex_attempt(now_ms),
+                    Some((Tag::Kex, [KEX_RETRY, ..])) => self.end("key confirmation failed"),
+                    _ => {
+                        self.phase = Phase::KexAwaitRetry;
                         Vec::new()
                     }
                 }
@@ -218,12 +258,7 @@ impl ViewerSession {
     fn on_pairing(&mut self, message: &[u8], now_ms: f64) -> Vec<Event> {
         let Some((Tag::Control, body)) = frame::unwrap(message) else { return self.end("invalid pairing message") };
         match Control::from_bytes(body) {
-            Some(Control::Paired { .. }) => {
-                let (state, my_message) = pake::start(self.password.as_bytes(), false);
-                self.phase = Phase::KexMessage(state);
-                self.kex_deadline = now_ms + KEX_DEADLINE_MS;
-                vec![Event::Send(kex_frame(KEX_MSG, &my_message))]
-            }
+            Some(Control::Paired { .. }) => self.start_kex_attempt(now_ms),
             Some(Control::Error { code }) => self.end(reconnect::connect_refusal_message(&code).unwrap_or("invalid pairing message")),
             _ => self.end("invalid pairing message"),
         }
@@ -320,6 +355,7 @@ impl ViewerSession {
             // So a close here almost always means a wrong password. The
             // desktop viewer reads it as a drop and retries for 30 s.
             Phase::KexConfirm(_) => "key confirmation failed",
+            Phase::KexAwaitRetry => "key confirmation failed",
             Phase::Session(_) => "connection closed during session",
         };
         self.end(message)
@@ -331,6 +367,7 @@ impl ViewerSession {
         match &mut self.phase {
             Phase::KexMessage(_) if now_ms >= self.kex_deadline => self.end("connection closed during KEX"),
             Phase::KexConfirm(_) if now_ms >= self.kex_deadline => self.end("connection closed during KEX confirmation"),
+            Phase::KexAwaitRetry if now_ms >= self.kex_deadline => self.end("key confirmation failed"),
             Phase::Session(live) => {
                 if now_ms >= live.peer_deadline {
                     return self.end(format!(
@@ -446,7 +483,11 @@ mod tests {
         let (Tag::Kex, [KEX_CONFIRM, tag @ ..]) = frame::unwrap(&viewer_confirm).unwrap() else { panic!("expected a confirm") };
         assert_eq!(pake::verify_peer(&shared, false, tag), host_password == viewer.password);
         let out = viewer.receive(&kex_frame(KEX_CONFIRM, &pake::confirm_tag(&shared, true)), 2.0);
-        if viewer.is_ended() { return Err(out); }
+        if !out.contains(&Event::Authenticated) {
+            // Wrong password: the viewer now waits for a possible retry, so a
+            // single-password host ends it by closing. Surface that.
+            return Err(if viewer.is_ended() { out } else { viewer.closed() });
+        }
         let (send, recv) = kex::derive_keys(&shared, true);
         let (control_send, control_recv) = kex::derive_control_keys(&shared, true);
         let (data_send, data_recv) = kex::derive_data_keys(&shared, true);
@@ -483,6 +524,45 @@ mod tests {
             let (Tag::Data, sealed) = frame::unwrap(message)? else { return None };
             DataMsg::from_bytes(&self.data_opener.open(&[Tag::Data as u8], sealed)?)
         }
+    }
+
+    /// Drive the viewer through one key-exchange round with `host_password`,
+    /// returning whether the host confirmed it. On a mismatch the host sends a
+    /// retry when `offer_retry` is set (it has another password to try).
+    fn kex_round(viewer: &mut ViewerSession, host_password: &[u8], offer_retry: bool, now_ms: f64) -> bool {
+        let out = if now_ms == 0.0 { viewer.receive(&paired(), now_ms) } else { viewer.receive(&kex_frame(KEX_RETRY, &[]), now_ms) };
+        let viewer_kex = sent(&out).remove(0);
+        let (Tag::Kex, [KEX_MSG, viewer_msg @ ..]) = frame::unwrap(&viewer_kex).unwrap() else { panic!("expected a KEX message") };
+        let (state, host_msg) = pake::start(host_password, true);
+        let shared = pake::finish(state, viewer_msg).unwrap();
+        let out = viewer.receive(&kex_frame(KEX_MSG, &host_msg), now_ms + 0.1);
+        let viewer_confirm = sent(&out).remove(0);
+        let (Tag::Kex, [KEX_CONFIRM, tag @ ..]) = frame::unwrap(&viewer_confirm).unwrap() else { panic!("expected a confirm") };
+        let matched = pake::verify_peer(&shared, false, tag);
+        let out = viewer.receive(&kex_frame(KEX_CONFIRM, &pake::confirm_tag(&shared, true)), now_ms + 0.2);
+        if matched {
+            assert!(out.contains(&Event::Authenticated));
+        } else if offer_retry {
+            assert!(out.is_empty() && !viewer.is_ended(), "viewer should wait for the retry");
+        }
+        matched
+    }
+
+    #[test]
+    fn browser_viewer_authenticates_with_the_hosts_second_password() {
+        let mut viewer = ViewerSession::new("session-99", "");
+        assert!(!kex_round(&mut viewer, b"unattended-123456", true, 0.0), "first password is not ours");
+        assert!(kex_round(&mut viewer, b"session-99", false, 1.0), "second password matches");
+        assert!(viewer.is_authenticated());
+    }
+
+    #[test]
+    fn browser_viewer_gives_up_after_the_last_password() {
+        let mut viewer = ViewerSession::new("neither-000000", "");
+        assert!(!kex_round(&mut viewer, b"unattended-123456", true, 0.0));
+        // Second (final) password also fails: the host does not offer a retry.
+        assert!(!kex_round(&mut viewer, b"session-99", false, 1.0));
+        assert!(viewer.is_ended());
     }
 
     #[test]
