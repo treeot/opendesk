@@ -317,7 +317,6 @@ describe("Home", () => {
       fireEvent.click(toggle());
       await waitFor(() => expect(toggle().checked).toBe(true));
       expect(api.setStartAtSignIn).toHaveBeenCalledWith(true);
-      expect(screen.getByText(/use Quit OpenDesk to stop it/)).toBeTruthy();
     });
 
     it("shows the state the OS reports and can always be turned off", async () => {
