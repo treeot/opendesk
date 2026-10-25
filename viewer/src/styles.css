@@ -144,10 +144,13 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .session-toolbar__select-chip:focus-within { border-color: var(--accent); }
 
 /* Toast */
-.toast { position: fixed; z-index: 20; bottom: 22px; left: 50%; display: flex; align-items: flex-start; gap: 12px; width: max-content; max-width: min(520px, calc(100vw - 32px)); padding: 12px 12px 12px 16px; transform: translateX(-50%); color: var(--text); background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: 0 16px 40px #0009; font-size: 13px; line-height: 1.45; }
-.toast--error { border-left-color: #f3ad4b; }
-.toast__text { overflow-wrap: anywhere; }
-.toast__dismiss { flex-shrink: 0; width: 24px; height: 24px; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 4px; font-size: 16px; line-height: 1; }.toast__dismiss:hover { color: var(--text); }
+.toast { position: fixed; z-index: 20; bottom: 24px; left: 50%; display: flex; align-items: center; gap: 11px; width: max-content; max-width: min(520px, calc(100vw - 32px)); padding: 13px 14px; transform: translateX(-50%); color: var(--text); background: color-mix(in srgb, var(--card) 94%, transparent); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px #000a, 0 2px 8px #0007; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 13px; line-height: 1.45; animation: toast-in .22s cubic-bezier(.2, .8, .2, 1); }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 14px) scale(.98); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+.toast__icon { flex: none; display: inline-flex; align-self: flex-start; color: var(--accent); }
+.toast--error .toast__icon { color: #f3ad4b; }
+.toast__text { flex: 1; overflow-wrap: anywhere; }
+.toast__dismiss { flex: none; align-self: flex-start; width: 24px; height: 24px; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 6px; font-size: 16px; line-height: 1; cursor: pointer; }.toast__dismiss:hover { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
 
 /* Waiting for the host */
 .connecting-screen { min-height: 100vh; display: grid; place-items: center; padding: 32px 20px; }
