@@ -428,7 +428,7 @@ describe("Home", () => {
     vi.mocked(api.rotatePassword).mockResolvedValue({ password: "999999" });
     const notify = vi.fn();
     render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
-    fireEvent.click(screen.getByRole("button", { name: "Rotate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rotate password" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith("New password generated.", "info"));
   });
 
