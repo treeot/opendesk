@@ -15,7 +15,6 @@ pub const MENU_EVENT: &str = "menu";
 /// Item ids shared with the front end.
 pub mod id {
     pub const SETTINGS: &str = "settings";
-    pub const FULLSCREEN: &str = "fullscreen";
     pub const DISCONNECT: &str = "disconnect";
     pub const ADD_SCREEN: &str = "add_screen";
     pub const CLIPBOARD_SYNC: &str = "clipboard_sync";
@@ -65,9 +64,10 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .select_all()
         .build()?;
 
-    let view_menu = SubmenuBuilder::new(app, "View")
-        .item(&MenuItemBuilder::with_id(id::FULLSCREEN, "Enter Full Screen").accelerator("Cmd+Ctrl+F").build(app)?)
-        .build()?;
+    // Left empty on purpose: macOS adds its own "Enter Full Screen" here, so a
+    // custom item would duplicate it. The in-session toolbar has the fit-to-
+    // screen fullscreen control.
+    let view_menu = SubmenuBuilder::new(app, "View").build()?;
 
     let add_screen = MenuItemBuilder::with_id(id::ADD_SCREEN, "Add Screen").enabled(false).build(app)?;
     let clipboard_sync = CheckMenuItemBuilder::with_id(id::CLIPBOARD_SYNC, "Clipboard Sync").enabled(false).build(app)?;
