@@ -165,7 +165,7 @@ export function LinkBadge({ link }: { link: LinkStats }) {
   );
 }
 
-const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
+const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
 export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);

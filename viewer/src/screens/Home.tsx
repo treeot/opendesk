@@ -16,7 +16,7 @@ interface HomeProps {
   initialTargetId?: string;
   onConnect: (targetId: string, password: string, authCode?: string) => Promise<void>;
 }
-const statusLabels: Record<api.Status, string> = { offline: "Offline", online: "Online", connecting: "Connecting", in_session: "In session" };
+const statusLabels: Record<api.Status, string> = { offline: "Offline", online: "Online", connecting: "Connecting", reconnecting: "Reconnecting", in_session: "In session" };
 
 /** Base32 secret in groups of four for manual entry. */
 const groupSecret = (secret: string) => secret.replace(/(.{4})(?=.)/g, "$1 ");

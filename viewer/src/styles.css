@@ -164,7 +164,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 @media (prefers-reduced-motion: reduce) { .connecting-spinner { animation-duration: 3s; } }
 
 /* Session additions */
-.session-toolbar__connected-dot[data-status="connecting"] { background: #f3ad4b; box-shadow: 0 0 9px #f3ad4b; }
+.session-toolbar__connected-dot[data-status="connecting"], .session-toolbar__connected-dot[data-status="reconnecting"] { background: #f3ad4b; box-shadow: 0 0 9px #f3ad4b; }
 .session-toolbar__connected-dot[data-status="offline"] { background: #66717f; box-shadow: none; }
 .session-toolbar__icon[aria-pressed="true"] { color: var(--accent); background: #22d3ee14; border-color: #22d3ee55; }
 .file-transfer__header { display: flex; align-items: center; justify-content: space-between; }.file-transfer__close { padding: 2px 8px; }

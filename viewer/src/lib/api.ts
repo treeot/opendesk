@@ -15,7 +15,7 @@ const useBridge = isTauri || import.meta.env?.MODE === "test";
 export const isDevBrowser = !useBridge;
 const invoke: typeof tauriInvoke = useBridge ? tauriInvoke : ((command: string, args?: Record<string, unknown>) => devInvoke(command, args)) as typeof tauriInvoke;
 
-export type Status = "offline" | "online" | "connecting" | "in_session";
+export type Status = "offline" | "online" | "connecting" | "reconnecting" | "in_session";
 export interface Identity { id: string; password: string }
 /** A relay refusing this device's ID: another device's ID there ("taken"), or a copy of this device online with it ("in_use"). */
 export interface IdentityConflict { relay: string; kind: "taken" | "in_use"; message: string }

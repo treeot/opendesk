@@ -568,7 +568,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   return (
     <main className={`session-screen session-screen--${role}`}>
       {role === "viewer" && restarting && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Remote is restarting. Reconnecting automatically…</div>}
-      {role === "viewer" && !hasVideo && !restarting && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
+      {role === "viewer" && !restarting && status === "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
+      {role === "viewer" && !hasVideo && !restarting && status !== "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
       {role === "viewer" && <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />}
       {role === "viewer" && !barVisible && (
         <button type="button" className="session-peek" aria-label="Show session controls" title="Show session controls" onMouseEnter={revealBar} onFocus={revealBar} onClick={revealBar}>

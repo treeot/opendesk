@@ -288,7 +288,9 @@ pub(crate) fn connect(
             let restart_expected = Arc::new(AtomicBool::new(false));
             loop {
                 if task_viewer_stop.load(Ordering::Relaxed) { break Ok(()); }
-                emit(&task_app, VIEWER_STATUS, StatusEvent { state: "connecting" });
+                // A retry after a live session is a reconnect, shown inline on
+                // the session screen; the first connect is plain "connecting".
+                emit(&task_app, VIEWER_STATUS, StatusEvent { state: if session_started { "reconnecting" } else { "connecting" } });
                 // Set once this attempt streams video; only used to restart the
                 // reconnect window, never to infer an auth failure.
                 let media_received = Arc::new(AtomicBool::new(false));
@@ -497,7 +499,16 @@ pub(crate) fn connect(
                             break Err(format!("{message}; gave up reconnecting after {}s", window.as_secs()));
                         };
                         reconnect_attempt += 1;
-                        emit(&task_app, "error", ErrorEvent { message: format!("viewer session dropped ({message}); reconnecting (attempt {reconnect_attempt})") });
+                        // Connection state lives inline, not in a toast: flip a
+                        // live session to "reconnecting" right away so the gap
+                        // is visible during the backoff. Pre-session retries
+                        // (e.g. a lost 2FA rejection) stay on "connecting" and
+                        // never flash an error before the 2FA popup.
+                        if session_started {
+                            emit(&task_app, VIEWER_STATUS, StatusEvent { state: "reconnecting" });
+                        } else {
+                            log::info!("viewer connect attempt {reconnect_attempt} after: {message}");
+                        }
                         tokio::time::sleep(delay).await;
                     }
                 }

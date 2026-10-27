@@ -120,8 +120,8 @@ describe("Toolbar", () => {
     const { container, rerender } = render(<Toolbar remoteId="123" status="in_session" onDisconnect={vi.fn()} />);
     const dot = container.querySelector(".session-toolbar__connected-dot")!;
     expect(dot.getAttribute("data-status")).toBe("in_session");
-    rerender(<Toolbar remoteId="123" status="connecting" onDisconnect={vi.fn()} />);
-    expect(dot.getAttribute("data-status")).toBe("connecting");
+    rerender(<Toolbar remoteId="123" status="reconnecting" onDisconnect={vi.fn()} />);
+    expect(dot.getAttribute("data-status")).toBe("reconnecting");
     expect(screen.getByText("Reconnecting")).toBeTruthy();
   });
 });
