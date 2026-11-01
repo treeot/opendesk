@@ -112,3 +112,25 @@ The privileged path needs a real Windows VM and an administrator account.
    an unattended sign-in including the 2FA code.
 6. Disable the setting, verify the service is stopped and removed, and confirm
    the ordinary host resumes after the next sign-in.
+
+# Linux hardware H.264 (VAAPI)
+
+The VAAPI encoder needs a real Linux GPU with a working VAAPI driver (Intel
+Quick Sync, AMD, or compatible). Hosted CI runners have no such GPU, so CI only
+compile-checks the backend; runtime needs this manual pass.
+
+1. Confirm the GPU is usable: install `vainfo` and check that it lists
+   `VAProfileH264*` with `VAEntrypointEncSlice`. Confirm `/dev/dri/renderD128`
+   exists and the user can read it.
+2. Install the ffmpeg development libraries, then build the host with the
+   feature: `cargo build --release -p host-core --features vaapi`.
+3. Host a session from this machine and connect a viewer. Confirm the picture
+   is correct (no colour/stride artefacts, no tearing) while moving windows.
+4. Confirm hardware is actually in use, not the software fallback: watch the
+   host log for the VAAPI encoder opening rather than an openh264 fallback
+   line, and check GPU encoder load (e.g. `intel_gpu_top`, or `radeontop`).
+5. Trigger a keyframe (reconnect or resize the viewer) and confirm the image
+   recovers cleanly, confirming in-band SPS/PPS on keyframes.
+6. Force a failure (run without a GPU, or on a driver missing `h264_vaapi`) and
+   confirm the host degrades to the openh264 software encoder instead of
+   dropping the session.

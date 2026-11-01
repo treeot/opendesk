@@ -151,6 +151,15 @@ jobs:
           sudo apt-get install -y libasound2-dev libxdo-dev libpipewire-0.3-dev libspa-0.2-dev libdbus-1-dev clang
       # libopus is built from source by opusic-sys (CMake is preinstalled).
       - run: cargo check --locked -p protocol -p relay -p host-core
+      # ffmpeg dev libraries for the experimental VAAPI encoder. This only
+      # compile-checks the h264_vaapi backend; runtime needs a real GPU, which
+      # hosted runners lack (see docs/TESTING.md).
+      - name: Linux ffmpeg deps for VAAPI
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libavcodec-dev libavutil-dev libavformat-dev pkg-config
+      - name: Check VAAPI encoder
+        if: runner.os == 'Linux'
+        run: cargo check --locked -p host-core --features vaapi
 
   tauri-cross:
     name: tauri backend (${{ matrix.os }})
