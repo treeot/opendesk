@@ -3,10 +3,9 @@
 //! A viewer sends `Control::RequestSecureAttention` and the host calls
 //! [`deliver`]. On Windows the security screen is a protected desktop that an
 //! ordinary process cannot reach; reaching it is only possible from the
-//! helper service that runs at the sign-in screen. That service is not built
-//! yet (see `docs/WINDOWS_SERVICE.md`), so [`deliver`] is a scaffold: it
-//! reports [`Unsupported`] today and gains a real implementation once the
-//! service exists.
+//! helper service that runs at the sign-in screen (see
+//! `docs/WINDOWS_SERVICE.md`). [`deliver`] uses the `SendSAS` broker when the
+//! host was launched by that service and reports [`Unsupported`] otherwise.
 
 /// Why the secure attention sequence could not be delivered.
 #[derive(Debug, Clone, PartialEq, Eq)]
