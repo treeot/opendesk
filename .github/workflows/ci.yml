@@ -154,9 +154,11 @@ jobs:
       # ffmpeg dev libraries for the experimental VAAPI encoder. This only
       # compile-checks the h264_vaapi backend; runtime needs a real GPU, which
       # hosted runners lack (see docs/TESTING.md).
+      # ffmpeg-sys-next probes the full ffmpeg library set by default, so install
+      # all the -dev packages, not only the ones the encoder calls into.
       - name: Linux ffmpeg deps for VAAPI
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libavcodec-dev libavutil-dev libavformat-dev pkg-config
+        run: sudo apt-get install -y libavcodec-dev libavutil-dev libavformat-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev pkg-config
       - name: Check VAAPI encoder
         if: runner.os == 'Linux'
         run: cargo check --locked -p host-core --features vaapi
