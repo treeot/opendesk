@@ -341,7 +341,7 @@ async fn live_clipboard_is_sealed_and_relayed_end_to_end() {
 
     let expected = ClipboardMsg {
         seq: 27,
-        text: "clipboard round-trip: café 📋".into(),
+        content: protocol::clipboard::ClipboardContent::Text("clipboard round-trip: café 📋".into()),
     };
     let sealed = sealer.seal(&[Tag::Data as u8], &DataMsg::Clipboard(expected.clone()).to_bytes());
     sender

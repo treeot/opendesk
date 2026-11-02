@@ -255,7 +255,7 @@ mod tests {
         ] {
             raw_to_b.send(junk).await.unwrap();
         }
-        let clip = ClipboardMsg { seq: 1, text: "still alive".into() };
+        let clip = ClipboardMsg { seq: 1, content: protocol::clipboard::ClipboardContent::Text("still alive".into()) };
         raw_to_b.send(DataMsg::Clipboard(clip.clone()).to_bytes()).await.unwrap();
         assert_eq!(timeout(Duration::from_secs(1), b.clipboard.recv()).await.unwrap(), Some(clip));
     }
