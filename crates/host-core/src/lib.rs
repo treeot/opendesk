@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod browse;
 pub mod capture;
 pub mod audio;
