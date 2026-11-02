@@ -160,6 +160,8 @@ pub enum Control {
     /// header always says which codec a frame actually uses. Older hosts ignore
     /// it and stay on H.264.
     DecoderCodecs { hevc: bool },
+    /// Viewer to host: favor text clarity over motion smoothness.
+    TextReadability { enabled: bool },
     /// Host → viewer, after the first `MonitorList`: the host's LAN MAC address,
     /// so a viewer that saved this device can wake it over the LAN later without
     /// the user typing it in. Sent only when the host could read one; older
@@ -346,6 +348,13 @@ mod tests {
     fn decoder_codecs_roundtrips() {
         let c = Control::DecoderCodecs { hevc: true };
         assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"decoder_codecs","hevc":true}"#);
+        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
+    }
+
+    #[test]
+    fn text_readability_roundtrips() {
+        let c = Control::TextReadability { enabled: true };
+        assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"text_readability","enabled":true}"#);
         assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
     }
 

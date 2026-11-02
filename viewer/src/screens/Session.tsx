@@ -97,6 +97,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [audioMuted, setAudioMuted] = useState(false);
   // Bitrate cap in bps; 0 is automatic. Re-sent on each live session below.
   const [quality, setQuality] = useState(0);
+  const [textReadability, setTextReadability] = useState(false);
   const audioRef = useRef<{ context: AudioContext; nextTime: number } | undefined>(undefined);
   const recorderRef = useRef<MediaRecorder | undefined>(undefined);
   const recordingStreamRef = useRef<MediaStream | undefined>(undefined);
@@ -249,6 +250,11 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     if (role !== "viewer" || status !== "in_session") return;
     void api.setMaxBitrate(quality).catch((error: unknown) => notify(friendlyError(error)));
   }, [role, status, quality, notify]);
+
+  useEffect(() => {
+    if (role !== "viewer" || status !== "in_session") return;
+    void api.setTextReadability(textReadability).catch((error: unknown) => notify(friendlyError(error)));
+  }, [role, status, textReadability, notify]);
 
   // Tell the host whether we can decode HEVC so it may offer the sharper codec;
   // it stays on H.264 otherwise. Re-sent on each live session (reconnects too).
@@ -578,7 +584,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}
     </main>

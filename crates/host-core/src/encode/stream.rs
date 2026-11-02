@@ -88,7 +88,11 @@ impl KeyframePolicy {
 
     /// Whether the next encoded frame must be a keyframe.
     pub fn due(&self, now: Instant) -> bool {
-        self.requested || now.saturating_duration_since(self.last_keyframe) >= PERIODIC_KEYFRAME_INTERVAL
+        self.due_after(now, PERIODIC_KEYFRAME_INTERVAL)
+    }
+
+    pub fn due_after(&self, now: Instant, interval: Duration) -> bool {
+        self.requested || now.saturating_duration_since(self.last_keyframe) >= interval
     }
 
     /// A keyframe went out at `now` (forced or not).

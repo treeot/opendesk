@@ -29,6 +29,7 @@ const { listeners, mocks } = vi.hoisted(() => {
     onDeepLink: on("deep-link"), takeDeepLink: () => Promise.resolve(null),
     setMaxBitrate: vi.fn(() => Promise.resolve()),
     setDecoderCodecs: vi.fn(() => Promise.resolve()),
+    setTextReadability: vi.fn(() => Promise.resolve()),
     onCursorShape: on("cursor_shape"), onCursorHidden: on("cursor_hidden"),
     listRecordings: () => Promise.resolve([]), deleteRecording: vi.fn(() => Promise.resolve()),
     isDevBrowser: false,

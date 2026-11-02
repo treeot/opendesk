@@ -1032,6 +1032,7 @@ pub fn run() {
             set_privacy_mode,
             set_max_bitrate,
             set_decoder_codecs,
+            set_text_readability,
             start_forward,
             stop_forward,
             list_forwards,

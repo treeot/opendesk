@@ -99,6 +99,7 @@ export const selectMonitor = (id: number) => invoke<void>("select_monitor", { id
 export const setMaxBitrate = (bps: number) => invoke<void>("set_max_bitrate", { bps });
 /** Tell the host which codecs this viewer can decode (lets it offer HEVC). */
 export const setDecoderCodecs = (hevc: boolean) => invoke<void>("set_decoder_codecs", { hevc });
+export const setTextReadability = (enabled: boolean) => invoke<void>("set_text_readability", { enabled });
 /** Forward local `127.0.0.1:localPort` to the host's `127.0.0.1:remotePort`. */
 export const startForward = (localPort: number, remotePort: number) => invoke<void>("start_forward", { localPort, remotePort });
 export const stopForward = (localPort: number) => invoke<void>("stop_forward", { localPort });

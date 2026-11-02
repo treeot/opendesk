@@ -952,6 +952,7 @@ where
                     Some(Control::DecoderCodecs { hevc }) => {
                         video.send(VideoCommand::SetCodec(if hevc { encode::Codec::Hevc } else { encode::Codec::H264 }));
                     }
+                    Some(Control::TextReadability { enabled }) => video.send(VideoCommand::TextReadability(enabled)),
                     Some(Control::RequestSecureAttention) => {
                         if !control_gate.load(Ordering::Relaxed) {
                             log::debug!("ignoring secure attention request: control is off");
@@ -1244,6 +1245,7 @@ struct VideoPipeline<E, F> {
     /// Set when the encoder must be rebuilt before the next encode (a codec
     /// switch; size changes rebuild inline).
     rebuild: bool,
+    text_readability: bool,
 }
 
 impl<E, F> VideoPipeline<E, F>
@@ -1257,7 +1259,7 @@ where
         let encoder = encoder_factory(frame.width, frame.height, encode::Codec::H264)?;
         dims.store(pack_dims(capture.0, capture.1), Ordering::Release);
         let now = Instant::now();
-        Ok(Self { encoder_factory, encoder, frame, capture, dims, seq: 0, started: now, keyframes: KeyframePolicy::new(now), bitrate: None, desired_codec: encode::Codec::H264, rebuild: false })
+        Ok(Self { encoder_factory, encoder, frame, capture, dims, seq: 0, started: now, keyframes: KeyframePolicy::new(now), bitrate: None, desired_codec: encode::Codec::H264, rebuild: false, text_readability: false })
     }
 
     fn with_rate(mut self, rate: Arc<transport::RateControl>) -> Self {
@@ -1275,11 +1277,20 @@ where
 
     fn keyframe_due(&self) -> bool { self.keyframes.due(Instant::now()) }
 
+    fn encode_interval(&self) -> Duration { if self.text_readability { Duration::from_millis(66) } else { Duration::ZERO } }
+
     /// Ask for a codec on the next encode; a no-op when already building it.
     fn set_codec(&mut self, codec: encode::Codec) {
         if codec != self.desired_codec {
             self.desired_codec = codec;
             self.rebuild = true;
+        }
+    }
+
+    fn set_text_readability(&mut self, enabled: bool) {
+        if self.text_readability != enabled {
+            self.text_readability = enabled;
+            if enabled { self.encoder.force_intra_frame(); }
         }
     }
 
@@ -1307,7 +1318,8 @@ where
             if let Some(bitrate) = &mut self.bitrate { bitrate.encoder_replaced(); }
         }
         let now = Instant::now();
-        if self.keyframes.due(now) {
+        let keyframe_interval = if self.text_readability { Duration::from_secs(2) } else { stream::PERIODIC_KEYFRAME_INTERVAL };
+        if self.keyframes.due_after(now, keyframe_interval) {
             self.encoder.force_intra_frame();
         }
         if let Some(bitrate) = &mut self.bitrate { bitrate.update(&mut self.encoder, self.frame.width, self.frame.height); }
@@ -1337,6 +1349,7 @@ enum VideoCommand {
     MaxBitrate(u32),
     /// Switch the stream codec (HEVC when the viewer supports it, else H.264).
     SetCodec(encode::Codec),
+    TextReadability(bool),
 }
 
 /// News from the encode thread for the session loop.
@@ -1466,6 +1479,7 @@ fn run_video_thread<C, E, F>(
                 }
                 Ok(VideoCommand::MaxBitrate(bps)) => video.set_max_bitrate(bps),
                 Ok(VideoCommand::SetCodec(codec)) => video.set_codec(codec),
+                Ok(VideoCommand::TextReadability(enabled)) => video.set_text_readability(enabled),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
             }
@@ -1491,6 +1505,9 @@ fn run_video_thread<C, E, F>(
         }
         let wait = stream::capture_wait(last_encode.map(|at| at.elapsed()), VIDEO_POLL);
         let fresh = if wait.is_zero() { capturer.next_frame() } else { capturer.wait_frame(wait) };
+        if video.encode_interval() > Duration::ZERO && last_encode.is_some_and(|at| at.elapsed() < video.encode_interval()) {
+            continue;
+        }
         if !stream::encode_due(fresh.is_some(), video.keyframe_due(), last_encode.map(|at| at.elapsed())) {
             continue;
         }

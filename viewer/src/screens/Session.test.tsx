@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, decode, filesWindow, listenFn } = vi.hoisted(() => ({
+const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, decode, filesWindow, listenFn } = vi.hoisted(() => ({
   onVirtualDisplaySupport: vi.fn<(handler: (payload: { max: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayAdded: vi.fn<(handler: (payload: { id: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayRefused: vi.fn<(handler: (payload: { code: string }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
@@ -55,6 +55,7 @@ const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused,
   setSessionMenu: vi.fn(() => Promise.resolve()),
   setMaxBitrate: vi.fn(() => Promise.resolve()),
   setDecoderCodecs: vi.fn(() => Promise.resolve()),
+    setTextReadability: vi.fn(() => Promise.resolve()),
   onCursorShape: vi.fn(() => Promise.resolve(vi.fn())),
   onCursorHidden: vi.fn(() => Promise.resolve(vi.fn())),
   decode: vi.fn(),
@@ -67,7 +68,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenFn, emit: vi.fn(() => Promise.resolve()) }));
 
-vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs }));
+vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability }));
 vi.mock("../lib/decode", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/decode")>()),
   makeDecoder: vi.fn(() => ({ push: decode, close: closeDecoder })),

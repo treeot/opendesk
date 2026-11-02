@@ -189,6 +189,12 @@ pub(crate) async fn set_decoder_codecs(state: tauri::State<'_, AppState>, hevc: 
     send_control(&state, Control::DecoderCodecs { hevc }).await
 }
 
+/// Favor text clarity over motion smoothness for the current stream.
+#[tauri::command]
+pub(crate) async fn set_text_readability(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    send_control(&state, Control::TextReadability { enabled }).await
+}
+
 /// Viewer: forward local `127.0.0.1:local_port` to the host's `127.0.0.1:remote_port`.
 #[tauri::command]
 pub(crate) async fn start_forward(app: AppHandle, local_port: u16, remote_port: u16) -> Result<(), String> {

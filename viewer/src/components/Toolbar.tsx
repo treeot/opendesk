@@ -44,6 +44,8 @@ interface ToolbarProps {
   /** Selected bitrate cap in bps; 0 is automatic. */
   quality?: number;
   onQualityChange?: (bps: number) => void;
+  textReadability?: boolean;
+  onTextReadabilityChange?: (enabled: boolean) => void;
   /** Slide the bar out of view until the pointer reaches the top edge. */
   hidden?: boolean;
   onBarEnter?: () => void;
@@ -167,7 +169,7 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
 
@@ -220,6 +222,7 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
               <IconButton label="More" text="More" icon={icons.more} pressed={moreOpen} expanded={moreOpen} title="More controls" onClick={() => setMoreOpen((open) => !open)} />
               {moreOpen && <div className="session-toolbar__more" role="menu">
                 <MoreItem icon={icons.clipboard} label="Clipboard sync" on={clipboardSync} onClick={() => { onClipboardSyncChange(!clipboardSync); setMoreOpen(false); }} />
+                <MoreItem icon={icons.eye} label="Text readability" on={textReadability} onClick={() => { onTextReadabilityChange(!textReadability); setMoreOpen(false); }} />
                 <MoreItem icon={icons.eye} label="View only" on={viewOnly} onClick={() => { onViewOnlyChange(!viewOnly); setMoreOpen(false); }} />
                 <MoreItem icon={icons.forward} label="Port forwarding" on={forwardOpen} onClick={() => { onForwardToggle(); setMoreOpen(false); }} />
                 {canOpenMonitorWindow && <MoreItem icon={icons.newWindow} label="Open monitor in a window" onClick={() => { onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0); setMoreOpen(false); }} />}
