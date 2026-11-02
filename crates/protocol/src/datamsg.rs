@@ -1,4 +1,6 @@
-use crate::{browse::BrowseMsg, chat::ChatMsg, clipboard::ClipboardMsg, filexfer::FileMsg, tunnel::TunnelMsg};
+use crate::{
+    browse::BrowseMsg, chat::ChatMsg, clipboard::ClipboardMsg, filexfer::FileMsg, tunnel::TunnelMsg,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataMsg {
@@ -48,10 +50,7 @@ mod tests {
             offset: 128,
             data: vec![1, 2, 3, 255],
         });
-        let clipboard = DataMsg::Clipboard(ClipboardMsg {
-            seq: 12,
-            text: "shared 📋".into(),
-        });
+        let clipboard = DataMsg::Clipboard(ClipboardMsg::text(12, "shared 📋".into()));
         let chat = DataMsg::Chat(ChatMsg {
             text: "hello 💬".into(),
         });

@@ -10,7 +10,7 @@ function setup(core = new FakeCore(), overrides: Partial<typeof target> = {}) {
   const statuses: ConnectionStatus[] = [];
   const frames: number[][] = [];
   const monitors: MonitorInfo[][] = [];
-  const clipboard: string[] = [];
+  const clipboard: ({ type: "text"; text: string } | { type: "image"; width: number; height: number; png: Uint8Array })[] = [];
   const ended: (string | null)[] = [];
   let clock = 0;
   const connection = new Connection(

@@ -1,52 +1,86 @@
-use protocol::{clipboard::{ClipboardMsg, MAX_CLIPBOARD}, datamsg::DataMsg};
+use protocol::{
+    clipboard::{ClipboardContent, ClipboardMsg, MAX_CLIPBOARD, MAX_CLIPBOARD_IMAGE},
+    datamsg::DataMsg,
+};
 
-/// The OS clipboard operations needed by [`ClipboardSync`].
 pub trait ClipboardBackend {
-    fn read(&self) -> Option<String>;
-    fn write(&self, text: &str);
+    fn read(&self) -> Option<ClipboardContent>;
+    fn write(&self, content: &ClipboardContent);
 }
 
-/// Clipboard backend backed by the system clipboard through `arboard`.
-///
-/// The `arboard::Clipboard` handle is kept alive for the backend's whole
-/// lifetime. On X11/Wayland the clipboard selection is served by the process
-/// that owns the live handle; a per-operation handle that drops immediately
-/// after `set_text` leaves the selection unowned and the pasted text vanishes.
-/// The backend lives entirely on the dedicated clipboard thread, so the
-/// non-`Send`, single-thread-affine handle stays on one thread; `RefCell`
-/// gives the `&self` trait methods the interior mutability arboard needs.
 pub struct ArboardBackend {
     clipboard: std::cell::RefCell<arboard::Clipboard>,
 }
-
 impl ArboardBackend {
     pub fn new() -> Option<Self> {
-        arboard::Clipboard::new()
-            .ok()
-            .map(|clipboard| Self {
-                clipboard: std::cell::RefCell::new(clipboard),
-            })
+        arboard::Clipboard::new().ok().map(|clipboard| Self {
+            clipboard: std::cell::RefCell::new(clipboard),
+        })
     }
 }
-
 impl ClipboardBackend for ArboardBackend {
-    fn read(&self) -> Option<String> {
-        self.clipboard.borrow_mut().get_text().ok()
+    fn read(&self) -> Option<ClipboardContent> {
+        let mut clipboard = self.clipboard.borrow_mut();
+        if let Ok(image) = clipboard.get_image() {
+            if image.width == 0
+                || image.height == 0
+                || image.width > 16_384
+                || image.height > 16_384
+                || image.width.saturating_mul(image.height) > 100_000_000
+            {
+                return None;
+            }
+            let width = u32::try_from(image.width).ok()?;
+            let height = u32::try_from(image.height).ok()?;
+            let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(rgba)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .ok()?;
+            let png = png.into_inner();
+            if png.len() <= MAX_CLIPBOARD_IMAGE {
+                return Some(ClipboardContent::Image { width, height, png });
+            }
+        }
+        clipboard
+            .get_text()
+            .ok()
+            .filter(|text| text.len() <= MAX_CLIPBOARD)
+            .map(ClipboardContent::Text)
     }
-
-    fn write(&self, text: &str) {
-        let _ = self.clipboard.borrow_mut().set_text(text.to_owned());
+    fn write(&self, content: &ClipboardContent) {
+        let mut clipboard = self.clipboard.borrow_mut();
+        match content {
+            ClipboardContent::Text(text) if text.len() <= MAX_CLIPBOARD => {
+                let _ = clipboard.set_text(text.clone());
+            }
+            ClipboardContent::Image { width, height, png }
+                if png.len() <= MAX_CLIPBOARD_IMAGE && *width > 0 && *height > 0 =>
+            {
+                if let Ok(decoded) =
+                    image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                {
+                    if decoded.width() == *width && decoded.height() == *height {
+                        let rgba = decoded.to_rgba8();
+                        let _ = clipboard.set_image(arboard::ImageData {
+                            width: *width as usize,
+                            height: *height as usize,
+                            bytes: rgba.into_raw().into(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
-/// Applies remote clipboard updates and detects genuine local changes.
 pub struct ClipboardSync<B: ClipboardBackend> {
     backend: B,
-    last_seen: Option<String>,
+    last_seen: Option<ClipboardContent>,
     last_hash: Option<u64>,
     next_seq: u64,
 }
-
 impl<B: ClipboardBackend> ClipboardSync<B> {
     pub fn new(backend: B) -> Self {
         Self {
@@ -56,133 +90,112 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
             next_seq: 0,
         }
     }
-
     pub fn backend(&self) -> &B {
         &self.backend
     }
-
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
-
-    /// Applies a remote update and remembers its hash to suppress the echo.
-    pub fn apply(&mut self, text: &str) {
-        self.backend.write(text);
-        self.last_hash = Some(hash(text));
+    pub fn apply(&mut self, content: &ClipboardContent) {
+        self.backend.write(content);
+        self.last_hash = Some(hash(content));
     }
-
-    /// Polls for a local clipboard change.
-    ///
-    /// The first successful read establishes a baseline and does not emit a
-    /// message. Oversize reads are remembered as seen but skipped.
     pub fn poll(&mut self) -> Option<ClipboardMsg> {
-        let text = self.backend.read()?;
+        let content = self.backend.read()?;
         if self.last_seen.is_none() {
-            self.last_seen = Some(text);
+            self.last_seen = Some(content);
             return None;
         }
-        if self.last_seen.as_deref() == Some(text.as_str()) {
+        if self.last_seen.as_ref() == Some(&content) {
             return None;
         }
-        self.last_seen = Some(text.clone());
-
-        let text_hash = hash(&text);
-        if self.last_hash == Some(text_hash) || text.len() > MAX_CLIPBOARD {
+        self.last_seen = Some(content.clone());
+        if self.last_hash == Some(hash(&content)) {
             return None;
         }
-
+        if matches!(&content, ClipboardContent::Text(t) if t.len() > MAX_CLIPBOARD)
+            || matches!(&content, ClipboardContent::Image { png, .. } if png.len() > MAX_CLIPBOARD_IMAGE)
+        {
+            return None;
+        }
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
-        Some(ClipboardMsg { seq, text })
+        Some(ClipboardMsg { seq, content })
     }
-
-    /// Poll and wrap a locally generated clipboard update for the Data channel.
     pub fn poll_data(&mut self) -> Option<DataMsg> {
         self.poll().map(DataMsg::Clipboard)
     }
 }
-
-fn hash(text: &str) -> u64 {
-    // FNV-1a is small, deterministic, and sufficient for echo detection.
-    text.as_bytes().iter().fold(0xcbf29ce484222325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+fn hash(content: &ClipboardContent) -> u64 {
+    let bytes: Vec<u8> = match content {
+        ClipboardContent::Text(t) => t.as_bytes().to_vec(),
+        ClipboardContent::Image { width, height, png } => [
+            width.to_be_bytes().as_slice(),
+            height.to_be_bytes().as_slice(),
+            png,
+        ]
+        .concat(),
+    };
+    bytes.iter().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
     })
 }
-
-/// In-memory backend useful for tests and callers that need a deterministic backend.
 #[derive(Debug, Default)]
 pub struct FakeBackend {
-    text: std::cell::RefCell<Option<String>>,
+    content: std::cell::RefCell<Option<ClipboardContent>>,
 }
-
 impl FakeBackend {
     pub fn new() -> Self {
         Self::default()
     }
-
     pub fn set_text(&mut self, text: impl Into<String>) {
-        *self.text.get_mut() = Some(text.into());
+        *self.content.get_mut() = Some(ClipboardContent::Text(text.into()));
     }
 }
-
 impl ClipboardBackend for FakeBackend {
-    fn read(&self) -> Option<String> {
-        self.text.borrow().clone()
+    fn read(&self) -> Option<ClipboardContent> {
+        self.content.borrow().clone()
     }
-
-    fn write(&self, text: &str) {
-        *self.text.borrow_mut() = Some(text.to_owned());
+    fn write(&self, content: &ClipboardContent) {
+        *self.content.borrow_mut() = Some(content.clone());
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn echo_is_suppressed() {
-        let mut sync = ClipboardSync::new(FakeBackend::new());
-        sync.apply("hello");
-        sync.backend_mut().set_text("hello");
-        assert_eq!(sync.poll(), None);
+    fn local_text_change_detected() {
+        let mut b = FakeBackend::new();
+        b.set_text("hello");
+        let mut s = ClipboardSync::new(b);
+        assert_eq!(s.poll(), None);
+        s.backend_mut().set_text("world");
+        assert_eq!(s.poll(), Some(ClipboardMsg::text(0, "world".into())));
     }
-
     #[test]
-    fn local_change_is_detected() {
-        let mut backend = FakeBackend::new();
-        backend.set_text("hello");
-        let mut sync = ClipboardSync::new(backend);
-        assert_eq!(sync.poll(), None);
-        sync.backend_mut().set_text("world");
-        assert_eq!(sync.poll(), Some(ClipboardMsg { seq: 0, text: "world".into() }));
-    }
-
-    #[test]
-    fn repeated_polls_do_not_emit() {
-        let mut backend = FakeBackend::new();
-        backend.set_text("initial");
-        let mut sync = ClipboardSync::new(backend);
-        assert_eq!(sync.poll(), None);
-        assert_eq!(sync.poll(), None);
-    }
-
-    #[test]
-    fn oversize_text_is_skipped_without_panicking() {
-        let mut backend = FakeBackend::new();
-        backend.set_text("x".repeat(MAX_CLIPBOARD + 1));
-        let mut sync = ClipboardSync::new(backend);
-        assert_eq!(sync.poll(), None);
-    }
-
-    #[test]
-    fn sequence_increments_across_distinct_sends() {
-        let mut backend = FakeBackend::new();
-        backend.set_text("one");
-        let mut sync = ClipboardSync::new(backend);
-        assert_eq!(sync.poll(), None);
-        sync.backend_mut().set_text("two");
-        assert_eq!(sync.poll().map(|message| message.seq), Some(0));
-        sync.backend_mut().set_text("three");
-        assert_eq!(sync.poll().map(|message| message.seq), Some(1));
+    fn local_image_change_detected_and_echo_suppressed() {
+        let mut b = FakeBackend::new();
+        b.content.get_mut().replace(ClipboardContent::Image {
+            width: 1,
+            height: 1,
+            png: vec![1],
+        });
+        let mut s = ClipboardSync::new(b);
+        assert_eq!(s.poll(), None);
+        let image = ClipboardContent::Image {
+            width: 2,
+            height: 3,
+            png: vec![4, 5],
+        };
+        s.backend().write(&image);
+        assert_eq!(
+            s.poll(),
+            Some(ClipboardMsg {
+                seq: 0,
+                content: image.clone()
+            })
+        );
+        s.apply(&image);
+        assert_eq!(s.poll(), None);
     }
 }

@@ -30,7 +30,7 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
   const connection = useRef<Connection | null>(null);
   const videoSink = useRef<((frame: Uint8Array) => void) | null>(null);
   const audioSink = useRef<((payload: Uint8Array, channels: number) => void) | null>(null);
-  const clipboardSink = useRef<((text: string) => void) | null>(null);
+  const clipboardSink = useRef<((content: { type: "text"; text: string } | { type: "image"; width: number; height: number; png: Uint8Array }) => void) | null>(null);
   const fileSink = useRef<((signal: FileSignal) => void) | null>(null);
 
   const controls = useMemo<SessionControls>(() => ({
@@ -40,6 +40,7 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
     setVideoSink: (sink) => { videoSink.current = sink; },
     setAudioSink: (sink) => { audioSink.current = sink; },
     sendClipboard: (text) => connection.current?.sendClipboard(text),
+    sendClipboardImage: (width, height, png) => connection.current?.sendClipboardImage(width, height, png),
     setClipboardSink: (sink) => { clipboardSink.current = sink; },
     sendFile: (id, name, data) => connection.current?.sendFile(id, name, data),
     acceptFile: (id) => connection.current?.acceptFile(id),
@@ -77,7 +78,7 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
         video: (frame) => videoSink.current?.(frame),
         audio: (payload, channels) => audioSink.current?.(payload, channels),
         monitors: setMonitors,
-        clipboard: (text) => clipboardSink.current?.(text),
+        clipboard: (content) => clipboardSink.current?.(content),
         file: (signal) => fileSink.current?.(signal),
         ended: (error) => {
           if (connection.current === conn) connection.current = null;

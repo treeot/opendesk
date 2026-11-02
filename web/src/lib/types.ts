@@ -26,6 +26,7 @@ export interface Viewer {
   nextEvent(): ViewerEvent | undefined;
   input(event: Uint8Array): Uint8Array | undefined;
   clipboard(text: string): Uint8Array | undefined;
+  clipboardImage(width: number, height: number, png: Uint8Array): Uint8Array | undefined;
   sendFile(id: number, name: string, data: Uint8Array): Uint8Array | undefined;
   acceptFile(id: number): Uint8Array | undefined;
   rejectFile(id: number): Uint8Array | undefined;

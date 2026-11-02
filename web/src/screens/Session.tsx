@@ -17,8 +17,9 @@ export interface SessionControls {
   setAudioSink(sink: ((payload: Uint8Array, channels: number) => void) | null): void;
   /** Send local clipboard text to the host. */
   sendClipboard(text: string): void;
+  sendClipboardImage(width: number, height: number, png: Uint8Array): void;
   /** Where inbound clipboard text goes while the sync toggle is on. */
-  setClipboardSink(sink: ((text: string) => void) | null): void;
+  setClipboardSink(sink: ((content: { type: "text"; text: string } | { type: "image"; width: number; height: number; png: Uint8Array }) => void) | null): void;
   /** Offer a local file to the host. */
   sendFile(id: number, name: string, data: Uint8Array): void;
   /** Accept or reject an incoming file offer. */
@@ -140,9 +141,13 @@ export default function Session({ remoteId, status, monitors, controls, onDiscon
     }
     const clip = navigator.clipboard;
     let last = "";
-    controls.setClipboardSink((text) => {
-      last = text;
-      void clip?.writeText?.(text).catch(() => {});
+    controls.setClipboardSink((content) => {
+      if (content.type === "text") {
+        last = content.text;
+        void clip?.writeText?.(content.text).catch(() => {});
+      } else if (clip?.write && typeof ClipboardItem !== "undefined") {
+        void clip.write([new ClipboardItem({ "image/png": new Blob([content.png.slice().buffer as ArrayBuffer], { type: "image/png" }) })]).catch(() => {});
+      }
     });
     const pull = () => {
       void clip?.readText?.().then((text) => {
@@ -151,6 +156,20 @@ export default function Session({ remoteId, status, monitors, controls, onDiscon
           controls.sendClipboard(text);
         }
       }).catch(() => {});
+      if (clip?.read && typeof ClipboardItem !== "undefined") {
+        void clip.read().then(async (items) => {
+          const item = items.find((entry) => entry.types.includes("image/png"));
+          if (!item) return;
+          const blob = await item.getType("image/png");
+          if (blob.size > 5_000_000) return;
+          const png = new Uint8Array(await blob.arrayBuffer());
+          const bitmap = await createImageBitmap(blob);
+          if (bitmap.width && bitmap.height) {
+            controls.sendClipboardImage(bitmap.width, bitmap.height, png);
+            bitmap.close();
+          }
+        }).catch(() => {});
+      }
     };
     window.addEventListener("focus", pull);
     pull();

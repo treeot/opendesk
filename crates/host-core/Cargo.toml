@@ -26,6 +26,7 @@ totp-lite = "2"
 cpal = "0.18"
 opus = "0.4"
 arboard = "3.6.1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 log = "0.4"
 # Optional: hardware H.264 on Linux via VAAPI (the `vaapi` feature). Off by
 # default because it needs the system ffmpeg development libraries; enabling it

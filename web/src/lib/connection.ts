@@ -29,7 +29,7 @@ export interface ConnectionHandlers {
   audio(payload: Uint8Array, channels: number): void;
   monitors(monitors: MonitorInfo[]): void;
   /** Inbound clipboard text from the host. */
-  clipboard(text: string): void;
+  clipboard(content: { type: "text"; text: string } | { type: "image"; width: number; height: number; png: Uint8Array }): void;
   /** A file-transfer update (offer, progress, result). */
   file(signal: FileSignal): void;
   /** The connection is over: `error` is null after the user disconnected. */
@@ -159,7 +159,11 @@ export class Connection {
           this.handlers.video(event.takeBytes());
         } else if (kind === "audio") this.handlers.audio(event.takeBytes(), Number(event.text) || 2);
         else if (kind === "monitors") this.handlers.monitors(JSON.parse(event.text) as MonitorInfo[]);
-        else if (kind === "clipboard") this.handlers.clipboard(event.text);
+        else if (kind === "clipboard-text") this.handlers.clipboard({ type: "text", text: event.text });
+        else if (kind === "clipboard-image") {
+          const [width, height] = event.text.split("x").map(Number);
+          this.handlers.clipboard({ type: "image", width, height, png: event.takeBytes() });
+        }
         else if (kind.startsWith("file-")) {
           const record = JSON.parse(event.text) as Omit<FileSignal, "kind" | "data">;
           const signal: FileSignal = { ...record, kind: kind as FileSignal["kind"] };
@@ -253,6 +257,10 @@ export class Connection {
 
   sendClipboard(text: string) {
     this.send(this.viewer?.clipboard(text));
+  }
+
+  sendClipboardImage(width: number, height: number, png: Uint8Array) {
+    this.send(this.viewer?.clipboardImage(width, height, png));
   }
 
   sendFile(id: number, name: string, data: Uint8Array) {

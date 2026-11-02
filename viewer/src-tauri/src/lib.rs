@@ -21,7 +21,7 @@ use config::ConfigStore;
 use contacts::{Contact, ContactStore};
 use futures_util::StreamExt;
 use host_core::{clipboard::{ArboardBackend, ClipboardSync}, datachan::{FileRouter, IncomingTransfer}, filexfer::{ConsentDecision, FileReceiver, FileSink, FileSource, FileSender}, roles::DataHandle, transport::reliable::ReliableSender};
-use protocol::{chat::ChatMsg, control::{Control, MonitorInfo}, crypto::{Opener, Sealer}, datamsg::DataMsg, filexfer::FileMsg, frame, Tag};
+use protocol::{chat::ChatMsg, clipboard::ClipboardContent, control::{Control, MonitorInfo}, crypto::{Opener, Sealer}, datamsg::DataMsg, filexfer::FileMsg, frame, Tag};
 use serde::Serialize;
 use std::{collections::HashMap, fs, fs::OpenOptions, io, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, Ordering}, mpsc as std_mpsc, Arc, Mutex}, time::{Duration, Instant}};
 use tauri::{AppHandle, Emitter, Manager};
@@ -153,7 +153,7 @@ struct ClipboardThread {
     join: std::thread::JoinHandle<()>,
 }
 enum ClipboardCommand {
-    Apply(String),
+    Apply(ClipboardContent),
     Stop,
 }
 struct AppState(Mutex<RuntimeState>);
@@ -219,8 +219,8 @@ fn spawn_clipboard_thread(
         let Ok(runtime) = runtime else { return };
         loop {
             match command_rx.recv_timeout(Duration::from_millis(500)) {
-                Ok(ClipboardCommand::Apply(text)) => {
-                    if active() { sync.apply(&text); }
+                Ok(ClipboardCommand::Apply(content)) => {
+                    if active() { sync.apply(&content); }
                 }
                 Ok(ClipboardCommand::Stop) | Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {
@@ -261,7 +261,7 @@ fn dispatch_data(
         Arc::clone(&router),
         move |message| {
             emit_activity(&clipboard_app, "clipboard", "clipboard received");
-            if let Some(sender) = &clipboard_tx { let _ = sender.send(ClipboardCommand::Apply(message.text)); }
+            if let Some(sender) = &clipboard_tx { let _ = sender.send(ClipboardCommand::Apply(message.content)); }
         },
         move |message| emit(&chat_app, "chat_message", ChatMessage { text: message.text }),
         move |message| handle_browse(&browse_app, &data_sender, &data_sealer, &files_allowed, is_host, message),

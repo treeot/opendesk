@@ -2,6 +2,7 @@
 //! drains them with `nextEvent`.
 
 use crate::{filexfer::FileEvent, reconnect, Event, ViewerSession};
+use protocol::clipboard::ClipboardContent;
 use std::collections::VecDeque;
 use std::time::Duration;
 use wasm_bindgen::prelude::*;
@@ -24,14 +25,20 @@ pub struct ViewerEvent {
 #[wasm_bindgen]
 impl ViewerEvent {
     #[wasm_bindgen(getter)]
-    pub fn kind(&self) -> String { self.kind.to_owned() }
+    pub fn kind(&self) -> String {
+        self.kind.to_owned()
+    }
 
     /// Moves the bytes out; a second call returns an empty array.
     #[wasm_bindgen(js_name = takeBytes)]
-    pub fn take_bytes(&mut self) -> Vec<u8> { std::mem::take(&mut self.bytes) }
+    pub fn take_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
 
     #[wasm_bindgen(getter)]
-    pub fn text(&self) -> String { self.text.clone() }
+    pub fn text(&self) -> String {
+        self.text.clone()
+    }
 }
 
 impl From<Event> for ViewerEvent {
@@ -43,7 +50,10 @@ impl From<Event> for ViewerEvent {
             // `text` carries the channel count so the page can configure audio.
             Event::Audio(payload, channels) => ("audio", payload, channels.to_string()),
             Event::Monitors(json) => ("monitors", Vec::new(), json),
-            Event::Clipboard(text) => ("clipboard", Vec::new(), text),
+            Event::Clipboard(ClipboardContent::Text(text)) => ("clipboard-text", Vec::new(), text),
+            Event::Clipboard(ClipboardContent::Image { width, height, png }) => {
+                ("clipboard-image", png, format!("{width}x{height}"))
+            }
             Event::File(file) => return file.into(),
             Event::Ended(message) => ("ended", Vec::new(), message),
         };
@@ -85,7 +95,10 @@ impl From<FileEvent> for ViewerEvent {
 impl Viewer {
     #[wasm_bindgen(constructor)]
     pub fn new(password: &str, auth_code: &str) -> Viewer {
-        Viewer { session: ViewerSession::new(password, auth_code), events: VecDeque::new() }
+        Viewer {
+            session: ViewerSession::new(password, auth_code),
+            events: VecDeque::new(),
+        }
     }
 
     pub fn receive(&mut self, message: &[u8], now_ms: f64) {
@@ -104,12 +117,23 @@ impl Viewer {
     }
 
     #[wasm_bindgen(js_name = nextEvent)]
-    pub fn next_event(&mut self) -> Option<ViewerEvent> { self.events.pop_front().map(Into::into) }
+    pub fn next_event(&mut self) -> Option<ViewerEvent> {
+        self.events.pop_front().map(Into::into)
+    }
 
-    pub fn input(&mut self, event: &[u8]) -> Option<Vec<u8>> { self.session.input(event) }
+    pub fn input(&mut self, event: &[u8]) -> Option<Vec<u8>> {
+        self.session.input(event)
+    }
 
     /// Seal local clipboard text for the host. `None` if too large or not yet live.
-    pub fn clipboard(&mut self, text: &str) -> Option<Vec<u8>> { self.session.clipboard(text) }
+    pub fn clipboard(&mut self, text: &str) -> Option<Vec<u8>> {
+        self.session.clipboard(text)
+    }
+
+    #[wasm_bindgen(js_name = clipboardImage)]
+    pub fn clipboard_image(&mut self, width: u32, height: u32, png: Vec<u8>) -> Option<Vec<u8>> {
+        self.session.clipboard_image(width, height, png)
+    }
 
     /// Offer a local file under the page-chosen `id` (unique, below 2^53).
     #[wasm_bindgen(js_name = sendFile)]
@@ -119,19 +143,29 @@ impl Viewer {
 
     /// Accept an incoming file offer.
     #[wasm_bindgen(js_name = acceptFile)]
-    pub fn accept_file(&mut self, id: f64) -> Option<Vec<u8>> { self.session.accept_file(id as u64) }
+    pub fn accept_file(&mut self, id: f64) -> Option<Vec<u8>> {
+        self.session.accept_file(id as u64)
+    }
 
     /// Reject an incoming file offer.
     #[wasm_bindgen(js_name = rejectFile)]
-    pub fn reject_file(&mut self, id: f64) -> Option<Vec<u8>> { self.session.reject_file(id as u64) }
+    pub fn reject_file(&mut self, id: f64) -> Option<Vec<u8>> {
+        self.session.reject_file(id as u64)
+    }
 
     #[wasm_bindgen(js_name = requestKeyframe)]
-    pub fn request_keyframe(&mut self) -> Option<Vec<u8>> { self.session.request_keyframe() }
+    pub fn request_keyframe(&mut self) -> Option<Vec<u8>> {
+        self.session.request_keyframe()
+    }
 
     #[wasm_bindgen(js_name = selectMonitor)]
-    pub fn select_monitor(&mut self, id: u32) -> Option<Vec<u8>> { self.session.select_monitor(id) }
+    pub fn select_monitor(&mut self, id: u32) -> Option<Vec<u8>> {
+        self.session.select_monitor(id)
+    }
 
-    pub fn bye(&mut self) -> Option<Vec<u8>> { self.session.bye() }
+    pub fn bye(&mut self) -> Option<Vec<u8>> {
+        self.session.bye()
+    }
 }
 
 #[wasm_bindgen(js_name = connectFrame)]
@@ -158,14 +192,24 @@ pub struct Step {
 #[wasm_bindgen]
 impl Step {
     #[wasm_bindgen(getter)]
-    pub fn message(&self) -> String { self.message.clone() }
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
 }
 
 #[wasm_bindgen(js_name = afterFailure)]
 pub fn after_failure(message: &str, session_started: bool, attempt: u32, outage_ms: f64) -> Step {
     let outage = Duration::from_millis(outage_ms.max(0.0) as u64);
     match reconnect::after_failure(message, session_started, attempt, outage) {
-        reconnect::NextStep::Retry { delay, notice } => Step { retry: true, delay_ms: delay.as_millis() as f64, message: notice },
-        reconnect::NextStep::Stop { message } => Step { retry: false, delay_ms: 0.0, message },
+        reconnect::NextStep::Retry { delay, notice } => Step {
+            retry: true,
+            delay_ms: delay.as_millis() as f64,
+            message: notice,
+        },
+        reconnect::NextStep::Stop { message } => Step {
+            retry: false,
+            delay_ms: 0.0,
+            message,
+        },
     }
 }
