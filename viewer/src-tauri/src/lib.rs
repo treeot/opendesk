@@ -353,14 +353,13 @@ fn mutate_remote(
     let allowed = files_allowed.load(std::sync::atomic::Ordering::Relaxed);
     let sender = sender.clone();
     let sealer = sealer.clone();
-    let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = if allowed {
             tauri::async_runtime::spawn_blocking(operation).await.unwrap_or_else(|_| Err("could not update that item".into()))
         } else { Err("The other computer turned off file access.".into()) };
         let reply = match result {
             Ok(()) => return,
-            Err(message) => BrowseMsg::BrowseError { req, message },
+            Err(message) => protocol::browse::BrowseMsg::BrowseError { req, message },
         };
         let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &protocol::datamsg::DataMsg::Browse(reply).to_bytes());
         let _ = sender.send_frame(Tag::Data, &sealed).await;
@@ -560,6 +559,12 @@ fn list_relays(state: tauri::State<'_, AppState>) -> Vec<String> {
 #[tauri::command]
 fn get_unattended_status(state: tauri::State<'_, AppState>) -> UnattendedStatus {
     unattended_status(&state.lock().config.config)
+}
+
+#[tauri::command]
+fn get_audit_events(app: AppHandle) -> Result<Vec<host_core::audit::AuditEvent>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    host_core::audit::recent(dir.join("logs").join("audit.jsonl"), 200).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1031,6 +1036,7 @@ pub fn run() {
             deeplink::take_deep_link,
             set_relay,
             get_unattended_status,
+            get_audit_events,
             windows_service_status,
             install_windows_service,
             uninstall_windows_service,
