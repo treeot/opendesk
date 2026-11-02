@@ -376,6 +376,35 @@ pub(crate) async fn pull_remote(state: tauri::State<'_, AppState>, path: String)
     outgoing.send_frame(Tag::Data, &sealed).await.map_err(|error| error.to_string())
 }
 
+async fn send_browse_action(state: &AppState, message: protocol::browse::BrowseMsg) -> Result<(), String> {
+    let (outgoing, sealer) = {
+        let state = state.lock();
+        (state.file_outgoing.clone(), state.file_sealer.clone())
+    };
+    let outgoing = outgoing.ok_or_else(|| "no active file channel".to_owned())?;
+    let sealer = sealer.ok_or_else(|| "file session keys are not ready".to_owned())?;
+    let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &DataMsg::Browse(message).to_bytes());
+    outgoing.send_frame(Tag::Data, &sealed).await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn make_remote_dir(state: tauri::State<'_, AppState>, path: String, name: String) -> Result<(), String> {
+    let req = host_core::filexfer::next_transfer_id();
+    send_browse_action(&state, protocol::browse::BrowseMsg::MakeDir { req, path, name }).await
+}
+
+#[tauri::command]
+pub(crate) async fn delete_remote(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
+    let req = host_core::filexfer::next_transfer_id();
+    send_browse_action(&state, protocol::browse::BrowseMsg::Delete { req, path }).await
+}
+
+#[tauri::command]
+pub(crate) async fn rename_remote(state: tauri::State<'_, AppState>, path: String, name: String) -> Result<(), String> {
+    let req = host_core::filexfer::next_transfer_id();
+    send_browse_action(&state, protocol::browse::BrowseMsg::Rename { req, path, name }).await
+}
+
 #[tauri::command]
 pub(crate) fn respond_file(
     state: tauri::State<'_, AppState>,

@@ -26,7 +26,7 @@ function parentPath(path: string): string | null {
   return trimmed.slice(0, trimmed[cut - 1] === ":" ? cut + 1 : cut);
 }
 
-function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload }: {
+function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload, onNewFolder, onDelete, onRename }: {
   title: string;
   state: PaneState;
   onOpen: (entry: api.DirEntry) => void;
@@ -34,6 +34,9 @@ function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload }: {
   onRefresh: () => void;
   onDownload?: (entry: api.DirEntry) => void;
   onUpload?: () => void;
+  onNewFolder?: () => void;
+  onDelete?: (entry: api.DirEntry) => void;
+  onRename?: (entry: api.DirEntry) => void;
 }) {
   return (
     <div className="fb-pane">
@@ -41,6 +44,7 @@ function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload }: {
         <strong>{title}</strong>
         <div className="fb-pane__actions">
           {onUpload && <button className="quiet-button" type="button" onClick={onUpload} disabled={!state.path}>Upload…</button>}
+          {onNewFolder && <button className="quiet-button" type="button" onClick={onNewFolder} disabled={!state.path}>New folder</button>}
           <button className="quiet-button" type="button" onClick={onUp} disabled={parentPath(state.path) === null}>Up</button>
           <button className="quiet-button" type="button" onClick={onRefresh}>Refresh</button>
         </div>
@@ -60,6 +64,8 @@ function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload }: {
             <span className="fb-entry__name">{entry.is_dir ? "📁" : "📄"} {entry.name}</span>
             {!entry.is_dir && <span className="fb-entry__size">{formatFileSize(entry.size)}</span>}
             {!entry.is_dir && onDownload && <span className="fb-entry__dl" role="button" tabIndex={0} title={`Download ${entry.name}`} onClick={(event) => { event.stopPropagation(); onDownload(entry); }} onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); onDownload(entry); } }}>↓</span>}
+            {onRename && <span className="fb-entry__dl" role="button" tabIndex={0} title={`Rename ${entry.name}`} onClick={(event) => { event.stopPropagation(); onRename(entry); }}>Rename</span>}
+            {onDelete && <span className="fb-entry__dl" role="button" tabIndex={0} title={`Delete ${entry.name}`} onClick={(event) => { event.stopPropagation(); onDelete(entry); }}>×</span>}
           </button>
         ))}
       </div>
@@ -69,8 +75,7 @@ function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload }: {
 
 /**
  * Two-pane file browser: this computer on the left, the remote computer on the
- * right. Browsing only for now; transferring files between the panes comes
- * next. The local pane reads over a command; the remote pane asks the host and
+ * right. The local pane reads over a command; the remote pane asks the host and
  * updates from the `remote_listing` event.
  */
 export default function FileBrowser() {
@@ -115,6 +120,9 @@ export default function FileBrowser() {
         onRefresh={() => void api.browseRemote(remote.path)}
         onDownload={(entry) => void api.pullRemote(joinPath(remote.path, entry.name))}
         onUpload={() => void (async () => { const file = await api.pickFile(); if (file) await api.uploadToRemote(remote.path, file); })().catch(() => {})}
+        onNewFolder={() => { const name = window.prompt("Folder name"); if (name) void api.makeRemoteDir(remote.path, name).then(() => api.browseRemote(remote.path)); }}
+        onRename={(entry) => { const name = window.prompt("New name", entry.name); if (name && name !== entry.name) void api.renameRemote(joinPath(remote.path, entry.name), name).then(() => api.browseRemote(remote.path)); }}
+        onDelete={(entry) => { if (window.confirm(`Delete ${entry.name}?`)) void api.deleteRemote(joinPath(remote.path, entry.name)).then(() => api.browseRemote(remote.path)); }}
       />
     </div>
   );

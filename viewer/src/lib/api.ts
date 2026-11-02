@@ -273,6 +273,9 @@ export const onRemoteListing = (handler: (payload: { path: string; entries: DirE
 export const pullRemote = (path: string) => invoke<void>("pull_remote", { path });
 /** Upload a local file into the remote folder `dir`. Returns the transfer id. */
 export const uploadToRemote = (dir: string, path: string) => invoke<number>("upload_to_remote", { dir, path });
+export const makeRemoteDir = (path: string, name: string) => invoke<void>("make_remote_dir", { path, name });
+export const deleteRemote = (path: string) => invoke<void>("delete_remote", { path });
+export const renameRemote = (path: string, name: string) => invoke<void>("rename_remote", { path, name });
 /** Something the host user should know, e.g. that the viewer added a display. */
 export const onHostNotice = (handler: (payload: { message: string }) => void) => on("host_notice", handler);
 export const onLinkStats = (handler: (payload: LinkStats) => void) => on("link_stats", handler);

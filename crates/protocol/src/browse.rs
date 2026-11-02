@@ -21,7 +21,11 @@ pub enum BrowseMsg {
     /// (the user's home directory, and drive roots on Windows).
     ListDir { req: u64, path: String },
     /// Host → viewer: the entries of `path` (the absolute path the host read).
-    DirListing { req: u64, path: String, entries: Vec<DirEntry> },
+    DirListing {
+        req: u64,
+        path: String,
+        entries: Vec<DirEntry>,
+    },
     /// Host → viewer: `path` could not be listed.
     BrowseError { req: u64, message: String },
     /// Viewer → host: send me the file at `path`. The host answers by starting a
@@ -32,6 +36,20 @@ pub enum BrowseMsg {
     /// host's Downloads. Consumed by the next incoming transfer, so it is sent
     /// right before the file. An empty `dir` means Downloads.
     SetUploadDir { dir: String },
+    /// Viewer → host: create a directory inside `path`.
+    MakeDir {
+        req: u64,
+        path: String,
+        name: String,
+    },
+    /// Viewer → host: remove a file or directory at `path`.
+    Delete { req: u64, path: String },
+    /// Viewer → host: rename a file or directory. `name` is a single component.
+    Rename {
+        req: u64,
+        path: String,
+        name: String,
+    },
 }
 
 impl BrowseMsg {
@@ -50,17 +68,49 @@ mod tests {
     #[test]
     fn browse_messages_roundtrip() {
         for message in [
-            BrowseMsg::ListDir { req: 1, path: "/home/me".into() },
+            BrowseMsg::ListDir {
+                req: 1,
+                path: "/home/me".into(),
+            },
             BrowseMsg::DirListing {
                 req: 1,
                 path: "/home/me".into(),
-                entries: vec![DirEntry { name: "docs".into(), is_dir: true, size: 0, modified: 100 }],
+                entries: vec![DirEntry {
+                    name: "docs".into(),
+                    is_dir: true,
+                    size: 0,
+                    modified: 100,
+                }],
             },
-            BrowseMsg::BrowseError { req: 2, message: "denied".into() },
-            BrowseMsg::Pull { req: 3, path: "/home/me/a.txt".into() },
-            BrowseMsg::SetUploadDir { dir: "/home/me/docs".into() },
+            BrowseMsg::BrowseError {
+                req: 2,
+                message: "denied".into(),
+            },
+            BrowseMsg::Pull {
+                req: 3,
+                path: "/home/me/a.txt".into(),
+            },
+            BrowseMsg::SetUploadDir {
+                dir: "/home/me/docs".into(),
+            },
+            BrowseMsg::MakeDir {
+                req: 4,
+                path: "/home/me".into(),
+                name: "new".into(),
+            },
+            BrowseMsg::Delete {
+                req: 5,
+                path: "/home/me/old".into(),
+            },
+            BrowseMsg::Rename {
+                req: 6,
+                path: "/home/me/old".into(),
+                name: "new".into(),
+            },
         ] {
-            assert_eq!(BrowseMsg::from_bytes(&message.to_bytes()), Some(message));
+            let bytes = message.to_bytes();
+            assert_eq!(BrowseMsg::from_bytes(&bytes), Some(message.clone()));
+            assert_eq!(bytes, message.to_bytes());
         }
     }
 }

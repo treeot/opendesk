@@ -287,7 +287,7 @@ fn handle_browse(
     // (DirListing/BrowseError) only on the viewer. Enforce it so a malicious peer
     // cannot drive the wrong half, e.g. a host making a viewer list or send its
     // own files.
-    let for_host = matches!(message, BrowseMsg::ListDir { .. } | BrowseMsg::Pull { .. } | BrowseMsg::SetUploadDir { .. });
+    let for_host = matches!(message, BrowseMsg::ListDir { .. } | BrowseMsg::Pull { .. } | BrowseMsg::SetUploadDir { .. } | BrowseMsg::MakeDir { .. } | BrowseMsg::Delete { .. } | BrowseMsg::Rename { .. });
     if for_host != is_host { return; }
     match message {
         BrowseMsg::ListDir { req, path } => {
@@ -337,7 +337,34 @@ fn handle_browse(
             let slot = { app.state::<AppState>().lock().upload_dir.clone() };
             *lock_unpoisoned(&slot) = if dir.is_empty() { None } else { Some(dir) };
         }
+        BrowseMsg::MakeDir { req, path, name } => mutate_remote(sender, sealer, files_allowed, req, move || host_core::browse::make_dir(&path, &name)),
+        BrowseMsg::Delete { req, path } => mutate_remote(sender, sealer, files_allowed, req, move || host_core::browse::delete(&path)),
+        BrowseMsg::Rename { req, path, name } => mutate_remote(sender, sealer, files_allowed, req, move || host_core::browse::rename(&path, &name)),
     }
+}
+
+fn mutate_remote(
+    sender: &ReliableSender,
+    sealer: &Arc<Mutex<Sealer>>,
+    files_allowed: &Arc<std::sync::atomic::AtomicBool>,
+    req: u64,
+    operation: impl FnOnce() -> Result<(), String> + Send + 'static,
+) {
+    let allowed = files_allowed.load(std::sync::atomic::Ordering::Relaxed);
+    let sender = sender.clone();
+    let sealer = sealer.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = if allowed {
+            tauri::async_runtime::spawn_blocking(operation).await.unwrap_or_else(|_| Err("could not update that item".into()))
+        } else { Err("The other computer turned off file access.".into()) };
+        let reply = match result {
+            Ok(()) => return,
+            Err(message) => BrowseMsg::BrowseError { req, message },
+        };
+        let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &protocol::datamsg::DataMsg::Browse(reply).to_bytes());
+        let _ = sender.send_frame(Tag::Data, &sealed).await;
+    });
 }
 
 fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String, is_host: bool) {
@@ -1039,6 +1066,9 @@ pub fn run() {
             browse_remote,
             browse_local,
             pull_remote,
+            make_remote_dir,
+            delete_remote,
+            rename_remote,
             upload_to_remote,
             request_keyframe,
             set_clipboard_sync,
