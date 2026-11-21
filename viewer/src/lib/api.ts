@@ -317,7 +317,7 @@ export const onSessionRecording = (handler: (payload: { on: boolean }) => void) 
 /** Turn the host's privacy mode on or off. */
 export const setPrivacyMode = (on: boolean) => invoke<void>("set_privacy_mode", { on });
 /** Extended input the host injects (protocol::control::Control::InputSupport); missing flags are off. */
-export interface InputSupport { relative_mouse?: boolean }
+export interface InputSupport { relative_mouse?: boolean; pen_touch?: boolean; native_pen?: boolean; native_touch?: boolean }
 /** The host's extended input support; older hosts never send it. */
 export const onInputSupport = (handler: (payload: InputSupport) => void) => on<InputSupport>("input_support", handler);
 

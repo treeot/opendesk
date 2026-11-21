@@ -1,6 +1,7 @@
 /// Wire tags of the extended input events. They start at 16, clear of the
 /// original 1..=5, so other additions can take the low numbers.
 const TAG_RELATIVE_MOUSE_MOVE: u8 = 16;
+const TAG_POINTER: u8 = 17;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
@@ -33,6 +34,9 @@ pub enum InputEvent {
         dx: i32,
         dy: i32,
     },
+    /// A pen or touch contact. Only sent to hosts that report `pen_touch` in
+    /// `Control::InputSupport`.
+    Pointer(PointerContact),
 }
 
 impl InputEvent {
@@ -45,6 +49,7 @@ impl InputEvent {
             Self::Key { .. } => 4,
             Self::Char { .. } => 5,
             Self::RelativeMouseMove { .. } => TAG_RELATIVE_MOUSE_MOVE,
+            Self::Pointer(_) => TAG_POINTER,
         });
         bytes.extend_from_slice(&timestamp_us.to_be_bytes());
 
@@ -83,6 +88,7 @@ impl InputEvent {
                 bytes.extend_from_slice(&dx.to_be_bytes());
                 bytes.extend_from_slice(&dy.to_be_bytes());
             }
+            Self::Pointer(contact) => contact.write(&mut bytes),
         }
 
         bytes
@@ -150,8 +156,103 @@ impl InputEvent {
                 let dy = i32::from_be_bytes(bytes.get(13..17)?.try_into().ok()?);
                 Some((Self::RelativeMouseMove { dx, dy }, timestamp_us))
             }
+            TAG_POINTER if bytes.len() == 9 + PointerContact::LEN => {
+                Some((Self::Pointer(PointerContact::read(&bytes[9..])?), timestamp_us))
+            }
             _ => None,
         }
+    }
+}
+
+/// What kind of device a [`PointerContact`] comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerKind {
+    Pen = 1,
+    Touch = 2,
+}
+
+/// Where a contact is in its life, as in DOM pointer events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerPhase {
+    /// A pen moving within range of the surface without touching it.
+    Hover = 0,
+    Down = 1,
+    /// Moving while touching.
+    Move = 2,
+    Up = 3,
+    /// The contact ended without a deliberate lift (focus loss, palm
+    /// rejection); the host should not treat it as a tap.
+    Cancel = 4,
+    /// A hovering pen went out of range.
+    Leave = 5,
+}
+
+/// Pen barrel (side) button held.
+pub const PEN_BARREL: u8 = 1;
+/// The pen's eraser end is in use.
+pub const PEN_ERASER: u8 = 1 << 1;
+
+/// One pen or touch contact sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerContact {
+    pub kind: PointerKind,
+    pub phase: PointerPhase,
+    /// Stable for the life of the contact (the viewer's pointerId).
+    pub id: u32,
+    /// Position in the same 0..=65535 space as `MouseMove`.
+    pub x: i32,
+    pub y: i32,
+    /// 0..=65535 maps to no pressure..full pressure.
+    pub pressure: u16,
+    /// Degrees, -90..=90, as DOM tiltX/tiltY.
+    pub tilt_x: i8,
+    pub tilt_y: i8,
+    /// [`PEN_BARREL`] and [`PEN_ERASER`] bits.
+    pub buttons: u8,
+}
+
+impl PointerContact {
+    /// Encoded size after the event header.
+    const LEN: usize = 19;
+
+    fn write(&self, bytes: &mut Vec<u8>) {
+        bytes.push(self.kind as u8);
+        bytes.push(self.phase as u8);
+        bytes.extend_from_slice(&self.id.to_be_bytes());
+        bytes.extend_from_slice(&self.x.to_be_bytes());
+        bytes.extend_from_slice(&self.y.to_be_bytes());
+        bytes.extend_from_slice(&self.pressure.to_be_bytes());
+        bytes.extend_from_slice(&self.tilt_x.to_be_bytes());
+        bytes.extend_from_slice(&self.tilt_y.to_be_bytes());
+        bytes.push(self.buttons);
+    }
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        let kind = match bytes.first()? {
+            1 => PointerKind::Pen,
+            2 => PointerKind::Touch,
+            _ => return None,
+        };
+        let phase = match bytes.get(1)? {
+            0 => PointerPhase::Hover,
+            1 => PointerPhase::Down,
+            2 => PointerPhase::Move,
+            3 => PointerPhase::Up,
+            4 => PointerPhase::Cancel,
+            5 => PointerPhase::Leave,
+            _ => return None,
+        };
+        Some(Self {
+            kind,
+            phase,
+            id: u32::from_be_bytes(bytes.get(2..6)?.try_into().ok()?),
+            x: i32::from_be_bytes(bytes.get(6..10)?.try_into().ok()?),
+            y: i32::from_be_bytes(bytes.get(10..14)?.try_into().ok()?),
+            pressure: u16::from_be_bytes(bytes.get(14..16)?.try_into().ok()?),
+            tilt_x: i8::from_be_bytes([*bytes.get(16)?]),
+            tilt_y: i8::from_be_bytes([*bytes.get(17)?]),
+            buttons: *bytes.get(18)?,
+        })
     }
 }
 
@@ -210,6 +311,31 @@ mod tests {
         assert_eq!(bytes.len(), 17);
         assert_eq!(InputEvent::from_bytes(&bytes), Some((e, 11)));
         assert!(InputEvent::from_bytes(&bytes[..16]).is_none());
+    }
+
+    #[test]
+    fn pointer_contact_roundtrips_and_rejects_unknown_kinds() {
+        let e = InputEvent::Pointer(PointerContact {
+            kind: PointerKind::Pen,
+            phase: PointerPhase::Move,
+            id: 7,
+            x: 100,
+            y: 65_535,
+            pressure: 40_000,
+            tilt_x: -45,
+            tilt_y: 30,
+            buttons: PEN_BARREL,
+        });
+        let bytes = e.to_bytes(5);
+        assert_eq!((bytes[0], bytes.len()), (17, 28));
+        assert_eq!(InputEvent::from_bytes(&bytes), Some((e, 5)));
+        let mut bad = bytes.clone();
+        bad[9] = 3;
+        assert!(InputEvent::from_bytes(&bad).is_none());
+        bad[9] = 2;
+        bad[10] = 6;
+        assert!(InputEvent::from_bytes(&bad).is_none());
+        assert!(InputEvent::from_bytes(&bytes[..27]).is_none());
     }
 
     #[test]

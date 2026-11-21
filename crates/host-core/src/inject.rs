@@ -1,6 +1,7 @@
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use protocol::input::InputEvent;
 
+pub mod pen;
 pub mod support;
 
 pub fn norm_to_pixel(coord: i32, screen: u32) -> i32 {
@@ -55,6 +56,7 @@ impl<T: InputInjector + ?Sized> InputInjector for Box<T> {
 pub struct EnigoInjector {
     enigo: Enigo,
     display: Option<u32>,
+    pen: pen::PenInjector,
 }
 
 impl EnigoInjector {
@@ -66,7 +68,7 @@ impl EnigoInjector {
         let settings = Settings { open_prompt_to_get_permissions: false, ..Settings::default() };
         Enigo::new(&settings)
             .ok()
-            .map(|enigo| Self { enigo, display: None })
+            .map(|enigo| Self { enigo, display: None, pen: pen::PenInjector::default() })
     }
 }
 
@@ -132,6 +134,12 @@ impl InputInjector for EnigoInjector {
             InputEvent::RelativeMouseMove { dx, dy } => {
                 if dx != 0 || dy != 0 {
                     let _ = self.enigo.move_mouse(dx, dy, Coordinate::Rel);
+                }
+            }
+            InputEvent::Pointer(contact) => {
+                let bounds = platform::display_bounds(self.display);
+                for event in self.pen.inject(&contact, bounds) {
+                    self.inject(&event, screen_w, screen_h);
                 }
             }
         }

@@ -162,6 +162,9 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
   const [relativeMouse, setRelativeMouse] = useState(false);
   const relativeMouseRef = useRef(false);
   const pointerLockRef = useRef<PointerLockControl | null>(null);
+  const penTouch = features.includes("pen-touch");
+  const penTouchRef = useRef(false);
+  penTouchRef.current = penTouch;
 
   useEffect(() => { viewOnlyRef.current = viewOnly; }, [viewOnly]);
   useEffect(() => { folderRef.current = folder; }, [folder]);
@@ -183,7 +186,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     const decoder = makeDecoder(canvas, { requestKeyframe: () => controls.requestKeyframe() });
     controls.setVideoSink(decoder.push);
     // View only keeps watching but sends no input, like the desktop viewer.
-    const detachInput = attachInput(canvas, async (bytes) => { if (!viewOnlyRef.current) controls.sendInput(bytes); }, { relative: () => relativeMouseRef.current });
+    const detachInput = attachInput(canvas, async (bytes) => { if (!viewOnlyRef.current) controls.sendInput(bytes); }, { relative: () => relativeMouseRef.current, penTouch: () => penTouchRef.current });
     // Right clicks go to the remote computer, not the browser menu.
     const noMenu = (event: Event) => event.preventDefault();
     canvas.addEventListener("contextmenu", noMenu);
@@ -208,6 +211,11 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     return () => { lock.dispose(); pointerLockRef.current = null; relativeMouseRef.current = false; };
   }, []);
   useEffect(() => { if (status !== "streaming" || viewOnly) pointerLockRef.current?.release(); }, [status, viewOnly]);
+  // Pen and touch go to the host, so the page must not pan or zoom on them.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) canvas.style.touchAction = penTouch ? "none" : "";
+  }, [penTouch]);
 
   // Runs inside the menu click, which pointer lock needs as its user gesture.
   const toggleRelativeMouse = () => {

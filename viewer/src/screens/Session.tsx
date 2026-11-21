@@ -128,6 +128,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [textReadability, setTextReadability] = useState(false);
   // Extended input the host injects; reset with each session.
   const [inputSupport, setInputSupport] = useState<api.InputSupport>({});
+  const penTouchRef = useRef(false);
+  penTouchRef.current = inputSupport.pen_touch === true;
   // Relative mouse mode: on while the canvas holds the pointer lock.
   const [relativeMouse, setRelativeMouse] = useState(false);
   const relativeMouseRef = useRef(false);
@@ -306,6 +308,12 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     pointerLockRef.current = lock;
     return () => { lock.dispose(); pointerLockRef.current = undefined; relativeMouseRef.current = false; };
   }, [role]);
+
+  // Pen and touch go to the host, so the webview must not pan or zoom on them.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) canvas.style.touchAction = inputSupport.pen_touch ? "none" : "";
+  }, [inputSupport.pen_touch]);
 
   // Runs inside the menu click, which pointer lock needs as its user gesture.
   const toggleRelativeMouse = (on: boolean) => {
@@ -671,7 +679,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       decoder.push(frame);
     };
     const stopVideo = api.startVideo(push);
-    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit", relative: () => relativeMouseRef.current });
+    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit", relative: () => relativeMouseRef.current, penTouch: () => penTouchRef.current });
 
     return () => {
       stopVideo();

@@ -1,4 +1,5 @@
 import { DeltaAccumulator } from "./pointerLock";
+import { isPenOrTouch, PHASE, pointerContact, writeContact, type PointerContact, type PointerPhase } from "./pen";
 
 export type InputEvent =
   | { kind: "mouseMove"; x: number; y: number }
@@ -6,7 +7,8 @@ export type InputEvent =
   | { kind: "scroll"; dx: number; dy: number }
   | { kind: "key"; code: number; down: boolean; modifiers: number }
   | { kind: "char"; ch: string; down: boolean; modifiers: number }
-  | { kind: "relativeMove"; dx: number; dy: number };
+  | { kind: "relativeMove"; dx: number; dy: number }
+  | PointerContact;
 
 /** Encode protocol::input::InputEvent using its big-endian wire layout. */
 export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
@@ -27,6 +29,9 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
       break;
     case "relativeMove":
       length = 17;
+      break;
+    case "pointer":
+      length = 28;
       break;
   }
 
@@ -67,6 +72,10 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
       view.setUint8(0, 16);
       view.setInt32(9, ev.dx, false);
       view.setInt32(13, ev.dy, false);
+      break;
+    case "pointer":
+      view.setUint8(0, 17);
+      writeContact(view, ev);
       break;
   }
   return bytes;
@@ -148,6 +157,15 @@ export function mapPointer(clientX: number, clientY: number, element: ClientRect
   return { x: Math.round(fx * 65535), y: Math.round(fy * 65535) };
 }
 
+/** Like mapPointer, but a position past the frame's edge is pulled onto it. */
+export function mapPointerClamped(clientX: number, clientY: number, element: ClientRect, contentWidth: number, contentHeight: number, contained = true): { x: number; y: number } | null {
+  const drawn = contained ? containedRect(element, contentWidth, contentHeight) : element;
+  if (drawn.width <= 0 || drawn.height <= 0) return null;
+  const fx = Math.min(1, Math.max(0, (clientX - drawn.left) / drawn.width));
+  const fy = Math.min(1, Math.max(0, (clientY - drawn.top) / drawn.height));
+  return { x: Math.round(fx * 65535), y: Math.round(fy * 65535) };
+}
+
 function modifiers(event: KeyboardEvent): number {
   return (
     (event.shiftKey ? 1 : 0) |
@@ -208,7 +226,7 @@ function isModifierKey(key: string): boolean {
 export function attachInput(
   canvas: HTMLCanvasElement,
   send: (bytes: Uint8Array) => Promise<void>,
-  options: { contained?: () => boolean; relative?: () => boolean } = {},
+  options: { contained?: () => boolean; relative?: () => boolean; penTouch?: () => boolean } = {},
 ): () => void {
   if (canvas.tabIndex < 0) canvas.tabIndex = 0;
 
@@ -242,6 +260,11 @@ export function attachInput(
       pendingMove.tsUs = timestampUs();
       return;
     }
+    if (pendingMove && queued?.kind === "pointer" && event.kind === "pointer" && queued.id === event.id && queued.pointerKind === event.pointerKind && queued.phase === event.phase) {
+      pendingMove.event = event;
+      pendingMove.tsUs = timestampUs();
+      return;
+    }
     const slot = { event, tsUs: timestampUs() };
     pendingMove = slot;
     chain(() => {
@@ -261,7 +284,56 @@ export function attachInput(
   const buttonsDown = new Set<number>();
   const keysDown = new Map<string, InputEvent>();
 
+  // Pen and touch, when the host takes them. Browsers follow these pointer
+  // events with compatibility mouse events, which are ignored for a moment.
+  const penTouch = (event: PointerEvent) => isPenOrTouch(event) && (options.penTouch?.() ?? false);
+  let penTouchUntil = 0;
+  const fromPenTouch = () => performance.now() < penTouchUntil;
+  // Contacts down right now, with their last sample, so focus loss can lift them.
+  const contactsDown = new Map<number, PointerContact>();
+  const clamped = (event: PointerEvent) => mapPointerClamped(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height, options.contained?.() ?? true);
+  const sendContact = (event: PointerEvent, phase: PointerPhase, position: { x: number; y: number }) => {
+    penTouchUntil = performance.now() + 500;
+    const contact = pointerContact(event, phase, position);
+    if (phase === PHASE.down || phase === PHASE.move) contactsDown.set(contact.id, contact);
+    else contactsDown.delete(contact.id);
+    if (phase === PHASE.move || phase === PHASE.hover) enqueueMove(contact);
+    else enqueue(contact);
+  };
+
+  const onPointerDown = (event: PointerEvent): void => {
+    if (!penTouch(event)) return;
+    // Over a letterbox bar: not ours, as with the mouse.
+    const position = pointer(event);
+    if (!position) return;
+    event.preventDefault();
+    canvas.focus();
+    canvas.setPointerCapture?.(event.pointerId);
+    sendContact(event, PHASE.down, position);
+  };
+
+  const onPointerMove = (event: PointerEvent): void => {
+    if (!penTouch(event)) return;
+    const down = contactsDown.has(event.pointerId >>> 0);
+    // Only a pen hovers; a touch that isn't down is one we never started.
+    if (!down && event.pointerType !== "pen") return;
+    const position = down ? clamped(event) : pointer(event);
+    if (position) sendContact(event, down ? PHASE.move : PHASE.hover, position);
+  };
+
+  const onPointerEnd = (phase: PointerPhase) => (event: PointerEvent): void => {
+    if (!penTouch(event)) return;
+    const down = contactsDown.has(event.pointerId >>> 0);
+    if (!down && !(phase === PHASE.leave && event.pointerType === "pen")) return;
+    const position = clamped(event);
+    if (position) sendContact(event, down && phase === PHASE.leave ? PHASE.cancel : phase, position);
+  };
+  const onPointerUp = onPointerEnd(PHASE.up);
+  const onPointerCancel = onPointerEnd(PHASE.cancel);
+  const onPointerLeave = onPointerEnd(PHASE.leave);
+
   const onMouseMove = (event: MouseEvent): void => {
+    if (fromPenTouch()) return;
     if (relative()) {
       const delta = deltas.take(event.movementX, event.movementY);
       if (delta) enqueueMove({ kind: "relativeMove", ...delta });
@@ -276,12 +348,14 @@ export function attachInput(
   // so a drag that ends over a bar never leaves a button held remotely.
   const onMouseDown = (event: MouseEvent): void => {
     canvas.focus();
+    if (fromPenTouch()) return;
     if (!pointer(event)) return;
     const mapped = button(event.button);
     if (mapped !== null) { buttonsDown.add(mapped); enqueue({ kind: "mouseButton", button: mapped, down: true }); }
   };
 
   const onMouseUp = (event: MouseEvent): void => {
+    if (fromPenTouch()) return;
     const mapped = button(event.button);
     if (mapped !== null) { buttonsDown.delete(mapped); enqueue({ kind: "mouseButton", button: mapped, down: false }); }
   };
@@ -343,6 +417,8 @@ export function attachInput(
     buttonsDown.clear();
     for (const release of keysDown.values()) enqueue(release);
     keysDown.clear();
+    for (const contact of contactsDown.values()) enqueue({ ...contact, phase: PHASE.cancel, pressure: 0 });
+    contactsDown.clear();
   };
 
   canvas.addEventListener("mousemove", onMouseMove);
@@ -352,6 +428,11 @@ export function attachInput(
   canvas.addEventListener("contextmenu", onContextMenu);
   canvas.addEventListener("keydown", onKeyDown);
   canvas.addEventListener("keyup", onKeyUp);
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerCancel);
+  canvas.addEventListener("pointerleave", onPointerLeave);
   window.addEventListener("mouseup", onWindowMouseUp);
   window.addEventListener("blur", onBlur);
 
@@ -363,6 +444,11 @@ export function attachInput(
     canvas.removeEventListener("contextmenu", onContextMenu);
     canvas.removeEventListener("keydown", onKeyDown);
     canvas.removeEventListener("keyup", onKeyUp);
+    canvas.removeEventListener("pointerdown", onPointerDown);
+    canvas.removeEventListener("pointermove", onPointerMove);
+    canvas.removeEventListener("pointerup", onPointerUp);
+    canvas.removeEventListener("pointercancel", onPointerCancel);
+    canvas.removeEventListener("pointerleave", onPointerLeave);
     window.removeEventListener("mouseup", onWindowMouseUp);
     window.removeEventListener("blur", onBlur);
   };

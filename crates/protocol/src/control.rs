@@ -192,6 +192,16 @@ pub enum Control {
         /// `InputEvent::RelativeMouseMove` (pointer lock for games).
         #[serde(default)]
         relative_mouse: bool,
+        /// `InputEvent::Pointer` (pen and touch). Where the host can't inject
+        /// real pen or touch input it moves the mouse with the primary contact.
+        #[serde(default)]
+        pen_touch: bool,
+        /// Pen contacts arrive as a real pen, with pressure and tilt.
+        #[serde(default)]
+        native_pen: bool,
+        /// Touch contacts arrive as real multi-touch.
+        #[serde(default)]
+        native_touch: bool,
     },
 }
 
@@ -242,9 +252,10 @@ mod tests {
 
     #[test]
     fn input_support_roundtrips_and_defaults_missing_fields() {
-        let c = Control::InputSupport { relative_mouse: true };
+        let c = Control::InputSupport { relative_mouse: true, pen_touch: true, native_pen: false, native_touch: true };
         assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
-        assert_eq!(Control::from_bytes(br#"{"t":"input_support"}"#), Some(Control::InputSupport { relative_mouse: false }));
+        let none = Control::InputSupport { relative_mouse: false, pen_touch: false, native_pen: false, native_touch: false };
+        assert_eq!(Control::from_bytes(br#"{"t":"input_support"}"#), Some(none));
     }
 
     #[test]
