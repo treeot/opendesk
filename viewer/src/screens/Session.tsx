@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { makeDecoder, supportsHevcDecode } from "../lib/decode";
-import { attachInput } from "../lib/input";
+import { attachInput, encodeInputEvent, keyboardLock, shortcutEvents, type SendKey } from "../lib/input";
 import Toolbar, { monitorName, virtualDisplaySize } from "../components/Toolbar";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen } from "@tauri-apps/api/event";
@@ -24,6 +24,17 @@ export function virtualDisplayRefusal(code: string): string {
     case "not_newest": return "Remove the newest virtual display first: Windows takes them away in reverse order.";
     default: return `The other computer couldn't change its displays (${code}).`;
   }
+}
+
+const CAPTURE_SHORTCUTS_KEY = "opendesk.captureShortcuts";
+
+/** A remembered on/off viewer preference; storage may be unavailable. */
+function readFlag(key: string): boolean {
+  try { return window.localStorage.getItem(key) === "1"; } catch { return false; }
+}
+
+function writeFlag(key: string, on: boolean) {
+  try { window.localStorage.setItem(key, on ? "1" : "0"); } catch { /* not remembered */ }
 }
 
 /** Decode a base64 IPC payload into bytes (audio arrives as base64, not number[]). */
@@ -179,6 +190,26 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   }, []);
 
   const sendSecureAttention = () => void api.sendSecureAttention().catch((error: unknown) => notify(friendlyError(error)));
+
+  // Shortcuts from the "Send keys" menu: press, then release once the press is queued.
+  const sendShortcut = (key: SendKey) => {
+    if (viewOnlyRef.current) { notify("View only is on. Turn it off to send keys."); return; }
+    const [down, up] = shortcutEvents(key).map((event) => encodeInputEvent(event, Date.now() * 1000));
+    void api.sendInput(down).then(() => api.sendInput(up)).catch((error: unknown) => notify(friendlyError(error)));
+  };
+
+  // Route system shortcuts (Alt+Tab, the Windows key) to the session while
+  // fullscreen, where the webview supports it. Remembered across sessions.
+  const [canCaptureShortcuts] = useState(() => keyboardLock() !== undefined);
+  const [captureShortcuts, setCaptureShortcuts] = useState(() => readFlag(CAPTURE_SHORTCUTS_KEY));
+  const toggleCaptureShortcuts = (enabled: boolean) => { setCaptureShortcuts(enabled); writeFlag(CAPTURE_SHORTCUTS_KEY, enabled); };
+  useEffect(() => {
+    if (role !== "viewer" || !captureShortcuts) return;
+    const lock = keyboardLock();
+    if (!lock) return;
+    void lock.lock().catch(() => {});
+    return () => lock.unlock();
+  }, [role, captureShortcuts]);
 
   const beginRestartWait = () => {
     restartDroppedRef.current = false;
@@ -643,7 +674,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}

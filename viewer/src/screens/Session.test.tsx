@@ -286,6 +286,22 @@ describe("Session viewer transport", () => {
     expect(view.queryByRole("region", { name: "Session stats" })).toBeNull();
   });
 
+  it("sends a shortcut from the Send keys menu as a press and a release", async () => {
+    sendInput.mockClear();
+    const view = render(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    expect(view.queryByRole("menuitem", { name: "Alt+F4" })).toBeNull();
+    fireEvent.click(view.getByRole("menuitem", { name: /Send keys/ }));
+    // jsdom has no Keyboard Lock, so capture isn't offered.
+    expect(view.queryByRole("menuitem", { name: /Capture system shortcuts/ })).toBeNull();
+    fireEvent.click(view.getByRole("menuitem", { name: "Alt+F4" }));
+    await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(2));
+    const [down, up] = sendInput.mock.calls.map(([bytes]) => Array.from(bytes));
+    // Key event, code 115 (F4), down then up, Alt held.
+    expect([down[0], down[12], down[13], down[14]]).toEqual([4, 115, 1, 4]);
+    expect([up[0], up[12], up[13], up[14]]).toEqual([4, 115, 0, 4]);
+  });
+
   it("warns before a restart that a one-time password won't get back in", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     requestRemoteRestart.mockClear();

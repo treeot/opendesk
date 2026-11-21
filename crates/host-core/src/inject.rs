@@ -114,7 +114,7 @@ impl InputInjector for EnigoInjector {
                 down,
                 modifiers,
             } => {
-                let Some(key) = map_key(code) else { return };
+                let Some((key, modifiers)) = resolve_key(code, modifiers) else { return };
                 inject_key(&mut self.enigo, key, down, modifiers, code);
             }
             InputEvent::Char {
@@ -294,6 +294,19 @@ fn map_button(button: u8) -> Option<Button> {
     }
 }
 
+/// DOM key code of Print Screen.
+const PRINT_SCREEN: u32 = 44;
+
+/// The key to press for `code` and the modifiers to hold with it. A Mac has
+/// no Print Screen key, so there it becomes the screenshot shortcut
+/// Cmd+Shift+3.
+fn resolve_key(code: u32, modifiers: u8) -> Option<(Key, u8)> {
+    if cfg!(target_os = "macos") && code == PRINT_SCREEN {
+        return Some((Key::Unicode('3'), modifiers | 1 | 1 << 3));
+    }
+    map_key(code).map(|key| (key, modifiers))
+}
+
 // Printable key codes are Unicode scalar values from KeyboardEvent.key. Named
 // keys retain their browser/DOM-style virtual key codes for compatibility.
 fn map_key(code: u32) -> Option<Key> {
@@ -317,6 +330,8 @@ fn map_key(code: u32) -> Option<Key> {
         39 => Some(Key::RightArrow),
         40 => Some(Key::DownArrow),
         46 => Some(Key::Delete),
+        #[cfg(not(target_os = "macos"))]
+        PRINT_SCREEN => Some(Key::PrintScr),
         112..=123 => Some(match code {
             112 => Key::F1,
             113 => Key::F2,
@@ -477,6 +492,20 @@ mod tests {
         assert_eq!(map_char('é'), Some(Key::Unicode('é')));
         assert_eq!(map_char('\u{7f}'), None);
         assert_eq!(map_key(27), Some(Key::Escape));
+    }
+
+    #[test]
+    fn send_keys_shortcuts_resolve_on_every_platform() {
+        // Alt+Tab, Alt+F4, Ctrl+Esc and a lone Win/Cmd press.
+        assert_eq!(resolve_key(9, 1 << 2), Some((Key::Tab, 1 << 2)));
+        assert_eq!(resolve_key(115, 1 << 2), Some((Key::F4, 1 << 2)));
+        assert_eq!(resolve_key(27, 1 << 1), Some((Key::Escape, 1 << 1)));
+        assert_eq!(resolve_key(91, 0), Some((Key::Meta, 0)));
+        assert_eq!(modifier_keys(1 << 3, 91).count(), 0);
+        #[cfg(target_os = "macos")]
+        assert_eq!(resolve_key(PRINT_SCREEN, 0), Some((Key::Unicode('3'), 1 | 1 << 3)));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(resolve_key(PRINT_SCREEN, 0), Some((Key::PrintScr, 0)));
     }
 
     #[test]

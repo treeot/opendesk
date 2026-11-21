@@ -61,6 +61,42 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
   return bytes;
 }
 
+/** Modifier bits of a key event, as the host reads them. */
+export const MOD_CTRL = 1 << 1;
+export const MOD_ALT = 1 << 2;
+
+/** A shortcut the viewer can send from a menu: OS shortcuts the local system would otherwise keep. */
+export interface SendKey { id: string; label: string; code: number; modifiers: number }
+
+export const SEND_KEYS: SendKey[] = [
+  { id: "alt-tab", label: "Alt+Tab", code: 9, modifiers: MOD_ALT },
+  { id: "win", label: "Windows key (Cmd on a Mac)", code: 91, modifiers: 0 },
+  { id: "ctrl-esc", label: "Ctrl+Esc", code: 27, modifiers: MOD_CTRL },
+  { id: "print-screen", label: "Print Screen", code: 44, modifiers: 0 },
+  { id: "alt-f4", label: "Alt+F4", code: 115, modifiers: MOD_ALT },
+];
+
+/** Press then release `key`; the host holds the modifiers around the press. */
+export function shortcutEvents(key: SendKey): InputEvent[] {
+  return [
+    { kind: "key", code: key.code, down: true, modifiers: key.modifiers },
+    { kind: "key", code: key.code, down: false, modifiers: key.modifiers },
+  ];
+}
+
+interface KeyboardLock { lock(codes?: string[]): Promise<void>; unlock(): void }
+
+/**
+ * The Keyboard Lock API, where the webview has it (Chromium-based ones such
+ * as WebView2): while the window is fullscreen, it routes system shortcuts
+ * like Alt+Tab and the Windows key to the page instead of the OS.
+ */
+export function keyboardLock(nav: Navigator = navigator): KeyboardLock | undefined {
+  const keyboard = (nav as Navigator & { keyboard?: Partial<KeyboardLock> }).keyboard;
+  if (!keyboard || typeof keyboard.lock !== "function" || typeof keyboard.unlock !== "function") return undefined;
+  return { lock: (codes) => keyboard.lock!(codes), unlock: () => keyboard.unlock!() };
+}
+
 function timestampUs(): number {
   return Math.floor(Date.now() * 1000);
 }

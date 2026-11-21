@@ -1,6 +1,28 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { attachInput, containedRect, encodeInputEvent, mapPointer } from "./input";
+import { attachInput, containedRect, encodeInputEvent, keyboardLock, mapPointer, SEND_KEYS, shortcutEvents } from "./input";
+
+describe("send keys", () => {
+  it("presses and releases each shortcut with its modifiers held", () => {
+    const altTab = SEND_KEYS.find((key) => key.id === "alt-tab")!;
+    const [down, up] = shortcutEvents(altTab).map((event) => Array.from(encodeInputEvent(event, 0)));
+    // kind 4 (key), timestamp, code 9 (Tab), down flag, modifiers (Alt = 4).
+    expect(down).toEqual([4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 4]);
+    expect(up).toEqual([4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 4]);
+    expect(SEND_KEYS.map((key) => key.label)).toEqual(["Alt+Tab", "Windows key (Cmd on a Mac)", "Ctrl+Esc", "Print Screen", "Alt+F4"]);
+  });
+
+  it("only offers shortcut capture where the webview has Keyboard Lock", () => {
+    expect(keyboardLock({} as Navigator)).toBeUndefined();
+    const lock = vi.fn(() => Promise.resolve());
+    const unlock = vi.fn();
+    const found = keyboardLock({ keyboard: { lock, unlock } } as unknown as Navigator)!;
+    void found.lock();
+    found.unlock();
+    expect(lock).toHaveBeenCalledOnce();
+    expect(unlock).toHaveBeenCalledOnce();
+  });
+});
 
 describe("encodeInputEvent", () => {
   it("matches the protocol mouse-move wire bytes exactly", () => {

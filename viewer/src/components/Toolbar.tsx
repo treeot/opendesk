@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LinkStats, MonitorInfo, Status } from "../lib/api";
+import { SEND_KEYS, type SendKey } from "../lib/input";
 
 interface ToolbarProps {
   remoteId: string;
@@ -41,6 +42,12 @@ interface ToolbarProps {
   onViewOnlyChange?: (viewOnly: boolean) => void;
   canSecureAttention?: boolean;
   onSecureAttention?: () => void;
+  /** Send a shortcut from the "Send keys" menu. */
+  onSendKey?: (key: SendKey) => void;
+  /** The webview can route system shortcuts to the session while fullscreen. */
+  canCaptureShortcuts?: boolean;
+  captureShortcuts?: boolean;
+  onCaptureShortcutsChange?: (enabled: boolean) => void;
   /** Selected bitrate cap in bps; 0 is automatic. */
   quality?: number;
   onQualityChange?: (bps: number) => void;
@@ -97,9 +104,9 @@ const icons = {
 };
 
 /** One row inside the overflow menu: icon, label, optional on/off state. */
-function MoreItem({ label, icon, onClick, on, danger }: { label: string; icon: ReactNode; onClick: () => void; on?: boolean; danger?: boolean }) {
+function MoreItem({ label, icon, onClick, on, danger, expanded, sub, title }: { label: string; icon?: ReactNode; onClick: () => void; on?: boolean; danger?: boolean; expanded?: boolean; sub?: boolean; title?: string }) {
   return (
-    <button className="session-toolbar__more-item" type="button" role="menuitem" data-tone={danger ? "danger" : undefined} aria-pressed={on} onClick={onClick}>
+    <button className={`session-toolbar__more-item${sub ? " session-toolbar__more-item--sub" : ""}`} type="button" role="menuitem" data-tone={danger ? "danger" : undefined} aria-pressed={on} aria-expanded={expanded} title={title} onClick={onClick}>
       {icon}
       <span className="session-toolbar__more-label">{label}</span>
       {on !== undefined && <span className="session-toolbar__more-state">{on ? "On" : "Off"}</span>}
@@ -173,9 +180,10 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, statsOpen = false, onStatsToggle = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, statsOpen = false, onStatsToggle = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
 
   useEffect(() => {
     const startedAt = Date.now();
@@ -232,7 +240,12 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
                 <MoreItem icon={icons.forward} label="Port forwarding" on={forwardOpen} onClick={() => { onForwardToggle(); setMoreOpen(false); }} />
                 {canOpenMonitorWindow && <MoreItem icon={icons.newWindow} label="Open monitor in a window" onClick={() => { onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0); setMoreOpen(false); }} />}
                 {selectedVirtual && <MoreItem icon={icons.remove} label="Remove this screen" onClick={() => { onRemoveDisplay(selectedVirtual.id); setMoreOpen(false); }} />}
-                {canSecureAttention && <MoreItem icon={icons.keyboard} label="Send Ctrl+Alt+Del" onClick={() => { onSecureAttention(); setMoreOpen(false); }} />}
+                <MoreItem icon={icons.keyboard} label="Send keys" expanded={keysOpen} onClick={() => setKeysOpen((open) => !open)} />
+                {keysOpen && <>
+                  {canSecureAttention && <MoreItem sub label="Ctrl+Alt+Del" onClick={() => { onSecureAttention(); setMoreOpen(false); }} />}
+                  {SEND_KEYS.map((key) => <MoreItem key={key.id} sub label={key.label} onClick={() => { onSendKey(key); setMoreOpen(false); }} />)}
+                  {canCaptureShortcuts && <MoreItem sub label="Capture system shortcuts" on={captureShortcuts} title="In fullscreen, send shortcuts like Alt+Tab and the Windows key to the remote computer instead of this one." onClick={() => onCaptureShortcutsChange(!captureShortcuts)} />}
+                </>}
                 {canRestart && <MoreItem icon={icons.restart} label="Restart remote" onClick={() => { onRestart(); setMoreOpen(false); }} />}
                 {canPrivacy && <MoreItem icon={icons.privacy} label="Privacy mode" on={privacyOn} onClick={() => { onPrivacyChange(!privacyOn); setMoreOpen(false); }} />}
                 <MoreItem icon={recordingActive ? icons.stop : icons.record} danger label={recordingActive ? "Stop recording" : "Record"} onClick={() => { onRecordingToggle(); setMoreOpen(false); }} />

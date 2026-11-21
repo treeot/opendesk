@@ -121,6 +121,7 @@ input, textarea, [contenteditable="true"], .chat-panel__bubble { user-select: te
 .session-toolbar__more-item .session-toolbar__svg { width: 17px; height: 17px; flex: none; }
 .session-toolbar__more-item[data-tone="danger"] .session-toolbar__svg { color: #ef4050; }
 .session-toolbar__more-label { flex: 1; }
+.session-toolbar__more-item--sub { padding: 6px 10px 6px 37px; font-size: 12px; }
 .session-toolbar__more-state { color: var(--muted); font: 600 10px var(--mono); }
 .session-toolbar__more-item[aria-pressed="true"] .session-toolbar__more-state { color: var(--accent); }
 .session-toolbar--hidden { transform: translateX(-50%) translateY(calc(-100% - 28px)); opacity: 0; pointer-events: none; }
