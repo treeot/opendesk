@@ -50,7 +50,7 @@ pub enum Bridge {
     /// the viewer's sender once a matching `connect` takes it.
     HostRegistered { peer_id: String, notify_rx: oneshot::Receiver<(Outbound, CloseOutbound, String)> },
     /// This connection is a viewer bridged to the given host sender.
-    ViewerPaired { host_tx: Outbound, host_close_tx: CloseOutbound, requester_id: String, target_id: String },
+    ViewerPaired { host_tx: Outbound, host_close_tx: CloseOutbound, requester_id: String },
     /// This connection asked which IDs are online. The relay answers and closes
     /// it; no pairing happens.
     Presence { online: Vec<String> },
@@ -81,7 +81,7 @@ pub fn classify(msg: &[u8], me: Outbound, me_close_tx: CloseOutbound, reg: &Regi
             if !reg.allow_connect(source, &target) { return Err(ClassifyError::ConnectRateLimited); }
             let (host_tx, host_close_tx, notify) = reg.take(&target).ok_or(ClassifyError::PeerUnavailable)?;
             let _ = notify.send((me, me_close_tx, peer_id.clone()));
-            Ok(Bridge::ViewerPaired { host_tx, host_close_tx, requester_id: peer_id, target_id: target })
+            Ok(Bridge::ViewerPaired { host_tx, host_close_tx, requester_id: peer_id })
         }
         Control::Presence { ids } => {
             // Bounded and valid-only, so this cannot scan the ID space: each

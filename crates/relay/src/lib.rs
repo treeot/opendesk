@@ -379,9 +379,11 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
     let mut _session = None;
     let bridge = session::classify(&first, my_tx.clone(), close_tx.clone(), &state.registry, addr);
     let (peer_tx, peer_close_tx, registered_peer) = match bridge {
-        Ok(Bridge::ViewerPaired { host_tx, host_close_tx, requester_id, target_id }) => {
+        Ok(Bridge::ViewerPaired { host_tx, host_close_tx, requester_id }) => {
+            // Queued before this task forwards anything to the host, so the
+            // host always reads `paired` first. The viewer's own `paired` is
+            // sent by the host's task, the only one that forwards to it.
             let _ = host_tx.send(session::paired_frame("host", &requester_id)).await;
-            let _ = my_tx.send(session::paired_frame("viewer", &target_id)).await;
             state.log_event("pairing_success", addr, "viewer");
             _session = Some(state.metrics.session_started());
             (host_tx, host_close_tx, None)
@@ -422,6 +424,9 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
             };
             let _ = my_tx.send(session::paired_frame("host", &requester_id)).await;
             state.log_event("pairing_success", addr, "host");
+            // The viewer must read `paired` before any host data. Sending it
+            // from the viewer's task raced this one forwarding early data.
+            let _ = peer.send(session::paired_frame("viewer", &peer_id)).await;
             for frame in early {
                 let len = frame.len();
                 if !bytes.allow(len) || peer.send(frame).await.is_err() { break; }
