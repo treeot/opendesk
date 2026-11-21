@@ -2,16 +2,18 @@ mod client_ip;
 mod config;
 mod ratemap;
 mod registry;
+mod serve;
 mod session;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use client_ip::TrustedProxies;
 pub use config::{ConfigError, Settings};
+pub use serve::serve;
 use futures_util::{SinkExt, StreamExt};
 use ratemap::RateMap;
 use registry::{CloseOutbound, Outbound, Registry};
@@ -60,6 +62,12 @@ const DEFAULT_SWEEP_SECS: u64 = 60;
 /// receiver cannot make the relay hold hundreds of MiB per session. A complete
 /// fix would budget by bytes rather than frame count.
 const PEER_QUEUE: usize = 8;
+/// Sent to every open socket when the relay stops, so clients reconnect
+/// (to another relay, or this one once it is back) instead of waiting out a
+/// timeout.
+const GOING_AWAY: u16 = 1001;
+/// How long a closing socket's writer gets to flush its last frames.
+const CLOSE_FLUSH: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct RelayState {
@@ -175,6 +183,14 @@ pub struct RelayHandle { registry: Registry, limits: Arc<ConnectionLimits> }
 impl RelayHandle {
     pub fn active_connections(&self) -> usize { self.limits.active() }
 
+    /// Waits up to `timeout` for every WebSocket connection to close. True
+    /// once none are left. Used on shutdown, after sockets were told to close.
+    pub async fn wait_idle(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            while self.limits.active() > 0 { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.is_ok()
+    }
+
     /// Saves ID bindings to `RELAY_STATE_FILE` if any changed. Call on shutdown.
     pub fn persist(&self) -> std::io::Result<bool> { self.registry.persist_if_dirty() }
 }
@@ -254,8 +270,17 @@ fn app_with_state(state: RelayState) -> Router {
     Router::new().route("/ws", get(ws_handler)).route("/health", get(health_handler)).with_state(state)
 }
 
-async fn health_handler() -> Response {
-    ([(axum::http::header::CONTENT_TYPE, "application/json")], r#"{"status":"ok"}"#).into_response()
+/// Ready means the relay is accepting connections: the state file (if any) is
+/// loaded before the router exists, so the only not-ready state is shutting
+/// down. Answering 503 then lets a proxy stop routing here at once. Kept
+/// cheap: no locks and no registry scan, so a busy health checker costs
+/// nothing.
+async fn health_handler(State(state): State<RelayState>) -> Response {
+    let json = [(axum::http::header::CONTENT_TYPE, "application/json")];
+    if *state.shutdown.borrow() {
+        return (StatusCode::SERVICE_UNAVAILABLE, json, r#"{"status":"shutting_down"}"#).into_response();
+    }
+    (json, r#"{"status":"ok"}"#).into_response()
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap, State(state): State<RelayState>) -> Response {
@@ -286,12 +311,16 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
     let my_tx = registry::Outbound::new(raw_tx, Arc::clone(&budget));
     let (close_tx, close_rx) = watch::channel::<Option<CloseFrame>>(None);
     let mut writer_close_rx = close_rx.clone();
+    // A receiver that stops reading (or whose TCP path went dead) stalls the
+    // write; give up on it after the idle timeout rather than holding the
+    // socket and its queued bytes indefinitely.
+    let write_timeout = state.config.idle_timeout;
     let writer = tokio::spawn(async move {
         loop {
             tokio::select! {
                 Some(bytes) = my_rx.recv() => {
                     let cost = registry::Outbound::permits_for(bytes.len());
-                    let sent = sink.send(Message::Binary(bytes.into())).await.is_ok();
+                    let sent = matches!(tokio::time::timeout(write_timeout, sink.send(Message::Binary(bytes.into()))).await, Ok(Ok(())));
                     // Return the frame's budget once it is off the queue.
                     budget.add_permits(cost);
                     if !sent { break; }
@@ -318,7 +347,7 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
 
     let mut shutdown = state.shutdown.clone();
     let first = tokio::select! {
-        _ = shutdown.changed() => { writer.abort(); log_event("connection_close", addr, "shutdown"); return; }
+        _ = shutdown.changed() => { close_self(&close_tx, writer, going_away()).await; log_event("connection_close", addr, "shutdown"); return; }
         result = tokio::time::timeout(state.config.handshake_timeout, stream.next()) => result.ok().flatten().and_then(Result::ok),
     };
     let Some(Message::Binary(first)) = first else { writer.abort(); log_event("connection_close", addr, "handshake"); return; };
@@ -358,7 +387,7 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
                 tokio::select! {
                     biased;
                     result = &mut pairing => break result.ok().and_then(Result::ok),
-                    _ = shutdown.changed() => { state.registry.unregister(&peer_id, &my_tx); writer.abort(); log_event("connection_close", addr, "shutdown"); return; }
+                    _ = shutdown.changed() => { state.registry.unregister(&peer_id, &my_tx); close_self(&close_tx, writer, going_away()).await; log_event("connection_close", addr, "shutdown"); return; }
                     left = watch_parked_host(&mut stream, &mut early), if watching => {
                         if left { state.registry.unregister(&peer_id, &my_tx); writer.abort(); log_event("connection_close", addr, "host_left"); return; }
                         // Too much early data: leave the rest in the socket.
@@ -366,7 +395,12 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
                     }
                 }
             };
-            let Some((peer, peer_close_tx, requester_id)) = peer else { state.registry.unregister(&peer_id, &my_tx); writer.abort(); log_event("pairing_failure", addr, "pair_timeout"); return; };
+            let Some((peer, peer_close_tx, requester_id)) = peer else {
+                state.registry.unregister(&peer_id, &my_tx);
+                close_self(&close_tx, writer, CloseFrame { code: 1000, reason: "pair timeout".into() }).await;
+                log_event("pairing_failure", addr, "pair_timeout");
+                return;
+            };
             let _ = my_tx.send(session::paired_frame("host", &requester_id)).await;
             log_event("pairing_success", addr, "host");
             for frame in early {
@@ -397,19 +431,30 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
         }
     };
     let mut control = TokenBucket::new(state.config.session_control_burst, state.config.session_control_per_sec);
-    forward_rest(&mut stream, peer_tx, close_rx, &mut bytes, &mut control, &state, &mut shutdown, addr).await;
-    close_peer(&peer_close_tx);
+    let stopped = forward_rest(&mut stream, peer_tx, close_rx, &mut bytes, &mut control, &state, &mut shutdown, addr).await;
+    // The peer may have seen the shutdown first and closed this side already.
+    let stopping = stopped || *shutdown.borrow();
     if let Some(peer_id) = registered_peer { state.registry.unregister(&peer_id, &my_tx); }
-    writer.abort();
+    if stopping {
+        // Both ends are told the relay is going away, whichever handler
+        // sees the shutdown first.
+        let _ = peer_close_tx.send(Some(going_away()));
+        close_self(&close_tx, writer, going_away()).await;
+    } else {
+        close_peer(&peer_close_tx);
+        writer.abort();
+    }
     log::info!("event=connection_close remote={addr} reason=eof_or_timeout active_connections={}", state.limits.active().saturating_sub(1));
 }
 
+/// Pipes this socket's frames to the peer until either side ends. Returns
+/// true when it stopped because the relay is shutting down.
 #[allow(clippy::too_many_arguments)]
-async fn forward_rest(stream: &mut futures_util::stream::SplitStream<WebSocket>, peer_tx: Outbound, mut close_rx: watch::Receiver<Option<CloseFrame>>, bytes: &mut TokenBucket, control: &mut TokenBucket, state: &RelayState, shutdown: &mut watch::Receiver<bool>, addr: IpAddr) {
+async fn forward_rest(stream: &mut futures_util::stream::SplitStream<WebSocket>, peer_tx: Outbound, mut close_rx: watch::Receiver<Option<CloseFrame>>, bytes: &mut TokenBucket, control: &mut TokenBucket, state: &RelayState, shutdown: &mut watch::Receiver<bool>, addr: IpAddr) -> bool {
     loop {
         let next = tokio::select! {
             _ = close_rx.changed() => break,
-            _ = shutdown.changed() => break,
+            _ = shutdown.changed() => return true,
             result = tokio::time::timeout(state.config.idle_timeout, stream.next()) => match result { Ok(value) => value, Err(_) => { log_event("connection_close", addr, "idle_timeout"); break; } },
         };
         let Some(Ok(msg)) = next else { break; };
@@ -417,12 +462,13 @@ async fn forward_rest(stream: &mut futures_util::stream::SplitStream<WebSocket>,
             if !bytes.allow(frame.len()) { log_event("connection_rejected", addr, "byte_rate"); break; }
             if frame.first() == Some(&(protocol::Tag::Control as u8)) && !control.allow(1) { log_event("connection_rejected", addr, "signaling_rate"); break; }
             let queued = tokio::select! {
-                _ = shutdown.changed() => false,
+                _ = shutdown.changed() => return true,
                 result = tokio::time::timeout(state.config.idle_timeout, peer_tx.send(Vec::from(frame))) => matches!(result, Ok(Ok(()))),
             };
             if !queued { break; }
         }
     }
+    false
 }
 
 /// Data a parked host may send before it is paired (some start their
@@ -445,6 +491,15 @@ async fn watch_parked_host(stream: &mut futures_util::stream::SplitStream<WebSoc
     }
 }
 
+fn going_away() -> CloseFrame { CloseFrame { code: GOING_AWAY, reason: "relay shutting down".into() } }
+
+/// Asks this socket's writer to send `frame` after anything already queued,
+/// and waits briefly for it to do so.
+async fn close_self(close_tx: &CloseOutbound, writer: tokio::task::JoinHandle<()>, frame: CloseFrame) {
+    let _ = close_tx.send(Some(frame));
+    if tokio::time::timeout(CLOSE_FLUSH, writer).await.is_err() { log::debug!("writer did not flush its close frame in time"); }
+}
+
 fn close_peer(peer_close_tx: &CloseOutbound) {
     let _ = peer_close_tx.send(Some(CloseFrame { code: 1000, reason: "peer disconnected".into() }));
 }
@@ -456,12 +511,27 @@ pub async fn spawn_test_server() -> String { spawn_test_server_with_handle().awa
 /// Starts a relay on an ephemeral loopback port, returning its address and a
 /// [`RelayHandle`] for stats.
 pub async fn spawn_test_server_with_handle() -> (String, RelayHandle) {
+    let relay = spawn_test_server_with(Settings::default()).await;
+    (relay.addr, relay.handle)
+}
+
+/// A relay started by [`spawn_test_server_with`].
+pub struct TestRelay {
+    pub addr: String,
+    pub handle: RelayHandle,
+    /// Send `true` to shut the relay down as SIGTERM would.
+    pub shutdown: watch::Sender<bool>,
+}
+
+/// Starts a relay with `settings` on an ephemeral loopback port, served the
+/// same way as the binary serves it.
+pub async fn spawn_test_server_with(settings: Settings) -> TestRelay {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let (tx, rx) = watch::channel(false);
-    let (router, handle) = build(&Settings::default(), rx, Some(tx)).expect("relay state");
-    tokio::spawn(async move { axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap() });
-    (addr, handle)
+    let (router, handle) = build(&settings, rx.clone(), Some(tx.clone())).expect("relay state");
+    tokio::spawn(serve(listener, router, settings.handshake_timeout(), rx));
+    TestRelay { addr, handle, shutdown: tx }
 }
 
 #[cfg(test)]
@@ -516,4 +586,15 @@ mod tests {
 
     #[test]
     fn configured_deadline_is_positive() { assert!(RelayConfig::default().pair_timeout > Duration::ZERO); }
+
+    #[tokio::test]
+    async fn health_turns_unavailable_on_shutdown() {
+        use tower::ServiceExt;
+        let (tx, rx) = watch::channel(false);
+        let (router, _) = build(&Settings::default(), rx, None).unwrap();
+        let get = || axum::http::Request::get("/health").body(axum::body::Body::empty()).unwrap();
+        assert_eq!(router.clone().oneshot(get()).await.unwrap().status(), StatusCode::OK);
+        tx.send(true).unwrap();
+        assert_eq!(router.oneshot(get()).await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

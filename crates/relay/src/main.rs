@@ -1,4 +1,3 @@
-use axum::serve::ListenerExt;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -16,16 +15,21 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", settings.port());
     let listener = TcpListener::bind(&addr).await.unwrap_or_else(|error| fail(format!("could not listen on {addr}: {error}")));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (app, handle) = relay::relay(&settings, shutdown_rx).unwrap_or_else(|error| fail(error));
+    let (app, handle) = relay::relay(&settings, shutdown_rx.clone()).unwrap_or_else(|error| fail(error));
     log::info!("relay listening on {addr}");
-    // Nagle would delay small input and control frames behind video.
-    let listener = listener.tap_io(|tcp| { let _ = tcp.set_nodelay(true); });
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
-        .await
-        .unwrap();
-    if let Err(error) = handle.persist() {
-        log::warn!("could not save relay state on shutdown: {error}");
+    tokio::spawn(shutdown_signal(shutdown_tx));
+
+    // Returns once a signal arrives; every open socket sees the same signal
+    // and closes itself with a "going away" frame.
+    relay::serve(listener, app, settings.handshake_timeout(), shutdown_rx).await;
+    log::info!("event=shutdown reason=signal active_connections={}", handle.active_connections());
+    if !handle.wait_idle(settings.shutdown_grace()).await {
+        log::warn!("event=shutdown reason=grace_expired active_connections={}", handle.active_connections());
+    }
+    match handle.persist() {
+        Ok(true) => log::info!("saved relay state"),
+        Ok(false) => {}
+        Err(error) => log::warn!("could not save relay state on shutdown: {error}"),
     }
 }
 

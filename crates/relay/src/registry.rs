@@ -134,6 +134,9 @@ pub struct Registry {
     target_connect_limits: Arc<RateMap<String>>,
     new_id_limits: Arc<RateMap<IpAddr>>,
     dirty: Arc<AtomicBool>,
+    /// Serializes saves: the periodic save and the one at shutdown share a
+    /// temp file, and two writers at once could leave it garbled.
+    save_lock: Arc<std::sync::Mutex<()>>,
     config: Arc<RegistryConfig>,
 }
 
@@ -200,6 +203,7 @@ impl Registry {
             target_connect_limits: Arc::new(RateMap::new(config.connect_burst, config.connect_refill, config.max_rate_entries)),
             new_id_limits: Arc::new(RateMap::new(config.new_id_burst, config.new_id_refill, config.max_rate_entries)),
             dirty: Arc::new(AtomicBool::new(false)),
+            save_lock: Arc::new(std::sync::Mutex::new(())),
             config: Arc::new(config),
         }
     }
@@ -354,6 +358,7 @@ impl Registry {
     /// save. No-op without a state file.
     pub fn persist_if_dirty(&self) -> std::io::Result<bool> {
         let Some(path) = self.state_file() else { return Ok(false) };
+        let _saving = self.save_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.dirty.swap(false, Ordering::Relaxed) { return Ok(false); }
         let result = self.save(path);
         if result.is_err() { self.dirty.store(true, Ordering::Relaxed); }

@@ -1,7 +1,7 @@
 # Relay deployment
 
 The relay is a single HTTP service: a WebSocket endpoint at `/ws` and a health
-check at `/health` (it returns `{"status":"ok"}`). It does not terminate TLS
+check at `/health` (see [Health and restarts](#health-and-restarts)). It does not terminate TLS
 itself; the Compose setup below puts Caddy in front for automatic HTTPS. The
 only state it keeps is which token owns each host ID (see
 [Configuration](#configuration)).
@@ -80,9 +80,12 @@ Unknown `RELAY_*` variables are logged as a warning, which catches typos.
 | `RELAY_MAX_ID_BINDINGS` | `100000` | Most IDs tracked at once. When full, the oldest offline IDs that never paired make room; if there are none, new IDs are refused. |
 | `RELAY_NEW_ID_BURST` / `RELAY_NEW_ID_REFILL_SECS` | `20` / `3600` | New IDs one IP (or IPv6 /64) may claim per window. |
 | `RELAY_MAX_RATE_ENTRIES` | `100000` | Most IPs tracked by each rate limiter. |
-| `RELAY_IDLE_TIMEOUT_SECS` | `60` | Closes a paired connection after this long without traffic. |
+| `RELAY_HANDSHAKE_TIMEOUT_SECS` | `15` | Time a new connection gets to send its HTTP request, and then its first WebSocket message. |
+| `RELAY_PAIR_TIMEOUT_SECS` | `60` | How long a host waits for a viewer before the relay closes it (the host reconnects). |
+| `RELAY_IDLE_TIMEOUT_SECS` | `60` | Closes a paired connection after this long without traffic, or when the other end stops reading for this long. |
 | `RELAY_SESSION_CONTROL_BURST` / `RELAY_SESSION_CONTROL_PER_SEC` | `64` / `16` | Control messages allowed per paired connection. |
 | `RELAY_SWEEP_SECS` | `60` | How often expired IDs and idle rate limits are removed and the state file is saved. |
+| `RELAY_SHUTDOWN_GRACE_SECS` | `8` | On SIGTERM or Ctrl-C, how long to wait for open connections to close before exiting. |
 
 **Client addresses behind a proxy.** Per-IP limits and logs use the client's
 address. When a connection comes from a trusted proxy, the relay takes the
@@ -99,6 +102,30 @@ registration, but if that keeps happening (more than 3 times in 10 minutes,
 usually two copies of one machine) the newcomer gets `id_in_use`. Without `RELAY_STATE_FILE` this ownership is lost
 when the relay restarts. The file stores a SHA-256 hash of each host token,
 not the token itself. The Compose setup stores it in the `relay_data` volume.
+
+## Health and restarts
+
+`/health` answers `200` with `{"status":"ok"}` while the relay is accepting
+connections. The state file is loaded before the port opens, so a relay that
+answers is ready. Once shutdown starts it answers `503` with
+`{"status":"shutting_down"}`. The check reads one flag and nothing else, so
+polling it often costs nothing. The Docker image's `HEALTHCHECK` runs
+`relay healthcheck`, which calls the same endpoint.
+
+On SIGTERM (what `docker stop` sends) or Ctrl-C the relay stops accepting
+connections and sends every open WebSocket a close frame with code 1001
+("going away"), so apps reconnect straight away instead of waiting for a
+timeout. It then waits up to `RELAY_SHUTDOWN_GRACE_SECS` for the sockets to
+close, saves the state file and exits. The default of 8 seconds fits inside
+Docker's 10 second stop timeout; if you raise it, raise the container's stop
+timeout too (`stop_grace_period` in Compose).
+
+Connections that go quiet are dropped on their own. A connection has
+`RELAY_HANDSHAKE_TIMEOUT_SECS` to send its HTTP request and then its first
+message, a waiting host is closed after `RELAY_PAIR_TIMEOUT_SECS`, and a
+paired connection after `RELAY_IDLE_TIMEOUT_SECS` without traffic. The apps
+send keepalives well inside those limits, so only dead or stuck connections
+hit them.
 
 ## Clients
 

@@ -2759,6 +2759,8 @@ dependencies = [
  "dashmap",
  "env_logger",
  "futures-util",
+ "hyper",
+ "hyper-util",
  "log",
  "protocol",
  "serde",
@@ -2766,6 +2768,7 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "tower",
 ]
 
 [[package]]
