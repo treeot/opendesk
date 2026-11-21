@@ -12,7 +12,7 @@ pub mod reliable;
 
 pub use direct::{DirectTransport, FeedbackKeys};
 pub use rate::RateControl;
-pub use link::{LinkStatus, MediaPath, RttMeter};
+pub use link::{LinkStatus, LossMeter, MediaPath, RttMeter};
 pub use ice::RelayIceSignaling;
 pub use relay::RelayTransport;
 pub use reliable::{ReliableChannel, ReliableSender};
@@ -78,6 +78,10 @@ pub trait TransportSender: Send {
     /// Round trips measured on this path (see [`link`]). The default is a
     /// detached meter that never has a sample.
     fn rtt_meter(&self) -> Arc<RttMeter> { Arc::new(RttMeter::default()) }
+
+    /// Packet loss on the media this side receives. The default is a
+    /// detached meter that never has a sample (the relay runs over TCP).
+    fn loss_meter(&self) -> Arc<LossMeter> { Arc::new(LossMeter::default()) }
 }
 
 /// The independently owned receiving half of a transport.

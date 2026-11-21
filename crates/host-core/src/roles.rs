@@ -1962,7 +1962,7 @@ where
             opener: data_opener,
             control_sender: reliable.sender(),
             control_sealer: Arc::clone(&control_sealer),
-            link: transport::LinkStatus::new(path, transport_tx.rtt_meter()),
+            link: transport::LinkStatus::new(path, transport_tx.rtt_meter()).with_loss(transport_tx.loss_meter()),
             session_password,
         });
     }

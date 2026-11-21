@@ -150,17 +150,20 @@ pub(crate) struct ViewerAuthEvent { pub(crate) session_password: bool }
 /// Something the host user should know about, shown as an info toast.
 #[derive(Serialize, Clone)]
 pub(crate) struct HostNoticeEvent { pub(crate) message: &'static str }
-/// The viewer's media path ("direct" or "relay") and its latest measured
-/// round trip. `rtt_ms` stays `None` until a real sample exists, and for
-/// hosts too old to report one.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LinkStatsEvent { pub(crate) path: &'static str, pub(crate) rtt_ms: Option<u32> }
+/// The viewer's media path ("direct" or "relay"), its latest measured
+/// round trip and packet loss. `rtt_ms` stays `None` until a real sample
+/// exists, and for hosts too old to report one; `loss_pct` is only measured
+/// on the direct path (the relay runs over TCP).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct LinkStatsEvent { pub(crate) path: &'static str, pub(crate) rtt_ms: Option<u32>, pub(crate) loss_pct: Option<f32> }
 
 impl LinkStatsEvent {
     pub(crate) fn new(link: &host_core::transport::LinkStatus, now: Instant) -> Self {
         // Nearest ms, but a sub-millisecond LAN reads as 1 ms rather than 0.
         let rtt_ms = link.rtt(now).map(|rtt| u32::try_from((rtt.as_micros() + 500) / 1_000).unwrap_or(u32::MAX).max(1));
-        Self { path: link.path.as_str(), rtt_ms }
+        // A tenth of a percent is as fine as anyone reads it.
+        let loss_pct = link.loss(now).map(|fraction| ((fraction * 1_000.0).round() / 10.0) as f32);
+        Self { path: link.path.as_str(), rtt_ms, loss_pct }
     }
 }
 #[derive(Serialize, Clone)]
@@ -290,12 +293,16 @@ mod tests {
         let meter = Arc::new(RttMeter::default());
         let link = LinkStatus::new(MediaPath::Relay, Arc::clone(&meter));
         let now = Instant::now();
-        assert_eq!(LinkStatsEvent::new(&link, now), LinkStatsEvent { path: "relay", rtt_ms: None });
+        assert_eq!(LinkStatsEvent::new(&link, now), LinkStatsEvent { path: "relay", rtt_ms: None, loss_pct: None });
         meter.record(Duration::from_micros(14_200), now);
         assert_eq!(LinkStatsEvent::new(&link, now).rtt_ms, Some(14));
         meter.record(Duration::from_micros(300), now);
         assert_eq!(LinkStatsEvent::new(&link, now).rtt_ms, Some(1));
         let direct = LinkStatus::new(MediaPath::Direct, Arc::new(RttMeter::default()));
-        assert_eq!(serde_json::to_string(&LinkStatsEvent::new(&direct, now)).unwrap(), r#"{"path":"direct","rtt_ms":null}"#);
+        assert_eq!(serde_json::to_string(&LinkStatsEvent::new(&direct, now)).unwrap(), r#"{"path":"direct","rtt_ms":null,"loss_pct":null}"#);
+        let loss = Arc::new(host_core::transport::LossMeter::default());
+        let direct = direct.with_loss(Arc::clone(&loss));
+        loss.record(0.01234, now);
+        assert_eq!(LinkStatsEvent::new(&direct, now).loss_pct, Some(1.2));
     }
 }

@@ -10,6 +10,9 @@ import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import HostControlPanel from "../components/HostControlPanel";
 import { friendlyError, useNotify } from "../lib/notify";
 import { formatWait, restartConfirmText, RESTART_NO_SHOW_MS } from "../lib/restart";
+import { StreamMeter, type StreamStats } from "../lib/stats";
+import { parseFrame } from "../lib/video";
+import StatsPanel from "../components/StatsPanel";
 
 /** Why the host didn't add or remove a virtual display. */
 export function virtualDisplayRefusal(code: string): string {
@@ -117,6 +120,11 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [selectedMonitor, setSelectedMonitor] = useState<number>();
   const [multiMonitorMax, setMultiMonitorMax] = useState<number>();
   const [link, setLink] = useState<api.LinkStats>();
+  // Session stats overlay: frames are only measured while it is open.
+  const [statsOpen, setStatsOpen] = useState(false);
+  const statsOpenRef = useRef(false);
+  const streamMeterRef = useRef(new StreamMeter());
+  const [streamStats, setStreamStats] = useState<StreamStats>({ fps: 0, bitrateBps: 0 });
   // Set once the host says it offers virtual displays (older hosts never do).
   const [virtualMax, setVirtualMax] = useState<number>();
   // Auto-hiding toolbar: shown until the pointer leaves the top edge.
@@ -270,6 +278,16 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     void listener.then((unlisten) => { stop = unlisten; });
     return () => { if (stop) stop(); else void listener.then((unlisten) => unlisten()); };
   }, [role]);
+
+  useEffect(() => {
+    statsOpenRef.current = statsOpen;
+    if (!statsOpen) return;
+    const meter = new StreamMeter();
+    streamMeterRef.current = meter;
+    setStreamStats(meter.snapshot(performance.now()));
+    const timer = window.setInterval(() => setStreamStats(meter.snapshot(performance.now())), 1000);
+    return () => window.clearInterval(timer);
+  }, [statsOpen]);
 
   // A reconnect may land on the other path; show nothing until it reports.
   useEffect(() => { if (status !== "in_session") { setLink(undefined); setVirtualMax(undefined); setMultiMonitorMax(undefined); } }, [status]);
@@ -562,6 +580,10 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     const decoder = makeDecoder(canvas, { requestKeyframe: () => void api.requestKeyframe().catch(() => {}) });
     const push = (frame: ArrayBuffer) => {
       if (!hasVideoRef.current) { hasVideoRef.current = true; setHasVideo(true); }
+      if (statsOpenRef.current) {
+        const parsed = parseFrame(frame);
+        if (parsed) streamMeterRef.current.onFrame(performance.now(), parsed.data.byteLength, parsed);
+      }
       decoder.push(frame);
     };
     const stopVideo = api.startVideo(push);
@@ -621,8 +643,9 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
+      {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}
     </main>
   );

@@ -18,7 +18,7 @@ const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused,
   closeDecoder: vi.fn(),
   onAudioFrame: vi.fn(() => Promise.resolve(vi.fn())),
   onMonitorList: vi.fn<(handler: (payload: { monitors: { id: number; name: string; width: number; height: number; is_primary: boolean; is_virtual?: boolean }[] }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
-  onLinkStats: vi.fn<(handler: (payload: { path: "direct" | "relay"; rtt_ms: number | null }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
+  onLinkStats: vi.fn<(handler: (payload: { path: "direct" | "relay"; rtt_ms: number | null; loss_pct?: number | null }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onFileOffer: vi.fn(() => Promise.resolve(vi.fn())),
   onFileProgress: vi.fn(() => Promise.resolve(vi.fn())),
   onFileDone: vi.fn(() => Promise.resolve(vi.fn())),
@@ -256,6 +256,34 @@ describe("Session viewer transport", () => {
     view.rerender(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={onDisconnect} />);
     expect(view.queryByText("Waiting for the remote computer to restart")).toBeNull();
     confirm.mockRestore();
+  });
+
+  it("shows session stats from the frames and link reports while the panel is open", async () => {
+    const view = render(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    const deliver = latest(startVideo);
+    const report = latest(onLinkStats);
+    expect(view.queryByRole("region", { name: "Session stats" })).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: /Session stats/ }));
+    const panel = view.getByRole("region", { name: "Session stats" });
+    expect(panel.textContent).toContain("Not measured");
+    act(() => report({ path: "direct", rtt_ms: 21, loss_pct: 2.5 }));
+    expect(panel.textContent).toContain("21 ms");
+    expect(panel.textContent).toContain("2.5%");
+    expect(panel.textContent).toContain("Direct");
+    // seq 1, codec 2 (HEVC), keyframe, 1280x720, then 100 bytes of frame.
+    const frame = new Uint8Array(18 + 100);
+    const header = new DataView(frame.buffer);
+    header.setUint32(4, 1);
+    header.setUint8(12, 2);
+    header.setUint8(13, 1);
+    header.setUint16(14, 1280);
+    header.setUint16(16, 720);
+    deliver(frame.buffer);
+    await waitFor(() => expect(panel.textContent).toContain("HEVC"), { timeout: 2500 });
+    expect(panel.textContent).toContain("1280×720");
+    fireEvent.click(view.getByRole("button", { name: "Hide session stats" }));
+    expect(view.queryByRole("region", { name: "Session stats" })).toBeNull();
   });
 
   it("warns before a restart that a one-time password won't get back in", () => {

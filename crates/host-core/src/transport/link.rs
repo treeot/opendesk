@@ -49,6 +49,25 @@ impl RttMeter {
     }
 }
 
+/// The share of media packets lost on a path, as the receiving side last
+/// measured it over one report interval (before retransmission repairs it).
+#[derive(Debug, Default)]
+pub struct LossMeter(Mutex<Option<(f64, Instant)>>);
+
+impl LossMeter {
+    pub fn record(&self, fraction: f64, now: Instant) {
+        if fraction.is_finite() {
+            *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((fraction.clamp(0.0, 1.0), now));
+        }
+    }
+
+    /// The latest sample, unless it is older than [`RTT_MAX_AGE`].
+    pub fn latest(&self, now: Instant) -> Option<f64> {
+        let sample = *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        sample.filter(|(_, at)| now.saturating_duration_since(*at) <= RTT_MAX_AGE).map(|(fraction, _)| fraction)
+    }
+}
+
 /// Path and RTT of one session. The path is fixed for the session; a
 /// reconnect builds a new session (and a new status) that may use the
 /// other path.
@@ -56,12 +75,22 @@ impl RttMeter {
 pub struct LinkStatus {
     pub path: MediaPath,
     rtt: Arc<RttMeter>,
+    loss: Arc<LossMeter>,
 }
 
 impl LinkStatus {
-    pub fn new(path: MediaPath, rtt: Arc<RttMeter>) -> Self { Self { path, rtt } }
+    pub fn new(path: MediaPath, rtt: Arc<RttMeter>) -> Self { Self { path, rtt, loss: Arc::default() } }
+
+    /// Also report the packet loss `loss` measures.
+    pub fn with_loss(mut self, loss: Arc<LossMeter>) -> Self {
+        self.loss = loss;
+        self
+    }
 
     pub fn rtt(&self, now: Instant) -> Option<Duration> { self.rtt.latest(now) }
+
+    /// Latest packet loss fraction, `None` when the path doesn't measure it.
+    pub fn loss(&self, now: Instant) -> Option<f64> { self.loss.latest(now) }
 }
 
 #[cfg(test)]
@@ -76,6 +105,22 @@ mod tests {
         meter.record(Duration::from_millis(14), now);
         assert_eq!(meter.latest(now + Duration::from_secs(1)), Some(Duration::from_millis(14)));
         assert_eq!(meter.latest(now + RTT_MAX_AGE + Duration::from_millis(1)), None);
+    }
+
+    #[test]
+    fn loss_meter_clamps_and_forgets_stale_samples() {
+        let meter = Arc::new(LossMeter::default());
+        let now = Instant::now();
+        let link = LinkStatus::new(MediaPath::Direct, Arc::default());
+        assert_eq!(link.loss(now), None);
+        let link = link.with_loss(Arc::clone(&meter));
+        meter.record(0.25, now);
+        assert_eq!(link.loss(now), Some(0.25));
+        meter.record(f64::NAN, now);
+        assert_eq!(link.loss(now), Some(0.25));
+        meter.record(3.0, now);
+        assert_eq!(link.loss(now), Some(1.0));
+        assert_eq!(link.loss(now + RTT_MAX_AGE + Duration::from_millis(1)), None);
     }
 
     #[test]

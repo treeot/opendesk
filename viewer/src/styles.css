@@ -72,6 +72,15 @@ input, textarea, [contenteditable="true"], .chat-panel__bubble { user-select: te
 .session-restarting__cancel { margin-left: 4px; padding: 4px 10px; border: 1px solid rgba(230, 237, 243, 0.25); border-radius: 999px; background: transparent; color: #e6edf3; font: inherit; font-size: 12px; cursor: pointer; }
 .session-restarting__cancel:hover { background: rgba(230, 237, 243, 0.1); }
 @keyframes session-spin { to { transform: rotate(360deg); } }
+.session-stats { position: absolute; top: 64px; left: 14px; z-index: 5; min-width: 230px; padding: 10px 12px 8px; border-radius: 10px; background: rgba(10, 14, 20, 0.88); color: #e6edf3; font-size: 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); pointer-events: auto; }
+.session-stats__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.session-stats__title { font-weight: 600; font-size: 12px; }
+.session-stats__close { padding: 0 4px; border: 0; background: none; color: #9aa4b2; font-size: 16px; line-height: 1; cursor: pointer; }
+.session-stats__close:hover { color: #e6edf3; }
+.session-stats__rows { display: grid; gap: 3px; margin: 0; }
+.session-stats__row { display: flex; justify-content: space-between; gap: 16px; }
+.session-stats__row dt { color: #9aa4b2; }
+.session-stats__row dd { margin: 0; text-align: right; }
 .fb { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 14px 12px; }
 .fb-pane { display: flex; flex-direction: column; min-width: 0; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.02); overflow: hidden; }
 .fb-pane__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }

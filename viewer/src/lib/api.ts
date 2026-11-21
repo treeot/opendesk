@@ -47,7 +47,8 @@ export interface TotpEnrollment { uri: string; secret: string; qr_width: number;
 /** `is_virtual`: a virtual display this session added, which the viewer may remove. */
 export interface MonitorInfo { id: number; name: string; width: number; height: number; is_primary: boolean; is_virtual?: boolean }
 /** Media path of a viewer session and its measured round trip; `rtt_ms` is null until there is a real sample. */
-export interface LinkStats { path: "direct" | "relay"; rtt_ms: number | null }
+/** `loss_pct` is packet loss on the direct path; older builds and the relay don't report it. */
+export interface LinkStats { path: "direct" | "relay"; rtt_ms: number | null; loss_pct?: number | null }
 /** Host-enforced capabilities for the connected viewer; all default to enabled and reset each session. */
 export interface ViewerPermissions { control: boolean; files: boolean; clipboard: boolean; audio: boolean; forwarding: boolean }
 export type Capability = keyof ViewerPermissions;

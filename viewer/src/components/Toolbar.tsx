@@ -46,6 +46,9 @@ interface ToolbarProps {
   onQualityChange?: (bps: number) => void;
   textReadability?: boolean;
   onTextReadabilityChange?: (enabled: boolean) => void;
+  /** The session stats overlay is showing. */
+  statsOpen?: boolean;
+  onStatsToggle?: () => void;
   /** Slide the bar out of view until the pointer reaches the top edge. */
   hidden?: boolean;
   onBarEnter?: () => void;
@@ -89,6 +92,7 @@ const icons = {
   eye: <Icon><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></Icon>,
   keyboard: <Icon><rect width="20" height="16" x="2" y="4" rx="2" /><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M18 12h.01M8 16h8" /></Icon>,
   forward: <Icon><path d="M4 17V9a2 2 0 0 1 2-2h12" /><path d="m15 4 3 3-3 3" /><path d="M20 7v8a2 2 0 0 1-2 2H6" /><path d="m9 20-3-3 3-3" /></Icon>,
+  activity: <Icon><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></Icon>,
   more: <Icon><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></Icon>,
 };
 
@@ -169,7 +173,7 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, statsOpen = false, onStatsToggle = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
 
@@ -223,6 +227,7 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
               {moreOpen && <div className="session-toolbar__more" role="menu">
                 <MoreItem icon={icons.clipboard} label="Clipboard sync" on={clipboardSync} onClick={() => { onClipboardSyncChange(!clipboardSync); setMoreOpen(false); }} />
                 <MoreItem icon={icons.eye} label="Text readability" on={textReadability} onClick={() => { onTextReadabilityChange(!textReadability); setMoreOpen(false); }} />
+                <MoreItem icon={icons.activity} label="Session stats" on={statsOpen} onClick={() => { onStatsToggle(); setMoreOpen(false); }} />
                 <MoreItem icon={icons.eye} label="View only" on={viewOnly} onClick={() => { onViewOnlyChange(!viewOnly); setMoreOpen(false); }} />
                 <MoreItem icon={icons.forward} label="Port forwarding" on={forwardOpen} onClick={() => { onForwardToggle(); setMoreOpen(false); }} />
                 {canOpenMonitorWindow && <MoreItem icon={icons.newWindow} label="Open monitor in a window" onClick={() => { onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0); setMoreOpen(false); }} />}

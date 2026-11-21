@@ -11,7 +11,7 @@
 
 use super::feedback::{self, Feedback};
 use super::pacer::Pacer;
-use super::link::RttMeter;
+use super::link::{LossMeter, RttMeter};
 use super::rate::{AimdEstimator, PathSample, RateControl};
 use super::recovery::{fragment_message, ReceiveTracker, RecvStats, RetransmitRing, FRAG_HEADER_LEN, MAX_MESSAGE_LEN};
 use super::{Transport, TransportError, TransportReceiver, TransportSender};
@@ -157,6 +157,7 @@ impl Transport for DirectTransport {
             drained: Notify::new(),
             rate: Arc::new(RateControl::default()),
             rtt: Arc::new(RttMeter::default()),
+            loss: Arc::new(LossMeter::default()),
         });
         let (deliver, messages) = mpsc::channel(RECEIVE_QUEUE);
         let feedback = self.feedback.map(|keys| FeedbackState {
@@ -167,6 +168,7 @@ impl Transport for DirectTransport {
             last_report: None,
             estimator: AimdEstimator::default(),
             last_counts: RecvStats::default(),
+            last_received: RecvStats::default(),
         });
         let watch = feedback.as_ref().map(|state| PathWatch::new(Instant::now(), self.silence, !state.media_sender));
         let writer = tokio::spawn(run_writer(Arc::clone(&self.conn), Arc::clone(&shared)));
@@ -211,6 +213,8 @@ impl TransportSender for DirectSender {
     fn rate_control(&self) -> Arc<RateControl> { Arc::clone(&self.shared.rate) }
 
     fn rtt_meter(&self) -> Arc<RttMeter> { Arc::clone(&self.shared.rtt) }
+
+    fn loss_meter(&self) -> Arc<LossMeter> { Arc::clone(&self.shared.loss) }
 }
 
 #[async_trait::async_trait]
@@ -242,6 +246,8 @@ struct Shared {
     /// Smoothed RTT: the host measures it from receiver reports, the viewer
     /// takes it from the host's sender reports.
     rtt: Arc<RttMeter>,
+    /// Loss on the media we receive, measured once per sender report.
+    loss: Arc<LossMeter>,
 }
 
 impl Shared {
@@ -409,6 +415,8 @@ struct FeedbackState {
     last_report: Option<Instant>,
     estimator: AimdEstimator,
     last_counts: RecvStats,
+    /// Our own receive counters at the previous sender report.
+    last_received: RecvStats,
 }
 
 impl FeedbackState {
@@ -435,6 +443,8 @@ impl FeedbackState {
                     shared.rtt.record(rtt, now);
                 }
                 let stats = tracker.stats();
+                shared.loss.record(loss_fraction(self.last_received, stats), now);
+                self.last_received = stats;
                 let report = Feedback::ReceiverReport {
                     echo_send_time_us: send_time_us,
                     hold_us: 0,
@@ -704,6 +714,8 @@ mod tests {
         /// Sequence numbers of the frames that arrived, in arrival order.
         received: Vec<u32>,
         target: u32,
+        /// The loss the viewer last measured on what it received.
+        viewer_loss: Option<f64>,
     }
 
     const CEILING: u32 = 8_000_000;
@@ -714,8 +726,9 @@ mod tests {
         let (host_conn, viewer_conn) = lossy_pair(drop_per_mille).await;
         let (mut host_tx, _host_rx) =
             transport(host_conn, host_feedback.then(|| FeedbackKeys::derive(&shared, true))).into_split();
-        let (_viewer_tx, mut viewer_rx) =
+        let (viewer_tx, mut viewer_rx) =
             transport(viewer_conn, viewer_feedback.then(|| FeedbackKeys::derive(&shared, false))).into_split();
+        let viewer_loss = viewer_tx.loss_meter();
         let rate = host_tx.rate_control();
         rate.set_ceiling(CEILING);
         // Let a sender report switch the viewer to ordered delivery.
@@ -744,7 +757,7 @@ mod tests {
             }
         }
         let _host_tx = sending.await.unwrap();
-        LinkRun { received, target: rate.target() }
+        LinkRun { received, target: rate.target(), viewer_loss: viewer_loss.latest(Instant::now()) }
     }
 
     fn assert_in_order(received: &[u32]) {
@@ -771,6 +784,8 @@ mod tests {
         assert_in_order(&run.received);
         assert!(run.received.len() >= 100, "only {} of 120 frames arrived", run.received.len());
         assert!(run.target < CEILING / 2, "bitrate did not adapt: {}", run.target);
+        // The viewer sees the loss too, for its stats panel.
+        assert!(run.viewer_loss.is_some_and(|loss| loss > 0.02), "viewer loss: {:?}", run.viewer_loss);
     }
 
     #[tokio::test]
@@ -778,6 +793,7 @@ mod tests {
         let run = run_link(0, true, true, 60).await;
         assert_eq!(run.received, (0..60).collect::<Vec<_>>());
         assert_eq!(run.target, CEILING);
+        assert_eq!(run.viewer_loss, Some(0.0));
     }
 
     #[tokio::test]
