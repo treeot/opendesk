@@ -19,7 +19,7 @@ export type Status = "offline" | "online" | "connecting" | "reconnecting" | "in_
 export interface Identity { id: string; password: string }
 /** A relay refusing this device's ID: another device's ID there ("taken"), or a copy of this device online with it ("in_use"). */
 export interface IdentityConflict { relay: string; kind: "taken" | "in_use"; message: string }
-export interface AppConfig { relay_url: string; relay_urls: string[]; recent_ids: string[]; clipboard_sync: boolean; allow_virtual_displays: boolean; recordings_max_bytes?: number }
+export interface AppConfig { relay_url: string; relay_urls: string[]; recent_ids: string[]; clipboard_sync: boolean; allow_virtual_displays: boolean; recordings_max_bytes?: number; record_incoming_sessions?: boolean }
 /** `ready` means the keyring answered and connections skip approval; `problem` says why not when it is on. */
 export interface UnattendedStatus { enabled: boolean; has_password: boolean; twofa_enabled: boolean; ready: boolean; problem: string | null }
 export interface WindowsServiceStatus { supported: boolean; installed: boolean; running: boolean }
@@ -248,7 +248,11 @@ export const finishRecording = (id: number) => invoke<string>("finish_recording"
 
 /** A finished session recording on disk, newest first. */
 export interface RecordingEntry { name: string; path: string; size: number; modified: number }
-export const listRecordings = () => invoke<RecordingEntry[]>("list_recordings");
+/** `"host"` lists this computer's recordings of incoming sessions. */
+export type RecordingSource = "viewer" | "host";
+export const listRecordings = (source: RecordingSource = "viewer") => invoke<RecordingEntry[]>("list_recordings", { source });
+/** Record every incoming session on this computer (applies from the next session). */
+export const setRecordIncomingSessions = (enabled: boolean) => invoke<void>("set_record_incoming_sessions", { enabled });
 export const deleteRecording = (path: string) => invoke<void>("delete_recording", { path });
 /** Cap total recordings on disk at `bytes` (0 = no cap); prunes oldest first. */
 export const setRecordingsMaxBytes = (bytes: number) => invoke<void>("set_recordings_max_bytes", { bytes });
@@ -308,6 +312,8 @@ export const onPrivacyModeSupport = (handler: () => void) => on("privacy_mode_su
 export const onPrivacyModeChanged = (handler: (payload: { on: boolean }) => void) => on("privacy_mode_changed", handler);
 /** The host will end this unused session in `seconds` unless someone acts. */
 export const onIdleWarning = (handler: (payload: { seconds: number }) => void) => on("idle_warning", handler);
+/** The host records this session on its own disk. */
+export const onSessionRecording = (handler: (payload: { on: boolean }) => void) => on("session_recording", handler);
 /** Turn the host's privacy mode on or off. */
 export const setPrivacyMode = (on: boolean) => invoke<void>("set_privacy_mode", { on });
 

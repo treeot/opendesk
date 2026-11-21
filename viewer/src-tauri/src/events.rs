@@ -19,6 +19,7 @@ pub(crate) struct AppConfig {
     pub(crate) clipboard_sync: bool,
     pub(crate) allow_virtual_displays: bool,
     pub(crate) recordings_max_bytes: u64,
+    pub(crate) record_incoming_sessions: bool,
 }
 #[derive(Serialize)]
 pub(crate) struct UnattendedStatus {
@@ -127,6 +128,9 @@ pub(crate) struct MonitorStreamRefusedEvent { pub(crate) id: u32, pub(crate) cod
 /// Privacy mode turned on or off on the host.
 #[derive(Serialize, Clone)]
 pub(crate) struct PrivacyModeEvent { pub(crate) on: bool }
+/// The host records this session on its own disk (or stopped doing so).
+#[derive(Serialize, Clone)]
+pub(crate) struct SessionRecordingEvent { pub(crate) on: bool }
 /// The host's cursor image; `rgba` is base64 of straight-alpha RGBA.
 #[derive(Serialize, Clone)]
 pub(crate) struct CursorShapeEvent {

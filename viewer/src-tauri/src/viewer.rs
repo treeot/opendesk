@@ -401,6 +401,7 @@ pub(crate) fn connect(
                         }
                         Some(Control::PrivacyModeSupport) => emit(&monitor_app, "privacy_mode_support", ()),
                         Some(Control::PrivacyModeChanged { on }) => emit(&monitor_app, "privacy_mode_changed", PrivacyModeEvent { on }),
+                        Some(Control::SessionRecording { on }) => emit(&monitor_app, "session_recording", SessionRecordingEvent { on }),
                         Some(Control::CursorShape { width, height, hot_x, hot_y, rgba }) => emit(&monitor_app, "cursor_shape", CursorShapeEvent { width, height, hot_x, hot_y, rgba: b64(&rgba) }),
                         Some(Control::CursorHidden) => emit(&monitor_app, "cursor_hidden", ()),
                         Some(Control::IdleWarning { seconds }) => emit(&monitor_app, "idle_warning", crate::access::IdleWarningEvent { seconds }),

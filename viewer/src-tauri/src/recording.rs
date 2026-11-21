@@ -176,9 +176,11 @@ pub(crate) fn finish_recording(recordings: tauri::State<'_, Recordings>, state: 
 }
 
 #[tauri::command]
-pub(crate) fn set_recordings_max_bytes(state: tauri::State<'_, AppState>, bytes: u64) -> Result<(), String> {
+pub(crate) fn set_recordings_max_bytes(app: AppHandle, state: tauri::State<'_, AppState>, bytes: u64) -> Result<(), String> {
     state.lock().config.set_recordings_max_bytes(bytes).map_err(|error| error.to_string())?;
-    prune_recordings(bytes)
+    prune_recordings(bytes)?;
+    // The cap applies to each folder: the viewer's and the host's own.
+    crate::host_recording::host_folder(&app)?.prune(bytes)
 }
 
 /// The prefix every session recording's filename carries, so the list and the
@@ -195,54 +197,87 @@ pub(crate) struct RecordingEntry {
     pub modified: u64,
 }
 
-/// True for a regular `.webm` file written by OpenDesk (not a directory, not a
-/// symlink pointing elsewhere).
-fn is_recording(name: &str) -> bool {
-    name.starts_with(RECORDING_PREFIX) && name.ends_with(".webm")
+/// A folder of OpenDesk recordings: the viewer's own (`.webm`) or this
+/// host's recordings of incoming sessions (`.mkv`). Listing, pruning and
+/// deleting only ever touch files with its prefix and extension that are
+/// regular files directly inside it.
+pub(crate) struct RecordingFolder {
+    pub(crate) dir: PathBuf,
+    pub(crate) prefix: &'static str,
+    pub(crate) extension: &'static str,
 }
 
-#[tauri::command]
-pub(crate) fn list_recordings() -> Result<Vec<RecordingEntry>, String> {
-    let dir = recordings_dir()?;
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|error| error.to_string())? {
-        let Ok(entry) = entry else { continue };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !is_recording(&name) { continue; }
-        let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() { continue; }
-        let modified = meta.modified().ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|elapsed| elapsed.as_millis() as u64)
-            .unwrap_or(0);
-        entries.push(RecordingEntry { name, path: entry.path().to_string_lossy().into_owned(), size: meta.len(), modified });
+impl RecordingFolder {
+    pub(crate) fn viewer() -> Result<Self, String> {
+        Ok(Self { dir: recordings_dir()?, prefix: RECORDING_PREFIX, extension: ".webm" })
     }
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
-    Ok(entries)
-}
 
-/// Delete the oldest recordings until the folder holds at most `max_bytes`,
-/// always keeping the most recent one. 0 disables the cap. Best effort: a file
-/// that can't be removed stops pruning rather than erroring the caller.
-pub(crate) fn prune_recordings(max_bytes: u64) -> Result<(), String> {
-    if max_bytes == 0 {
-        return Ok(());
+    pub(crate) fn holds(&self, name: &str) -> bool {
+        name.starts_with(self.prefix) && name.ends_with(self.extension)
     }
-    let dir = recordings_dir()?;
-    let entries = list_recordings()?; // newest first
-    let sizes: Vec<u64> = entries.iter().map(|entry| entry.size).collect();
-    let to_delete = prune_count(&sizes, max_bytes);
-    for oldest in entries.iter().rev().take(to_delete) {
-        let target = PathBuf::from(&oldest.path);
+
+    pub(crate) fn list(&self) -> Result<Vec<RecordingEntry>, String> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&self.dir).map_err(|error| error.to_string())? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !self.holds(&name) { continue; }
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() { continue; }
+            let modified = meta.modified().ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or(0);
+            entries.push(RecordingEntry { name, path: entry.path().to_string_lossy().into_owned(), size: meta.len(), modified });
+        }
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
+        Ok(entries)
+    }
+
+    /// Delete the oldest recordings until the folder holds at most
+    /// `max_bytes`, always keeping the most recent one. 0 disables the cap.
+    /// Best effort: a file that can't be removed is skipped.
+    pub(crate) fn prune(&self, max_bytes: u64) -> Result<(), String> {
+        if max_bytes == 0 {
+            return Ok(());
+        }
+        let entries = self.list()?; // newest first
+        let sizes: Vec<u64> = entries.iter().map(|entry| entry.size).collect();
+        let to_delete = prune_count(&sizes, max_bytes);
+        for oldest in entries.iter().rev().take(to_delete) {
+            let _ = self.delete(&oldest.path);
+        }
+        Ok(())
+    }
+
+    /// Only a real recording directly inside this folder may be removed, so
+    /// a crafted path can never delete anything else.
+    pub(crate) fn delete(&self, path: &str) -> Result<(), String> {
+        let target = PathBuf::from(path);
         let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if !is_recording(&name) { continue; }
-        let Ok(meta) = fs::symlink_metadata(&target) else { continue };
-        if meta.file_type().is_symlink() || !meta.is_file() { continue; }
-        let Ok(canonical) = fs::canonicalize(&target) else { continue };
-        if canonical.parent() != Some(dir.as_path()) { continue; }
-        let _ = fs::remove_file(&canonical);
+        if !self.holds(&name) { return Err("not an OpenDesk recording".into()); }
+        let meta = fs::symlink_metadata(&target).map_err(|error| error.to_string())?;
+        if meta.file_type().is_symlink() || !meta.is_file() { return Err("not a recording file".into()); }
+        let canonical = fs::canonicalize(&target).map_err(|error| error.to_string())?;
+        if canonical.parent() != Some(self.dir.as_path()) { return Err("recording is outside the recordings folder".into()); }
+        fs::remove_file(&canonical).map_err(|error| error.to_string())
     }
-    Ok(())
+}
+
+/// `source` is `"host"` for this computer's recordings of incoming
+/// sessions; anything else lists the viewer's own recordings.
+#[tauri::command]
+pub(crate) fn list_recordings(app: AppHandle, source: Option<String>) -> Result<Vec<RecordingEntry>, String> {
+    if source.as_deref() == Some("host") {
+        crate::host_recording::host_folder(&app)?.list()
+    } else {
+        RecordingFolder::viewer()?.list()
+    }
+}
+
+/// Keep the viewer's recordings under `max_bytes`; see [`RecordingFolder::prune`].
+pub(crate) fn prune_recordings(max_bytes: u64) -> Result<(), String> {
+    RecordingFolder::viewer()?.prune(max_bytes)
 }
 
 /// How many of the oldest recordings to delete to get the total at or under
@@ -264,31 +299,48 @@ fn prune_count(sizes: &[u64], max_bytes: u64) -> usize {
 }
 
 #[tauri::command]
-pub(crate) fn delete_recording(path: String) -> Result<(), String> {
-    let dir = recordings_dir()?;
-    let target = PathBuf::from(&path);
-    // Only a real recording directly inside the recordings folder may be
-    // removed, so a crafted path can never delete anything else.
-    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if !is_recording(&name) { return Err("not an OpenDesk recording".into()); }
-    let meta = fs::symlink_metadata(&target).map_err(|error| error.to_string())?;
-    if meta.file_type().is_symlink() || !meta.is_file() { return Err("not a recording file".into()); }
-    let canonical = fs::canonicalize(&target).map_err(|error| error.to_string())?;
-    if canonical.parent() != Some(dir.as_path()) { return Err("recording is outside the recordings folder".into()); }
-    fs::remove_file(&canonical).map_err(|error| error.to_string())
+pub(crate) fn delete_recording(app: AppHandle, path: String) -> Result<(), String> {
+    let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.starts_with(crate::host_recording::HOST_RECORDING_PREFIX) {
+        crate::host_recording::host_folder(&app)?.delete(&path)
+    } else {
+        RecordingFolder::viewer()?.delete(&path)
+    }
 }
 
 #[cfg(test)]
 mod recording_list_tests {
-    use super::{is_recording, prune_count};
+    use super::{prune_count, RecordingFolder, RECORDING_PREFIX};
 
     #[test]
     fn only_opendesk_webm_files_are_recordings() {
+        let folder = RecordingFolder { dir: std::path::PathBuf::new(), prefix: RECORDING_PREFIX, extension: ".webm" };
+        let is_recording = |name: &str| folder.holds(name);
         assert!(is_recording("opendesk-session-2026-10-24.webm"));
         assert!(!is_recording("opendesk-session-2026-10-24.mp4"));
         assert!(!is_recording("holiday.webm"));
         assert!(!is_recording("opendesk-session-"));
         assert!(!is_recording("evil-opendesk-session-x.webm"));
+    }
+
+    #[test]
+    fn prune_and_delete_stay_inside_the_folder() {
+        let dir = std::env::temp_dir().join(format!("opendesk-recording-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let folder = RecordingFolder { dir: dir.clone(), prefix: "opendesk-host-", extension: ".mkv" };
+        for (name, size) in [("opendesk-host-a.mkv", 30), ("opendesk-host-b.mkv", 30), ("other.mkv", 500)] {
+            std::fs::write(dir.join(name), vec![0u8; size]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(folder.list().unwrap().len(), 2);
+        folder.prune(40).unwrap();
+        assert!(!dir.join("opendesk-host-a.mkv").exists(), "the oldest goes first");
+        assert!(dir.join("opendesk-host-b.mkv").exists());
+        assert!(dir.join("other.mkv").exists(), "never touches foreign files");
+        assert!(folder.delete(&dir.join("other.mkv").to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

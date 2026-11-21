@@ -5,6 +5,7 @@ mod permissions;
 mod unattended;
 mod events;
 mod recording;
+mod host_recording;
 mod deeplink;
 mod files;
 mod clipfiles;
@@ -529,6 +530,7 @@ fn get_config(state: tauri::State<'_, AppState>) -> AppConfig {
         clipboard_sync: state.config.config.clipboard_sync,
         allow_virtual_displays: state.config.config.allow_virtual_displays,
         recordings_max_bytes: state.config.config.recordings_max_bytes,
+        record_incoming_sessions: state.config.config.record_incoming_sessions,
     }
 }
 #[tauri::command]
@@ -1183,6 +1185,7 @@ pub fn run() {
             list_recordings,
             delete_recording,
             set_recordings_max_bytes,
+            host_recording::set_record_incoming_sessions,
             set_relays,
             list_relays,
             startup::close_keeps_running,

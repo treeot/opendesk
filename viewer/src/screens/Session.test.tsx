@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, onViewerAuth, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, decode, filesWindow, listenFn } = vi.hoisted(() => ({
+const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, onViewerAuth, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, onSessionRecording, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, decode, filesWindow, listenFn } = vi.hoisted(() => ({
   onVirtualDisplaySupport: vi.fn<(handler: (payload: { max: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayAdded: vi.fn<(handler: (payload: { id: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayRefused: vi.fn<(handler: (payload: { code: string }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
@@ -41,6 +41,7 @@ const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused,
   requestRemoteRestart: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   onPrivacyModeSupport: vi.fn<(handler: () => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onPrivacyModeChanged: vi.fn<(handler: (payload: { on: boolean }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
+  onSessionRecording: vi.fn<(handler: (payload: { on: boolean }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   setPrivacyMode: vi.fn<(on: boolean) => Promise<void>>(() => Promise.resolve()),
   browseLocal: vi.fn<(path: string) => Promise<{ path: string; entries: [] }>>(() => Promise.resolve({ path: "/home", entries: [] })),
   browseRemote: vi.fn<(path: string) => Promise<void>>(() => Promise.resolve()),
@@ -69,7 +70,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenFn, emit: vi.fn(() => Promise.resolve()) }));
 
-vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, onViewerAuth, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, onRemoteClipboardFiles: vi.fn(() => Promise.resolve(() => {})), remoteClipboardFiles: vi.fn(() => Promise.resolve({ files: [] })) }));
+vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, onViewerAuth, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, onSessionRecording, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, onRemoteClipboardFiles: vi.fn(() => Promise.resolve(() => {})), remoteClipboardFiles: vi.fn(() => Promise.resolve({ files: [] })) }));
 vi.mock("../lib/decode", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/decode")>()),
   makeDecoder: vi.fn(() => ({ push: decode, close: closeDecoder })),
@@ -237,6 +238,16 @@ describe("Session viewer transport", () => {
     view.rerender(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
     act(() => report({ path: "direct", rtt_ms: 12 }));
     expect(view.container.querySelector(".session-toolbar__link")!.textContent).toBe("Direct·12 ms");
+  });
+
+  it("shows when the host records the session, until the session ends", () => {
+    const text = "This session is being recorded by the remote computer";
+    const view = render(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    expect(view.queryByText(text)).toBeNull();
+    act(() => latest(onSessionRecording)({ on: true }));
+    expect(view.getByText(text)).toBeTruthy();
+    view.rerender(<Session remoteId="123" role="viewer" status="offline" onDisconnect={vi.fn()} />);
+    expect(view.queryByText(text)).toBeNull();
   });
 
   it("waits through a remote restart with a cancel button until the session is back", async () => {

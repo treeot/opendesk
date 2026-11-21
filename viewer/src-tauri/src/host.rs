@@ -363,6 +363,8 @@ pub(crate) async fn run_paired_host_session(
     let authenticated = Arc::new(AtomicBool::new(false));
     let authenticated_flag = authenticated.clone();
     let HostSessionParams { password, session_password, unattended_enabled, twofa_enabled, totp_secret, unattended_problem, allow_virtual_displays } = params;
+    // Read before taking the state lock below; None unless recording is on.
+    let recording = host_recording::session_tap(app, &peer_id);
     // Every session starts with all four viewer permissions enabled, and a
     // fresh per-session disconnect signal distinct from the stop-hosting one.
     let (gates, mut disconnect_rx, admission) = {
@@ -389,6 +391,7 @@ pub(crate) async fn run_paired_host_session(
             audit: Some(audit),
             refusal: admission.refusal(),
             idle_timeout,
+            recording,
         };
         let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
         state.disconnect_viewer = Some(disconnect_tx);

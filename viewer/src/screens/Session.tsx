@@ -117,6 +117,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [sessionPassword, setSessionPassword] = useState(false);
   const [canPrivacy, setCanPrivacy] = useState(false);
   const [privacyOn, setPrivacyOn] = useState(false);
+  // The host records this session on its own disk; the viewer must say so.
+  const [recordedByHost, setRecordedByHost] = useState(false);
   // Off until the saved preference loads (clipboard sync defaults off).
   const [clipboardSync, setClipboardSync] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
@@ -269,11 +271,12 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     const listeners = Promise.all([
       api.onPrivacyModeSupport(() => setCanPrivacy(true)),
       api.onPrivacyModeChanged(({ on }) => setPrivacyOn(on)),
+      api.onSessionRecording(({ on }) => setRecordedByHost(on)),
     ]);
     return () => { void listeners.then((stops) => stops.forEach((stop) => stop())); };
   }, [role]);
 
-  useEffect(() => { if (status !== "in_session" && status !== "connecting") { setCanPrivacy(false); setPrivacyOn(false); } }, [status]);
+  useEffect(() => { if (status !== "in_session" && status !== "connecting") { setCanPrivacy(false); setPrivacyOn(false); setRecordedByHost(false); } }, [status]);
 
   const togglePrivacy = (on: boolean) => {
     setPrivacyOn(on); // optimistic; the host's privacy_mode_changed confirms
@@ -682,7 +685,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
         </div>
       )}
       {role === "viewer" && <IdleWarning />}
-      {role === "viewer" && !restarting && status === "reconnecting" &&<div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
+      {role === "viewer" && recordedByHost && <div className="session-recorded" role="status"><span className="session-recorded__dot" aria-hidden="true" />This session is being recorded by the remote computer</div>}
+      {role === "viewer" && !restarting && status === "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
       {role === "viewer" && !hasVideo && !restarting && status !== "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
       {role === "viewer" && (
         <div className="session-viewport" data-scale={scaleMode}>

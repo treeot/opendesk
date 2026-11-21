@@ -79,6 +79,8 @@ input, textarea, [contenteditable="true"], .chat-panel__bubble { user-select: te
 .session-restarting__cancel { margin-left: 4px; padding: 4px 10px; border: 1px solid rgba(230, 237, 243, 0.25); border-radius: 999px; background: transparent; color: #e6edf3; font: inherit; font-size: 12px; cursor: pointer; }
 .session-restarting__cancel:hover { background: rgba(230, 237, 243, 0.1); }
 @keyframes session-spin { to { transform: rotate(360deg); } }
+.session-recorded { position: absolute; bottom: 14px; left: 14px; z-index: 5; display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px; border-radius: 999px; background: rgba(10, 14, 20, 0.88); color: #e6edf3; font-size: 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); pointer-events: none; }
+.session-recorded__dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex: none; }
 .session-stats { position: absolute; top: 64px; left: 14px; z-index: 5; min-width: 230px; padding: 10px 12px 8px; border-radius: 10px; background: rgba(10, 14, 20, 0.88); color: #e6edf3; font-size: 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); pointer-events: auto; }
 .session-stats__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .session-stats__title { font-weight: 600; font-size: 12px; }
@@ -209,6 +211,12 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .recordings-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .recordings-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .recordings-actions { flex: none; display: inline-flex; gap: 6px; align-items: center; }
+.recordings-tabs { display: inline-flex; gap: 4px; margin-top: 14px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; }
+.recordings-tab { color: var(--muted); background: transparent; border: 0; border-radius: 6px; padding: 6px 11px; font-size: 12px; }
+.recordings-tab:hover { color: var(--text); }
+.recordings-tab--active { color: var(--text); background: #0f131a; }
+.recordings-host-setting { margin-top: 14px; }
+.recordings-host-setting .caption { margin-top: 6px; }
 /* Pop-out window: the panel fills its own window instead of floating. */
 .file-window { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--bg, #0b0e13); color: var(--text); }
 .file-transfer--window { position: static; width: 100%; transform: none; display: flex; flex-direction: column; border: none; border-radius: 0; box-shadow: none; background: transparent; }

@@ -20,6 +20,7 @@ const state = {
     clipboard_sync: true,
     allow_virtual_displays: true,
     recordings_max_bytes: 5 * 1024 * 1024 * 1024,
+    record_incoming_sessions: false,
   },
   unattended: { enabled: true, has_password: true, twofa_enabled: false, ready: true, problem: null as string | null },
   contacts: [
@@ -106,10 +107,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_presence: ({ ids }) => (ids as string[]).filter((_, i) => i % 2 === 0),
   virtual_display_driver_status: () => ({ applies: false, installed: false, license: "" }),
   set_allow_virtual_displays: ({ enabled }) => { state.config.allow_virtual_displays = enabled as boolean; },
-  list_recordings: () => state.recordings,
+  list_recordings: ({ source }) => (source === "host" ? [] : state.recordings),
   delete_recording: ({ path }) => { state.recordings = state.recordings.filter((r) => r.path !== path); },
   set_recordings_max_bytes: ({ bytes }) => { state.config.recordings_max_bytes = bytes as number; },
   remote_clipboard_files: () => ({ files: [] }),
+  set_record_incoming_sessions: ({ enabled }) => { state.config.record_incoming_sessions = enabled as boolean; },
 };
 
 export const devInvoke = <T>(command: string, args?: Record<string, unknown>): Promise<T> => {

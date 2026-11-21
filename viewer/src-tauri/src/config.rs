@@ -83,6 +83,10 @@ pub struct Config {
     /// activity. 0 (the default) never does.
     #[serde(default)]
     pub idle_timeout_minutes: u32,
+    /// Record every incoming session on this computer (compliance). Off by
+    /// default; viewers are told when it is on.
+    #[serde(default)]
+    pub record_incoming_sessions: bool,
 }
 
 fn default_true() -> bool { true }
@@ -112,6 +116,7 @@ impl Default for Config {
             allow_mode: AllowMode::default(),
             allowed_hours: HoursSchedule::default(),
             idle_timeout_minutes: 0,
+            record_incoming_sessions: false,
         }
     }
 }
@@ -353,6 +358,11 @@ impl ConfigStore {
 
     pub fn set_recordings_max_bytes(&mut self, bytes: u64) -> io::Result<()> {
         self.config.recordings_max_bytes = bytes;
+        self.save()
+    }
+
+    pub fn set_record_incoming_sessions(&mut self, enabled: bool) -> io::Result<()> {
+        self.config.record_incoming_sessions = enabled;
         self.save()
     }
 }
@@ -831,6 +841,18 @@ mod tests {
         assert!(!ConfigStore::load(&dir).unwrap().config.clipboard_sync);
         let legacy: Config = serde_json::from_str(r#"{"id":"123456789","relay_url":"wss://x","allow_list":[],"recent_ids":[]}"#).unwrap();
         assert!(legacy.clipboard_sync, "old configs get the new on-by-default");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recording_incoming_sessions_defaults_off_and_persists() {
+        let dir = test_dir();
+        let mut store = ConfigStore::load(&dir).unwrap();
+        assert!(!store.config.record_incoming_sessions);
+        store.set_record_incoming_sessions(true).unwrap();
+        assert!(ConfigStore::load(&dir).unwrap().config.record_incoming_sessions);
+        let legacy: Config = serde_json::from_str(r#"{"id":"123456789","relay_url":"wss://x","allow_list":[],"recent_ids":[]}"#).unwrap();
+        assert!(!legacy.record_incoming_sessions, "old configs never start recording");
         let _ = fs::remove_dir_all(dir);
     }
 }
