@@ -405,6 +405,8 @@ pub(crate) fn connect(
                         Some(Control::CursorShape { width, height, hot_x, hot_y, rgba }) => emit(&monitor_app, "cursor_shape", CursorShapeEvent { width, height, hot_x, hot_y, rgba: b64(&rgba) }),
                         Some(Control::CursorHidden) => emit(&monitor_app, "cursor_hidden", ()),
                         Some(Control::IdleWarning { seconds }) => emit(&monitor_app, "idle_warning", crate::access::IdleWarningEvent { seconds }),
+                        // Passed on whole: the UI reads the flags it knows.
+                        Some(support @ Control::InputSupport { .. }) => emit(&monitor_app, "input_support", support),
                         Some(Control::HostMac { mac }) => {
                             // Save the host's MAC to a saved contact for Wake-on-LAN, but
                             // only to fill an empty slot: a user-set MAC is left alone, and

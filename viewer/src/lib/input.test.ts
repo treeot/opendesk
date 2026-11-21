@@ -36,6 +36,13 @@ describe("encodeInputEvent", () => {
   });
 });
 
+describe("encodeInputEvent relative moves", () => {
+  it("uses tag 16 and big-endian signed deltas", () => {
+    const encoded = encodeInputEvent({ kind: "relativeMove", dx: -2, dy: 300 }, 1);
+    expect(Array.from(encoded)).toEqual([16, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xfe, 0, 0, 1, 0x2c]);
+  });
+});
+
 describe("pointer mapping with object-fit: contain", () => {
   // A 1000x500 element showing a 1920x1080 frame: scale 500/1080, so the
   // frame is ~888.9px wide and centred with ~55.6px pillar bars each side.
@@ -270,5 +277,40 @@ describe("attachInput", () => {
       await flush();
       expect(sent).toEqual(["move 1", "move 3", "button down", "move 5"]);
     });
+  });
+
+  it("sends summed relative deltas while the pointer is locked", async () => {
+    const listeners = new Map<string, EventListener>();
+    const canvas = {
+      tabIndex: 0,
+      addEventListener: (type: string, listener: EventListener) => listeners.set(type, listener),
+      removeEventListener: () => {},
+      focus: () => {},
+      // Locked pointers can sit anywhere, even over a bar.
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),
+    } as unknown as HTMLCanvasElement;
+    const sent: string[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const send = (bytes: Uint8Array) => {
+      const view = new DataView(bytes.buffer);
+      sent.push(bytes[0] === 16 ? `rel ${view.getInt32(9)},${view.getInt32(13)}` : bytes[0] === 2 ? `button ${bytes[10] ? "down" : "up"}` : `other ${bytes[0]}`);
+      return sent.length === 1 ? blocked : Promise.resolve();
+    };
+    let locked = true;
+    attachInput(canvas, send, { relative: () => locked });
+    const move = (movementX: number, movementY: number) => listeners.get("mousemove")!({ movementX, movementY, clientX: 5, clientY: 5 } as MouseEvent);
+    move(1, 1);
+    await Promise.resolve();
+    move(2, -1);
+    move(0.5, 0);
+    move(0.5, 3);
+    listeners.get("mousedown")!({ button: 0, clientX: 5, clientY: 5 } as MouseEvent);
+    move(-4, 0);
+    locked = false;
+    move(9, 9);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual(["rel 1,1", "rel 3,2", "button down", "rel -4,0"]);
   });
 });

@@ -16,6 +16,7 @@ import { parseFrame } from "../lib/video";
 import { actualSize, loadScaleMode, saveScaleMode, type ScaleMode } from "../lib/scale";
 import StatsPanel from "../components/StatsPanel";
 import IdleWarning from "../components/IdleWarning";
+import { createPointerLock, RELEASE_HINT, type PointerLockControl } from "../lib/pointerLock";
 
 /** Why the host didn't add or remove a virtual display. */
 export function virtualDisplayRefusal(code: string): string {
@@ -125,6 +126,12 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   // Bitrate cap in bps; 0 is automatic. Re-sent on each live session below.
   const [quality, setQuality] = useState(0);
   const [textReadability, setTextReadability] = useState(false);
+  // Extended input the host injects; reset with each session.
+  const [inputSupport, setInputSupport] = useState<api.InputSupport>({});
+  // Relative mouse mode: on while the canvas holds the pointer lock.
+  const [relativeMouse, setRelativeMouse] = useState(false);
+  const relativeMouseRef = useRef(false);
+  const pointerLockRef = useRef<PointerLockControl | undefined>(undefined);
   const audioRef = useRef<{ context: AudioContext; nextTime: number } | undefined>(undefined);
   const recorderRef = useRef<MediaRecorder | undefined>(undefined);
   const recordingStreamRef = useRef<MediaStream | undefined>(undefined);
@@ -281,6 +288,32 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const togglePrivacy = (on: boolean) => {
     setPrivacyOn(on); // optimistic; the host's privacy_mode_changed confirms
     void api.setPrivacyMode(on).catch((error: unknown) => { setPrivacyOn(!on); notify(friendlyError(error)); });
+  };
+
+  useEffect(() => {
+    if (role !== "viewer") return;
+    const listener = api.onInputSupport(setInputSupport);
+    return () => { void listener.then((stop) => stop()); };
+  }, [role]);
+
+  // A dropped session or view only gives the pointer back.
+  useEffect(() => { if (status !== "in_session" && status !== "connecting") { setInputSupport({}); pointerLockRef.current?.release(); } }, [status]);
+  useEffect(() => { if (viewOnly) pointerLockRef.current?.release(); }, [viewOnly]);
+
+  useEffect(() => {
+    if (role !== "viewer" || !canvasRef.current) return;
+    const lock = createPointerLock(canvasRef.current, (locked) => { relativeMouseRef.current = locked; setRelativeMouse(locked); });
+    pointerLockRef.current = lock;
+    return () => { lock.dispose(); pointerLockRef.current = undefined; relativeMouseRef.current = false; };
+  }, [role]);
+
+  // Runs inside the menu click, which pointer lock needs as its user gesture.
+  const toggleRelativeMouse = (on: boolean) => {
+    const lock = pointerLockRef.current;
+    if (!lock) return;
+    if (!on) { lock.release(); return; }
+    if (viewOnlyRef.current) { notify("View only is on. Turn it off to capture the mouse."); return; }
+    void lock.request().catch(() => notify("This viewer couldn't capture the mouse."));
   };
 
   const restartRemote = () => {
@@ -638,7 +671,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       decoder.push(frame);
     };
     const stopVideo = api.startVideo(push);
-    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit" });
+    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit", relative: () => relativeMouseRef.current });
 
     return () => {
       stopVideo();
@@ -693,6 +726,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
           <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" style={scaleMode === "actual" && videoSize ? actualSize(videoSize.width, videoSize.height, window.devicePixelRatio) : undefined} onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />
         </div>
       )}
+      {role === "viewer" && relativeMouse && <div className="session-pointer-hint" role="status">{RELEASE_HINT}</div>}
       {role === "viewer" && !barVisible && (
         <button type="button" className="session-peek" aria-label="Show session controls" title="Show session controls" onMouseEnter={revealBar} onFocus={revealBar} onClick={revealBar}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
@@ -700,7 +734,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} canRelativeMouse={inputSupport.relative_mouse === true} relativeMouse={relativeMouse} onRelativeMouseChange={toggleRelativeMouse} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}

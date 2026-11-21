@@ -272,6 +272,7 @@ fn input_event_parser_is_crash_free() {
             down: true,
             modifiers: 0,
         },
+        InputEvent::RelativeMouseMove { dx: -3, dy: 4 },
     ]
     .iter()
     .map(|event| event.to_bytes(42))

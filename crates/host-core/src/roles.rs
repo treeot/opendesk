@@ -860,6 +860,8 @@ where
     if gates.recording.is_some() {
         reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &Control::SessionRecording { on: true })).await?;
     }
+    // Old viewers ignore this; new ones only send extended input after it.
+    reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &crate::inject::support::input_support())).await?;
     let path = transport.path();
     let (transport_tx, transport_rx) = transport.into_split();
     // Input, data-channel traffic (files, clipboard, chat) and "stay
@@ -1795,7 +1797,8 @@ enum InputForwardEnd {
 ///
 /// Drop policy when the injection queue is full: mouse moves are coalesced to
 /// the single most recent pending position (absolute coordinates, so older
-/// ones are redundant) and never block. Buttons, keys, chars and scrolls are
+/// ones are redundant) and never block. Relative moves coalesce by summing
+/// their deltas, so no motion is lost. Buttons, keys, chars and scrolls are
 /// never dropped: the forwarder awaits queue capacity, which back-pressures
 /// only this input path, never the media loop. A pending move is flushed
 /// before any non-move event so clicks land at the latest pointer position.
@@ -1824,11 +1827,18 @@ async fn forward_input(
                 // Host-enforced control gate: decrypt to keep the opener's nonce
                 // sequence in step, then drop the event so nothing is injected.
                 if !control_allowed.load(Ordering::Relaxed) { pending_move = None; continue; }
-                if matches!(event, InputEvent::MouseMove { .. }) {
-                    if pending_move.is_some() {
-                        pending_move = Some(event);
-                        continue;
-                    }
+                if matches!(event, InputEvent::MouseMove { .. } | InputEvent::RelativeMouseMove { .. }) {
+                    let event = match pending_move.take() {
+                        None => event,
+                        Some(pending) => match merge_moves(pending, event) {
+                            Ok(merged) => { pending_move = Some(merged); continue; }
+                            // Absolute after relative (or the reverse): keep both, in order.
+                            Err(event) => {
+                                if inject_tx.send(pending).await.is_err() { return InputForwardEnd::InjectorGone; }
+                                event
+                            }
+                        },
+                    };
                     match inject_tx.try_send(event) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(event)) => pending_move = Some(event),
@@ -1856,6 +1866,19 @@ fn note_data_activity(mut rx: mpsc::Receiver<Vec<u8>>, activity: crate::policy::
         }
     });
     out
+}
+
+/// Fold a newer pointer move into the pending one: an absolute move replaces
+/// an absolute move, relative deltas add up. A different kind comes back as
+/// `Err` so the caller flushes the pending move first.
+fn merge_moves(pending: InputEvent, next: InputEvent) -> Result<InputEvent, InputEvent> {
+    match (pending, next) {
+        (InputEvent::MouseMove { .. }, InputEvent::MouseMove { .. }) => Ok(next),
+        (InputEvent::RelativeMouseMove { dx, dy }, InputEvent::RelativeMouseMove { dx: ndx, dy: ndy }) => {
+            Ok(InputEvent::RelativeMouseMove { dx: dx.saturating_add(ndx), dy: dy.saturating_add(ndy) })
+        }
+        _ => Err(next),
+    }
 }
 
 /// Run the viewer side of a transport after SPAKE2 and key confirmation.
@@ -2197,7 +2220,8 @@ async fn run_viewer_media_loop_with_control(
                         | Control::RestartSupport | Control::Restarting
                         | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. } | Control::HostMac { .. }
                         | Control::IdleWarning { .. }
-                        | Control::SessionRecording { .. }) => {
+                        | Control::SessionRecording { .. }
+                        | Control::InputSupport { .. }) => {
                         if let Some(sink) = &monitor_sink { let _ = sink.send(plaintext).await; }
                     }
                     Some(Control::Pong { sent_us }) if relay_ping.is_some() => {
@@ -2658,6 +2682,42 @@ mod tests {
 
         drop(wire_tx);
         assert_eq!(timeout(Duration::from_secs(1), forwarder).await.unwrap().unwrap(), InputForwardEnd::PeerGone);
+    }
+
+    #[tokio::test]
+    async fn forward_input_sums_relative_moves_and_keeps_kinds_apart() {
+        let shared = [8u8; 32];
+        let (viewer_send, _) = derive_keys(&shared, false);
+        let (_, host_recv) = derive_keys(&shared, true);
+        let mut viewer_sealer = Sealer::new(viewer_send);
+        let (wire_tx, wire_rx) = mpsc::channel(16);
+        let (inject_tx, mut inject_rx) = mpsc::channel(1);
+        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::new(AtomicBool::new(true)), crate::policy::Activity::new()));
+
+        let key = |code| InputEvent::Key { code, down: true, modifiers: 0 };
+        let rel = |dx, dy| InputEvent::RelativeMouseMove { dx, dy };
+        let mv = |x| InputEvent::MouseMove { x, y: x };
+        for event in [key(65), rel(1, 2), rel(3, -4), rel(5, 6), mv(9), key(66)] {
+            let sealed = viewer_sealer.seal(&[Tag::Input as u8], &event.to_bytes(0));
+            wire_tx.send((Tag::Input, sealed)).await.unwrap();
+        }
+        let mut received = Vec::new();
+        for _ in 0..4 {
+            received.push(timeout(Duration::from_secs(1), inject_rx.recv()).await.unwrap().unwrap());
+        }
+        // Queued deltas add up rather than replace each other, and an
+        // absolute move never merges into them.
+        assert_eq!(received, vec![key(65), rel(9, 4), mv(9), key(66)]);
+        drop(wire_tx);
+        assert_eq!(timeout(Duration::from_secs(1), forwarder).await.unwrap().unwrap(), InputForwardEnd::PeerGone);
+    }
+
+    #[test]
+    fn merge_moves_saturates_relative_deltas() {
+        let rel = |dx, dy| InputEvent::RelativeMouseMove { dx, dy };
+        assert_eq!(merge_moves(rel(i32::MAX, -1), rel(5, i32::MIN)), Ok(rel(i32::MAX, i32::MIN)));
+        let mv = InputEvent::MouseMove { x: 1, y: 1 };
+        assert_eq!(merge_moves(rel(1, 1), mv), Err(mv));
     }
 
     #[tokio::test]
@@ -3672,9 +3732,9 @@ mod tests {
                 Some(Control::MonitorList { monitors }) => monitors,
                 other => panic!("expected a monitor list, got {other:?}"),
             };
-            // The host also sends its MAC (Wake-on-LAN) when this machine has one;
-            // it rides the same sink, so skip it here.
-            let is_mac = |body: &[u8]| matches!(Control::from_bytes(body), Some(Control::HostMac { .. }));
+            // The host also sends its MAC (Wake-on-LAN) when this machine has one,
+            // and its input support; they ride the same sink, so skip them here.
+            let is_mac = |body: &[u8]| matches!(Control::from_bytes(body), Some(Control::HostMac { .. } | Control::InputSupport { .. }));
             let first = timeout(Duration::from_secs(20), async {
                 loop { let body = monitor_lists.recv().await.unwrap(); if !is_mac(&body) { break body; } }
             }).await.unwrap();
@@ -3752,8 +3812,8 @@ mod tests {
                     let control = Control::from_bytes(&body).expect("a control message");
                     // The host advertises its MAC (for Wake-on-LAN) whenever this
                     // machine has one, which is environment-dependent; it is not
-                    // part of what these display tests check.
-                    if matches!(control, Control::HostMac { .. }) { continue; }
+                    // part of what these display tests check. Nor is input support.
+                    if matches!(control, Control::HostMac { .. } | Control::InputSupport { .. }) { continue; }
                     return control;
                 }
             }

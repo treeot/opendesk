@@ -1,6 +1,8 @@
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use protocol::input::InputEvent;
 
+pub mod support;
+
 pub fn norm_to_pixel(coord: i32, screen: u32) -> i32 {
     let max_pixel = i64::from(screen).saturating_sub(1);
     ((i64::from(coord).clamp(0, 65_535) * max_pixel + 32_767) / 65_535) as i32
@@ -124,6 +126,13 @@ impl InputInjector for EnigoInjector {
             } => {
                 let Some(key) = map_char(ch) else { return };
                 inject_key(&mut self.enigo, key, down, modifiers, 0);
+            }
+            // Deltas in device units. Windows applies the pointer speed and
+            // acceleration settings to them; games reading raw input don't.
+            InputEvent::RelativeMouseMove { dx, dy } => {
+                if dx != 0 || dy != 0 {
+                    let _ = self.enigo.move_mouse(dx, dy, Coordinate::Rel);
+                }
             }
         }
     }

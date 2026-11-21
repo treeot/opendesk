@@ -1,3 +1,7 @@
+/// Wire tags of the extended input events. They start at 16, clear of the
+/// original 1..=5, so other additions can take the low numbers.
+const TAG_RELATIVE_MOUSE_MOVE: u8 = 16;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     MouseMove {
@@ -22,6 +26,13 @@ pub enum InputEvent {
         down: bool,
         modifiers: u8,
     },
+    /// Pointer-locked mouse motion in device units, for games and 3D apps
+    /// that read raw deltas. Only sent to hosts that report `relative_mouse`
+    /// in `Control::InputSupport`; older hosts drop the unknown tag.
+    RelativeMouseMove {
+        dx: i32,
+        dy: i32,
+    },
 }
 
 impl InputEvent {
@@ -33,6 +44,7 @@ impl InputEvent {
             Self::Scroll { .. } => 3,
             Self::Key { .. } => 4,
             Self::Char { .. } => 5,
+            Self::RelativeMouseMove { .. } => TAG_RELATIVE_MOUSE_MOVE,
         });
         bytes.extend_from_slice(&timestamp_us.to_be_bytes());
 
@@ -66,6 +78,10 @@ impl InputEvent {
                 bytes.extend_from_slice(&(*ch as u32).to_be_bytes());
                 bytes.push(u8::from(*down));
                 bytes.push(*modifiers);
+            }
+            Self::RelativeMouseMove { dx, dy } => {
+                bytes.extend_from_slice(&dx.to_be_bytes());
+                bytes.extend_from_slice(&dy.to_be_bytes());
             }
         }
 
@@ -129,6 +145,11 @@ impl InputEvent {
                     timestamp_us,
                 ))
             }
+            TAG_RELATIVE_MOUSE_MOVE if bytes.len() == 17 => {
+                let dx = i32::from_be_bytes(bytes.get(9..13)?.try_into().ok()?);
+                let dy = i32::from_be_bytes(bytes.get(13..17)?.try_into().ok()?);
+                Some((Self::RelativeMouseMove { dx, dy }, timestamp_us))
+            }
             _ => None,
         }
     }
@@ -179,6 +200,16 @@ mod tests {
             let b = e.to_bytes(1);
             assert_eq!(InputEvent::from_bytes(&b), Some((e, 1)));
         }
+    }
+
+    #[test]
+    fn relative_mouse_move_roundtrips() {
+        let e = InputEvent::RelativeMouseMove { dx: -12, dy: 7 };
+        let bytes = e.to_bytes(11);
+        assert_eq!(bytes[0], 16);
+        assert_eq!(bytes.len(), 17);
+        assert_eq!(InputEvent::from_bytes(&bytes), Some((e, 11)));
+        assert!(InputEvent::from_bytes(&bytes[..16]).is_none());
     }
 
     #[test]

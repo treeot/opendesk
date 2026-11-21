@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "rea
 import { makeDecoder } from "../../../viewer/src/lib/decode";
 import { makeAudioPlayer } from "../lib/audio";
 import { attachInput } from "../../../viewer/src/lib/input";
+import { createPointerLock, RELEASE_HINT, type PointerLockControl } from "../../../viewer/src/lib/pointerLock";
 import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import FilesPanel, { EMPTY_FOLDER, type FilesTab, type RemoteFolder } from "../components/FilesPanel";
 import ToolbarMenu from "../components/ToolbarMenu";
@@ -157,6 +158,10 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
   const [recording, setRecording] = useState(false);
   const [recordMs, setRecordMs] = useState(0);
   const recorderRef = useRef<{ recorder: MediaRecorder; stream: MediaStream; timer: ReturnType<typeof setInterval> } | null>(null);
+  // Relative mouse mode: on while the canvas holds the pointer lock.
+  const [relativeMouse, setRelativeMouse] = useState(false);
+  const relativeMouseRef = useRef(false);
+  const pointerLockRef = useRef<PointerLockControl | null>(null);
 
   useEffect(() => { viewOnlyRef.current = viewOnly; }, [viewOnly]);
   useEffect(() => { folderRef.current = folder; }, [folder]);
@@ -178,7 +183,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     const decoder = makeDecoder(canvas, { requestKeyframe: () => controls.requestKeyframe() });
     controls.setVideoSink(decoder.push);
     // View only keeps watching but sends no input, like the desktop viewer.
-    const detachInput = attachInput(canvas, async (bytes) => { if (!viewOnlyRef.current) controls.sendInput(bytes); });
+    const detachInput = attachInput(canvas, async (bytes) => { if (!viewOnlyRef.current) controls.sendInput(bytes); }, { relative: () => relativeMouseRef.current });
     // Right clicks go to the remote computer, not the browser menu.
     const noMenu = (event: Event) => event.preventDefault();
     canvas.addEventListener("contextmenu", noMenu);
@@ -190,6 +195,28 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
       decoder.close();
     };
   }, [controls]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const lock = createPointerLock(canvas, (locked) => {
+      relativeMouseRef.current = locked;
+      setRelativeMouse(locked);
+      if (locked) setNotice(RELEASE_HINT);
+    });
+    pointerLockRef.current = lock;
+    return () => { lock.dispose(); pointerLockRef.current = null; relativeMouseRef.current = false; };
+  }, []);
+  useEffect(() => { if (status !== "streaming" || viewOnly) pointerLockRef.current?.release(); }, [status, viewOnly]);
+
+  // Runs inside the menu click, which pointer lock needs as its user gesture.
+  const toggleRelativeMouse = () => {
+    const lock = pointerLockRef.current;
+    if (!lock) return;
+    if (relativeMouseRef.current) { lock.release(); return; }
+    if (viewOnlyRef.current) { setNotice("View only is on. Turn it off to capture the mouse."); return; }
+    void lock.request().catch(() => setNotice("This browser couldn't capture the mouse."));
+  };
 
   // The host forgets these on a reconnect, so send them again whenever the
   // stream (re)starts. Defaults are left alone for older hosts.
@@ -484,6 +511,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
   const moreItems = [
     { id: "clipboard", label: "Clipboard sync", on: clipboardOn, onSelect: () => setClipboardOn((on) => !on) },
     { id: "text", label: "Text readability", on: textReadability, onSelect: () => setTextReadability((on) => !on) },
+    ...(features.includes("relative-mouse") ? [{ id: "relative-mouse", label: "Relative mouse (games)", on: relativeMouse, onSelect: toggleRelativeMouse }] : []),
     { id: "view-only", label: "View only", on: viewOnly, onSelect: () => setViewOnly((on) => !on) },
     ...(canRecord ? [{ id: "record", label: recording ? "Stop recording" : "Record the screen", danger: true, onSelect: () => (recording ? stopRecording() : startRecording()) }] : []),
   ];

@@ -74,7 +74,8 @@ pub enum Event {
     RoundTrip(u32),
     /// The host can do something optional, or tells the page something it
     /// must show; the name says what: "secure-attention" (Ctrl+Alt+Del) or
-    /// "recorded" (the host records this session).
+    /// "recorded" (the host records this session), or extended input from
+    /// `InputSupport` (see `input_features`).
     Supports(&'static str),
     /// The host will end an unused session in this many seconds unless the
     /// viewer does something; [`ViewerSession::still_here`] keeps it.
@@ -82,6 +83,18 @@ pub enum Event {
     /// The session is over. The text matches the desktop viewer's errors,
     /// so [`reconnect::after_failure`] can decide what to do next.
     Ended(String),
+}
+
+/// The page-facing names of the extended input a host's `InputSupport`
+/// offers: "relative-mouse".
+fn input_features(support: &Control) -> Vec<&'static str> {
+    let mut features = Vec::new();
+    if let Control::InputSupport { relative_mouse } = support {
+        if *relative_mouse {
+            features.push("relative-mouse");
+        }
+    }
+    features
 }
 
 /// The relay `connect` frame that starts a session with `target`.
@@ -409,6 +422,9 @@ impl ViewerSession {
                     }
                     Some(Control::SessionRecording { on: true }) => {
                         vec![Event::Supports("recorded")]
+                    }
+                    Some(support @ Control::InputSupport { .. }) => {
+                        input_features(&support).into_iter().map(Event::Supports).collect()
                     }
                     _ => Vec::new(),
                 }
@@ -1211,6 +1227,11 @@ mod tests {
         assert_eq!(
             viewer.receive(&recorded, 1_070.0),
             vec![Event::Supports("recorded")]
+        );
+        let input = host.control(&Control::InputSupport { relative_mouse: true });
+        assert_eq!(
+            viewer.receive(&input, 1_061.0),
+            vec![Event::Supports("relative-mouse")]
         );
         let sas = viewer.secure_attention().unwrap();
         assert_eq!(host.open_control(&sas), Some(Control::RequestSecureAttention));

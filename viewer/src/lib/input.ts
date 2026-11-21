@@ -1,9 +1,12 @@
+import { DeltaAccumulator } from "./pointerLock";
+
 export type InputEvent =
   | { kind: "mouseMove"; x: number; y: number }
   | { kind: "mouseButton"; button: number; down: boolean }
   | { kind: "scroll"; dx: number; dy: number }
   | { kind: "key"; code: number; down: boolean; modifiers: number }
-  | { kind: "char"; ch: string; down: boolean; modifiers: number };
+  | { kind: "char"; ch: string; down: boolean; modifiers: number }
+  | { kind: "relativeMove"; dx: number; dy: number };
 
 /** Encode protocol::input::InputEvent using its big-endian wire layout. */
 export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
@@ -21,6 +24,9 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
     case "key":
     case "char":
       length = 15;
+      break;
+    case "relativeMove":
+      length = 17;
       break;
   }
 
@@ -56,6 +62,11 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
       view.setUint32(9, ev.ch.codePointAt(0)!, false);
       view.setUint8(13, ev.down ? 1 : 0);
       view.setUint8(14, ev.modifiers);
+      break;
+    case "relativeMove":
+      view.setUint8(0, 16);
+      view.setInt32(9, ev.dx, false);
+      view.setInt32(13, ev.dy, false);
       break;
   }
   return bytes;
@@ -197,7 +208,7 @@ function isModifierKey(key: string): boolean {
 export function attachInput(
   canvas: HTMLCanvasElement,
   send: (bytes: Uint8Array) => Promise<void>,
-  options: { contained?: () => boolean } = {},
+  options: { contained?: () => boolean; relative?: () => boolean } = {},
 ): () => void {
   if (canvas.tabIndex < 0) canvas.tabIndex = 0;
 
@@ -217,9 +228,17 @@ export function attachInput(
     chain(() => send(bytes));
   };
 
+  // A queued move of the same kind absorbs the new one: positions replace,
+  // relative deltas add up.
   const enqueueMove = (event: InputEvent): void => {
-    if (pendingMove) {
+    const queued = pendingMove?.event;
+    if (pendingMove && queued?.kind === "mouseMove" && event.kind === "mouseMove") {
       pendingMove.event = event;
+      pendingMove.tsUs = timestampUs();
+      return;
+    }
+    if (pendingMove && queued?.kind === "relativeMove" && event.kind === "relativeMove") {
+      pendingMove.event = { kind: "relativeMove", dx: queued.dx + event.dx, dy: queued.dy + event.dy };
       pendingMove.tsUs = timestampUs();
       return;
     }
@@ -231,7 +250,10 @@ export function attachInput(
     });
   };
 
-  const pointer = (event: MouseEvent) => mapPointer(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height, options.contained?.() ?? true);
+  // In relative mode the pointer is locked, so positions mean nothing.
+  const relative = () => options.relative?.() ?? false;
+  const deltas = new DeltaAccumulator();
+  const pointer = (event: MouseEvent) => relative() ? { x: 0, y: 0 } : mapPointer(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height, options.contained?.() ?? true);
 
   // Buttons and keys held right now, so focus loss can release them: without
   // this, a button or key still down when the window loses focus (Cmd-Tab, a
@@ -240,6 +262,12 @@ export function attachInput(
   const keysDown = new Map<string, InputEvent>();
 
   const onMouseMove = (event: MouseEvent): void => {
+    if (relative()) {
+      const delta = deltas.take(event.movementX, event.movementY);
+      if (delta) enqueueMove({ kind: "relativeMove", ...delta });
+      return;
+    }
+    deltas.reset();
     const position = pointer(event);
     if (position) enqueueMove({ kind: "mouseMove", ...position });
   };

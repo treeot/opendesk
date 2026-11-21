@@ -184,6 +184,15 @@ pub enum Control {
     /// `MonitorList`; hosts that don't record never send it, and older
     /// viewers can't parse it and ignore it.
     SessionRecording { on: bool },
+    /// Host → viewer, after the first `MonitorList`: which extended input
+    /// events this host injects. Viewers only send those events after it;
+    /// older hosts never send it and older viewers ignore it. Fields added
+    /// later default to off.
+    InputSupport {
+        /// `InputEvent::RelativeMouseMove` (pointer lock for games).
+        #[serde(default)]
+        relative_mouse: bool,
+    },
 }
 
 /// `EndReason` code: nobody used the session for the host's idle timeout.
@@ -230,6 +239,13 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_support_roundtrips_and_defaults_missing_fields() {
+        let c = Control::InputSupport { relative_mouse: true };
+        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
+        assert_eq!(Control::from_bytes(br#"{"t":"input_support"}"#), Some(Control::InputSupport { relative_mouse: false }));
+    }
 
     #[test]
     fn register_roundtrips() {
