@@ -16,8 +16,9 @@ pub const HOST_PASSWORD_GRACE: Duration = Duration::from_secs(15);
 pub const VIEWER_BACKOFF_CAP: Duration = Duration::from_secs(4);
 
 /// How long the viewer keeps retrying when it knows the host is restarting
-/// (it told us so). A reboot takes far longer than a transient drop.
-pub const VIEWER_RESTART_WINDOW: Duration = Duration::from_secs(180);
+/// (it told us so). A reboot takes far longer than a transient drop, and one
+/// that installs updates can take several minutes.
+pub const VIEWER_RESTART_WINDOW: Duration = Duration::from_secs(300);
 
 /// First delay after a failed host registration; doubles per consecutive
 /// failure up to [`HOST_REREGISTER_MAX_DELAY`].
@@ -60,6 +61,15 @@ pub fn viewer_retry_delay(attempt: u32, elapsed: Duration) -> Option<Duration> {
 pub fn viewer_retry_delay_within(attempt: u32, elapsed: Duration, window: Duration) -> Option<Duration> {
     let remaining = window.checked_sub(elapsed).filter(|remaining| !remaining.is_zero())?;
     Some(backoff_delay(attempt).min(remaining))
+}
+
+/// What the viewer shows when the host restarted but did not come back
+/// within [`VIEWER_RESTART_WINDOW`].
+pub fn restart_timed_out_message() -> String {
+    format!(
+        "The remote computer didn't come back within {} minutes. Check that it finished restarting and that OpenDesk starts with it, then connect again.",
+        VIEWER_RESTART_WINDOW.as_secs() / 60
+    )
 }
 
 pub fn should_reconnect(reason: DisconnectReason) -> bool {
@@ -210,6 +220,18 @@ pub fn stop_message(error: &str, reason: DisconnectReason, session_started: bool
     }
 }
 
+/// What the viewer shows once it stops while waiting for a restarted host.
+/// A password the host no longer takes after a restart was almost always its
+/// one-time session password, which the restart replaced.
+pub fn restart_stop_message(error: &str, reason: DisconnectReason, session_started: bool) -> String {
+    match reason {
+        DisconnectReason::AuthFailure | DisconnectReason::KeyNotConfirmed if rejection_code(error).is_none() => {
+            "The remote computer restarted and no longer accepts this password. One-time passwords change on restart: connect again with its unattended access password.".to_owned()
+        }
+        _ => stop_message(error, reason, session_started),
+    }
+}
+
 /// Backoff for the host's relay re-registration loop. Pure state so the
 /// schedule is unit-testable; the caller sleeps for [`Self::delay`] before each
 /// registration attempt and reports how the attempt ended.
@@ -296,8 +318,10 @@ mod tests {
         let past_transient = VIEWER_RECONNECT_WINDOW + Duration::from_secs(1);
         assert_eq!(viewer_retry_delay_within(9, past_transient, VIEWER_RECONNECT_WINDOW), None);
         assert!(viewer_retry_delay_within(9, past_transient, VIEWER_RESTART_WINDOW).is_some());
-        // The restart window itself still ends.
+        // The restart window itself still ends, after several minutes.
         assert_eq!(viewer_retry_delay_within(9, VIEWER_RESTART_WINDOW, VIEWER_RESTART_WINDOW), None);
+        assert!(VIEWER_RESTART_WINDOW >= Duration::from_secs(240));
+        assert!(restart_timed_out_message().contains("within 5 minutes"), "{}", restart_timed_out_message());
     }
 
     #[test]
@@ -376,6 +400,17 @@ mod tests {
         let message = auth_failure_message(&error, false);
         assert!(message.contains("no screen connected") && message.contains("HDMI dummy plug"), "{message}");
         assert!(message.contains("Install virtual display driver") && !message.contains("Screen Recording"), "{message}");
+    }
+
+    #[test]
+    fn a_password_lost_to_a_restart_points_at_unattended_access() {
+        for error in ["key confirmation failed", KEY_NOT_CONFIRMED] {
+            let message = restart_stop_message(error, classify_viewer_error(error), true);
+            assert!(message.contains("unattended access password"), "{message}");
+        }
+        // An explicit rejection keeps its own wording.
+        let denied = rejection_error(reject_code::DENIED);
+        assert_eq!(restart_stop_message(&denied, classify_viewer_error(&denied), true), "The host declined the connection request.");
     }
 
     #[test]

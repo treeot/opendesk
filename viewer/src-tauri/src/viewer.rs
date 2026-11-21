@@ -432,6 +432,7 @@ pub(crate) fn connect(
                 Ok(handle) => {
                     // Ends with this attempt; a reconnect reports its own path.
                     let _link_stats = AbortOnDrop::new(spawn_link_stats(task_app.clone(), handle.link.clone()));
+                    emit(&task_app, "viewer_auth", ViewerAuthEvent { session_password: handle.session_password });
                     activate_data_channel(&task_app, handle, target.clone(), false);
                     emit(&task_app, VIEWER_STATUS, StatusEvent { state: "in_session" });
                     if !session_started {
@@ -487,6 +488,9 @@ pub(crate) fn connect(
                             ) {
                                 break Err(message);
                             }
+                            if restart_expected.load(Ordering::Relaxed) {
+                                break Err(host_core::reconnect::restart_stop_message(&message, reason, session_started));
+                            }
                             break Err(host_core::reconnect::stop_message(&message, reason, session_started));
                         }
                         if media_received {
@@ -503,6 +507,9 @@ pub(crate) fn connect(
                         };
                         let elapsed = outage_started.get_or_insert_with(Instant::now).elapsed();
                         let Some(delay) = host_core::reconnect::viewer_retry_delay_within(reconnect_attempt, elapsed, window) else {
+                            if restart_expected.load(Ordering::Relaxed) {
+                                break Err(host_core::reconnect::restart_timed_out_message());
+                            }
                             break Err(format!("{message}; gave up reconnecting after {}s", window.as_secs()));
                         };
                         reconnect_attempt += 1;

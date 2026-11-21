@@ -143,6 +143,10 @@ pub(crate) struct RemoteListingEvent {
     pub(crate) entries: Vec<protocol::browse::DirEntry>,
     pub(crate) error: Option<String>,
 }
+/// Which password the host accepted for this session: its rotating session
+/// password (`true`) does not survive a host restart.
+#[derive(Serialize, Clone)]
+pub(crate) struct ViewerAuthEvent { pub(crate) session_password: bool }
 /// Something the host user should know about, shown as an info toast.
 #[derive(Serialize, Clone)]
 pub(crate) struct HostNoticeEvent { pub(crate) message: &'static str }

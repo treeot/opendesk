@@ -170,6 +170,10 @@ pub struct DataHandle {
     pub control_sealer: SharedSealer,
     /// The path media takes and its measured round trip, for display.
     pub link: transport::LinkStatus,
+    /// Viewer side: the host took our password only on its second try, so it
+    /// is the host's rotating session password, which a host restart
+    /// replaces. Always false on the host side.
+    pub session_password: bool,
 }
 
 /// How often a viewer pings the host while media goes over the relay.
@@ -388,14 +392,17 @@ const KEY_CONFIRMATION_FAILED: &str = "key confirmation failed";
 /// Viewer side of the authenticated key exchange. Runs the exchange with the
 /// one password the user supplied; if the host asks to retry (it accepts more
 /// than one password and this one was not it), runs it again, up to
-/// [`MAX_KEX_ATTEMPTS`]. Returns the agreed shared secret.
+/// [`MAX_KEX_ATTEMPTS`]. Returns the agreed shared secret, and whether the
+/// host only accepted the password on a retry (it was not the host's first
+/// candidate: with unattended access on, that is the rotating session
+/// password).
 async fn viewer_kex(
     sender: &transport::reliable::ReliableSender,
     control_rx: &mut mpsc::Receiver<Vec<u8>>,
     password: &str,
     deadline: tokio::time::Instant,
-) -> Result<[u8; 32], String> {
-    for _ in 0..MAX_KEX_ATTEMPTS {
+) -> Result<([u8; 32], bool), String> {
+    for attempt in 0..MAX_KEX_ATTEMPTS {
         let (state, my_msg) = protocol::pake::start(password.as_bytes(), false);
         sender.send_frame(Tag::Kex, &kex_body(KEX_MSG, &my_msg)).await.map_err(|error| error.to_string())?;
         let shared = loop {
@@ -421,7 +428,7 @@ async fn viewer_kex(
             }
         };
         match verified {
-            Some(true) => return Ok(shared),
+            Some(true) => return Ok((shared, attempt > 0)),
             None => continue, // host already asked to retry
             Some(false) => {
                 // Our confirm will be rejected. Wait to see whether the host
@@ -845,6 +852,7 @@ where
             control_sender: reliable.sender(),
             control_sealer: Arc::clone(&control_sealer),
             link: transport::LinkStatus::new(path, transport_tx.rtt_meter()),
+            session_password: false,
         });
     }
     let audio_rx = audio::spawn_capture();
@@ -1892,7 +1900,7 @@ where
     let mut control_rx = reliable.take_control_rx().ok_or_else(|| "control receiver unavailable".to_owned())?;
     let data_rx = reliable.take_data_rx().ok_or_else(|| "data receiver unavailable".to_owned())?;
     let kex_deadline = tokio::time::Instant::now() + KEX_DEADLINE;
-    let shared = viewer_kex(&sender, &mut control_rx, password, kex_deadline).await?;
+    let (shared, session_password) = viewer_kex(&sender, &mut control_rx, password, kex_deadline).await?;
     reliable.enable_application_traffic();
 
     let (send_key, recv_key) = derive_keys(&shared, false);
@@ -1955,6 +1963,7 @@ where
             control_sender: reliable.sender(),
             control_sealer: Arc::clone(&control_sealer),
             link: transport::LinkStatus::new(path, transport_tx.rtt_meter()),
+            session_password,
         });
     }
 
@@ -2382,7 +2391,7 @@ mod tests {
         assert!(!should_auto_accept_allowlisted(false));
     }
 
-    async fn run_kex(host_candidates: &[&str], viewer_password: &str) -> (SessionResult<[u8; 32]>, Result<[u8; 32], String>) {
+    async fn run_kex(host_candidates: &[&str], viewer_password: &str) -> (SessionResult<[u8; 32]>, Result<([u8; 32], bool), String>) {
         use tokio_tungstenite::tungstenite::protocol::Role;
         let (viewer_ws, host_ws) = tokio::io::duplex(64 * 1024);
         let viewer_ws = WebSocketStream::from_raw_socket(viewer_ws, Role::Client, None).await;
@@ -2414,7 +2423,7 @@ mod tests {
     #[tokio::test]
     async fn kex_agrees_on_a_single_password() {
         let (host, viewer) = run_kex(&["only-pw-123456"], "only-pw-123456").await;
-        assert_eq!(host.unwrap(), viewer.unwrap());
+        assert_eq!((host.unwrap(), false), viewer.unwrap());
     }
 
     #[tokio::test]
@@ -2427,13 +2436,15 @@ mod tests {
     #[tokio::test]
     async fn dual_password_host_accepts_the_first_password() {
         let (host, viewer) = run_kex(&["unattended-123456", "session-99"], "unattended-123456").await;
-        assert_eq!(host.unwrap(), viewer.unwrap());
+        // The viewer learns it used the password that survives a restart.
+        assert_eq!((host.unwrap(), false), viewer.unwrap());
     }
 
     #[tokio::test]
     async fn dual_password_host_accepts_the_second_password_via_retry() {
         let (host, viewer) = run_kex(&["unattended-123456", "session-99"], "session-99").await;
-        assert_eq!(host.unwrap(), viewer.unwrap());
+        // A retry means the session password, which a restart replaces.
+        assert_eq!((host.unwrap(), true), viewer.unwrap());
     }
 
     #[tokio::test]

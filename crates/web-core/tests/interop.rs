@@ -270,6 +270,11 @@ fn reconnect_rules_match_host_core() {
                 desktop::stop_message(message, desktop::classify_viewer_error(message), started),
                 "{message}"
             );
+            assert_eq!(
+                reconnect::restart_stop_message(message, reconnect::classify_viewer_error(message), started),
+                desktop::restart_stop_message(message, desktop::classify_viewer_error(message), started),
+                "{message}"
+            );
         }
     }
     for code in [
@@ -287,5 +292,19 @@ fn reconnect_rules_match_host_core() {
         for elapsed in [0, 1, 7, 29, 30, 45].map(Duration::from_secs) {
             assert_eq!(reconnect::viewer_retry_delay(attempt, elapsed), desktop::viewer_retry_delay(attempt, elapsed));
         }
+        for elapsed in [0, 59, 60, 61, 179, 299, 300, 301].map(Duration::from_secs) {
+            for (window, desktop_window) in [
+                (reconnect::VIEWER_RECONNECT_WINDOW, desktop::VIEWER_RECONNECT_WINDOW),
+                (reconnect::VIEWER_RESTART_WINDOW, desktop::VIEWER_RESTART_WINDOW),
+            ] {
+                assert_eq!(window, desktop_window);
+                assert_eq!(
+                    reconnect::viewer_retry_delay_within(attempt, elapsed, window),
+                    desktop::viewer_retry_delay_within(attempt, elapsed, desktop_window)
+                );
+            }
+        }
     }
+    assert_eq!(reconnect::VIEWER_BACKOFF_CAP, desktop::VIEWER_BACKOFF_CAP);
+    assert_eq!(reconnect::restart_timed_out_message(), desktop::restart_timed_out_message());
 }

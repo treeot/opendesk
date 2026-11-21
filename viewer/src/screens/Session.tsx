@@ -9,6 +9,7 @@ import PortForward from "../components/PortForward";
 import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import HostControlPanel from "../components/HostControlPanel";
 import { friendlyError, useNotify } from "../lib/notify";
+import { formatWait, restartConfirmText, RESTART_NO_SHOW_MS } from "../lib/restart";
 
 /** Why the host didn't add or remove a virtual display. */
 export function virtualDisplayRefusal(code: string): string {
@@ -89,7 +90,14 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   useEffect(() => { viewOnlyRef.current = viewOnly; }, [viewOnly]);
   const [canSecureAttention, setCanSecureAttention] = useState(false);
   const [canRestart, setCanRestart] = useState(false);
-  const [restarting, setRestarting] = useState(false);
+  // When the remote restart began (asked for or announced by the host); the
+  // wait lasts through the reconnect attempts until the session is live again.
+  const [restartSince, setRestartSince] = useState<number>();
+  const restarting = restartSince !== undefined;
+  const restartDroppedRef = useRef(false);
+  const [now, setNow] = useState(() => Date.now());
+  // This session used the host's one-time password, which a restart replaces.
+  const [sessionPassword, setSessionPassword] = useState(false);
   const [canPrivacy, setCanPrivacy] = useState(false);
   const [privacyOn, setPrivacyOn] = useState(false);
   // Off until the saved preference loads (clipboard sync defaults off).
@@ -164,22 +172,44 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
 
   const sendSecureAttention = () => void api.sendSecureAttention().catch((error: unknown) => notify(friendlyError(error)));
 
+  const beginRestartWait = () => {
+    restartDroppedRef.current = false;
+    setNow(Date.now());
+    setRestartSince((since) => since ?? Date.now());
+  };
+
   // The host advertises it can restart; it signals when a restart begins.
   useEffect(() => {
     if (role !== "viewer") return;
     const listeners = Promise.all([
       api.onRestartSupport(() => setCanRestart(true)),
-      api.onHostRestarting(() => setRestarting(true)),
+      api.onHostRestarting(beginRestartWait),
+      api.onViewerAuth(({ session_password }) => setSessionPassword(session_password)),
     ]);
     return () => { void listeners.then((stops) => stops.forEach((stop) => stop())); };
   }, [role]);
 
-  // Clear the restarting banner once the session is live again, and drop the
-  // capability when the session ends.
+  // Keep waiting through the reconnect attempts, and stop once the session
+  // is live again. The capability comes back with the next session.
   useEffect(() => {
-    if (status === "in_session") setRestarting(false);
-    else if (status !== "connecting") { setCanRestart(false); setRestarting(false); }
+    if (status === "in_session") { setRestartSince(undefined); return; }
+    setCanRestart(false);
+    if (status === "reconnecting") restartDroppedRef.current = true;
+    else if (status !== "connecting") setRestartSince(undefined);
   }, [status]);
+
+  // Tick the elapsed time while waiting. A host that never drops the session
+  // did not restart: stop waiting and say so.
+  useEffect(() => {
+    if (restartSince === undefined) return;
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    const noShow = window.setTimeout(() => {
+      if (restartDroppedRef.current) return;
+      setRestartSince(undefined);
+      notify("The remote computer didn't restart. It may have refused, or a program there blocked it.");
+    }, Math.max(0, restartSince + RESTART_NO_SHOW_MS - Date.now()));
+    return () => { window.clearInterval(tick); window.clearTimeout(noShow); };
+  }, [restartSince, notify]);
 
   // The host advertises privacy mode and reports its real state (the host
   // always restores it when the session ends).
@@ -200,9 +230,9 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   };
 
   const restartRemote = () => {
-    if (!window.confirm("Restart the remote computer? It will come back only if it is set to start at sign-in. The session will reconnect automatically.")) return;
-    setRestarting(true);
-    void api.requestRemoteRestart().catch((error: unknown) => { setRestarting(false); notify(friendlyError(error)); });
+    if (!window.confirm(restartConfirmText(sessionPassword))) return;
+    beginRestartWait();
+    void api.requestRemoteRestart().catch((error: unknown) => { setRestartSince(undefined); notify(friendlyError(error)); });
   };
 
   useEffect(() => {
@@ -573,7 +603,14 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
 
   return (
     <main className={`session-screen session-screen--${role}`}>
-      {role === "viewer" && restarting && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Remote is restarting. Reconnecting automatically…</div>}
+      {role === "viewer" && restartSince !== undefined && (
+        <div className="session-restarting" role="status">
+          <span className="session-restarting__spinner" aria-hidden="true" />
+          <span>Waiting for the remote computer to restart</span>
+          <span className="session-restarting__elapsed mono" aria-label="Time waited">{formatWait(now - restartSince)}</span>
+          <button type="button" className="session-restarting__cancel" onClick={onDisconnect}>Cancel</button>
+        </div>
+      )}
       {role === "viewer" && !restarting && status === "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
       {role === "viewer" && !hasVideo && !restarting && status !== "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
       {role === "viewer" && <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />}

@@ -284,6 +284,8 @@ export const onMonitorStreamRefused = (handler: (payload: { id: number; code: st
 export const onRestartSupport = (handler: () => void) => on("restart_support", handler);
 /** The host is restarting; the viewer will auto-reconnect when it returns. */
 export const onHostRestarting = (handler: () => void) => on("host_restarting", handler);
+/** Which password the host took: its one-time session password does not survive a restart. */
+export const onViewerAuth = (handler: (payload: { session_password: boolean }) => void) => on("viewer_auth", handler);
 /** Ask the host to restart its computer. */
 export const requestRemoteRestart = () => invoke<void>("request_remote_restart");
 /** The host can blank its screen and ignore its local input (privacy mode). */

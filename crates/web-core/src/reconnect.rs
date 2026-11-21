@@ -9,6 +9,8 @@ use std::time::Duration;
 pub const VIEWER_RECONNECT_WINDOW: Duration = Duration::from_secs(60);
 /// Upper bound for the per-attempt backoff.
 pub const VIEWER_BACKOFF_CAP: Duration = Duration::from_secs(4);
+/// How long a viewer keeps retrying when the host said it is restarting.
+pub const VIEWER_RESTART_WINDOW: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisconnectReason {
@@ -27,8 +29,23 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 
 /// Delay before the next retry, or `None` once `elapsed` has used up the window.
 pub fn viewer_retry_delay(attempt: u32, elapsed: Duration) -> Option<Duration> {
-    let remaining = VIEWER_RECONNECT_WINDOW.checked_sub(elapsed).filter(|remaining| !remaining.is_zero())?;
+    viewer_retry_delay_within(attempt, elapsed, VIEWER_RECONNECT_WINDOW)
+}
+
+/// Like [`viewer_retry_delay`] but against an explicit window, such as
+/// [`VIEWER_RESTART_WINDOW`] while the host restarts.
+pub fn viewer_retry_delay_within(attempt: u32, elapsed: Duration, window: Duration) -> Option<Duration> {
+    let remaining = window.checked_sub(elapsed).filter(|remaining| !remaining.is_zero())?;
     Some(backoff_delay(attempt).min(remaining))
+}
+
+/// What the viewer shows when the host restarted but did not come back
+/// within [`VIEWER_RESTART_WINDOW`].
+pub fn restart_timed_out_message() -> String {
+    format!(
+        "The remote computer didn't come back within {} minutes. Check that it finished restarting and that OpenDesk starts with it, then connect again.",
+        VIEWER_RESTART_WINDOW.as_secs() / 60
+    )
 }
 
 /// An unavailable peer, a relay refusal or an unconfirmed key ends a first
@@ -138,6 +155,18 @@ pub fn stop_message(error: &str, reason: DisconnectReason, session_started: bool
     match reason {
         DisconnectReason::AuthFailure | DisconnectReason::KeyNotConfirmed => auth_failure_message(error, session_started),
         _ => error.to_owned(),
+    }
+}
+
+/// What the viewer shows once it stops while waiting for a restarted host.
+/// A password the host no longer takes after a restart was almost always its
+/// one-time session password, which the restart replaced.
+pub fn restart_stop_message(error: &str, reason: DisconnectReason, session_started: bool) -> String {
+    match reason {
+        DisconnectReason::AuthFailure | DisconnectReason::KeyNotConfirmed if rejection_code(error).is_none() => {
+            "The remote computer restarted and no longer accepts this password. One-time passwords change on restart: connect again with its unattended access password.".to_owned()
+        }
+        _ => stop_message(error, reason, session_started),
     }
 }
 

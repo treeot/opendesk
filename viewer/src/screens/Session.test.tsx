@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, decode, filesWindow, listenFn } = vi.hoisted(() => ({
+const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, closeDecoder, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, onViewerAuth, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability, decode, filesWindow, listenFn } = vi.hoisted(() => ({
   onVirtualDisplaySupport: vi.fn<(handler: (payload: { max: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayAdded: vi.fn<(handler: (payload: { id: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onVirtualDisplayRefused: vi.fn<(handler: (payload: { code: string }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
@@ -37,6 +37,7 @@ const { onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused,
   onMultiMonitorSupport: vi.fn<(handler: (payload: { max: number }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onRestartSupport: vi.fn<(handler: () => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onHostRestarting: vi.fn<(handler: () => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
+  onViewerAuth: vi.fn<(handler: (payload: { session_password: boolean }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   requestRemoteRestart: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   onPrivacyModeSupport: vi.fn<(handler: () => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
   onPrivacyModeChanged: vi.fn<(handler: (payload: { on: boolean }) => void) => Promise<() => void>>(() => Promise.resolve(vi.fn())),
@@ -68,7 +69,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenFn, emit: vi.fn(() => Promise.resolve()) }));
 
-vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability }));
+vi.mock("../lib/api", () => ({ onVirtualDisplaySupport, onVirtualDisplayAdded, onVirtualDisplayRefused, addVirtualDisplay, removeVirtualDisplay, startVideo, requestKeyframe, onAudioFrame, onMonitorList, onLinkStats, onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, pickFile, startRecording, appendRecording, finishRecording, sendFile, respondFile, sendInput, selectMonitor, setInputMonitor, setAudioMuted, setClipboardSync, getConfig, onChatMessage, sendChat, onSecureAttentionSupport, onMultiMonitorSupport, onRestartSupport, onHostRestarting, onViewerAuth, requestRemoteRestart, onPrivacyModeSupport, onPrivacyModeChanged, setPrivacyMode, browseLocal, browseRemote, onRemoteListing, pullRemote, sendSecureAttention, getViewerPermissions, setViewerPermission, disconnectViewer, onViewerPermissions, onActivity, onMenuAction, setSessionMenu, setMaxBitrate, onCursorShape, onCursorHidden, setDecoderCodecs, setTextReadability }));
 vi.mock("../lib/decode", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/decode")>()),
   makeDecoder: vi.fn(() => ({ push: decode, close: closeDecoder })),
@@ -77,6 +78,9 @@ vi.mock("../lib/decode", async (importOriginal) => ({
 import Session, { virtualDisplayRefusal } from "./Session";
 import { makeDecoder } from "../lib/decode";
 import { NotifyContext } from "../lib/notify";
+
+/** The handler a component registered with the latest call of `mock`. */
+const latest = <T,>(mock: { mock: { calls: T[][] } }) => mock.mock.calls[mock.mock.calls.length - 1][0];
 
 describe("Session viewer transport", () => {
   afterEach(() => {
@@ -231,6 +235,41 @@ describe("Session viewer transport", () => {
     view.rerender(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
     act(() => report({ path: "direct", rtt_ms: 12 }));
     expect(view.container.querySelector(".session-toolbar__link")!.textContent).toBe("Direct·12 ms");
+  });
+
+  it("waits through a remote restart with a cancel button until the session is back", async () => {
+    const onDisconnect = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = render(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={onDisconnect} />);
+    act(() => latest(onRestartSupport)());
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: /Restart remote/ }));
+    expect(confirm.mock.calls[0][0]).toContain("reconnects on its own");
+    expect(requestRemoteRestart).toHaveBeenCalledOnce();
+    expect(view.getByText("Waiting for the remote computer to restart")).toBeTruthy();
+    // The wait survives the drop and the reconnect attempts.
+    view.rerender(<Session remoteId="123" role="viewer" status="reconnecting" onDisconnect={onDisconnect} />);
+    expect(view.getByText("Waiting for the remote computer to restart")).toBeTruthy();
+    expect(view.queryByText(/Connection lost/)).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Cancel" }));
+    expect(onDisconnect).toHaveBeenCalledOnce();
+    view.rerender(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={onDisconnect} />);
+    expect(view.queryByText("Waiting for the remote computer to restart")).toBeNull();
+    confirm.mockRestore();
+  });
+
+  it("warns before a restart that a one-time password won't get back in", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    requestRemoteRestart.mockClear();
+    const view = render(<Session remoteId="123" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    act(() => latest(onRestartSupport)());
+    act(() => latest(onViewerAuth)({ session_password: true }));
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: /Restart remote/ }));
+    expect(confirm.mock.calls[0][0]).toContain("unattended access password");
+    expect(requestRemoteRestart).not.toHaveBeenCalled();
+    expect(view.queryByText("Waiting for the remote computer to restart")).toBeNull();
+    confirm.mockRestore();
   });
 });
 
