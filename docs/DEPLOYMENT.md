@@ -86,6 +86,7 @@ Unknown `RELAY_*` variables are logged as a warning, which catches typos.
 | `RELAY_SESSION_CONTROL_BURST` / `RELAY_SESSION_CONTROL_PER_SEC` | `64` / `16` | Control messages allowed per paired connection. |
 | `RELAY_SWEEP_SECS` | `60` | How often expired IDs and idle rate limits are removed and the state file is saved. |
 | `RELAY_SHUTDOWN_GRACE_SECS` | `8` | On SIGTERM or Ctrl-C, how long to wait for open connections to close before exiting. |
+| `RELAY_METRICS_ADDR` | unset | Address and port for a Prometheus `/metrics` endpoint, such as `0.0.0.0:9100`. Off when unset. |
 
 **Client addresses behind a proxy.** Per-IP limits and logs use the client's
 address. When a connection comes from a trusted proxy, the relay takes the
@@ -126,6 +127,29 @@ message, a waiting host is closed after `RELAY_PAIR_TIMEOUT_SECS`, and a
 paired connection after `RELAY_IDLE_TIMEOUT_SECS` without traffic. The apps
 send keepalives well inside those limits, so only dead or stuck connections
 hit them.
+
+## Metrics
+
+Set `RELAY_METRICS_ADDR` to serve Prometheus metrics at `/metrics` on a
+second port. It's off by default and never served on the relay port, so the
+numbers aren't public just because the relay is. In Compose, add
+`RELAY_METRICS_ADDR: 0.0.0.0:9100` to the relay's `environment` and scrape
+`relay:9100` from a container on the same network; don't publish the port.
+On a bare host, `127.0.0.1:9100` keeps it local.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `relay_connections` | gauge | Open WebSocket connections. |
+| `relay_sessions` | gauge | Viewers currently paired with a host. |
+| `relay_id_bindings` | gauge | Host IDs with an owner, online or within their lease. |
+| `relay_connections_accepted_total` | counter | WebSocket connections accepted. |
+| `relay_pairings_total` | counter | Viewers paired with a host. |
+| `relay_relayed_bytes_total` | counter | Bytes forwarded between paired peers. |
+| `relay_rejected_total{stage, reason}` | counter | Connections refused or dropped. `stage` is `connection` (capacity, rate limits, handshake or idle timeouts) or `pairing` (the error code sent to the app, such as `id_taken` or `peer_unavailable`, or `pair_timeout`). |
+
+Without the endpoint, the logs carry the same events: one line per
+connection event with `event=` and `reason=` fields, and an `event=stats`
+line each `RELAY_SWEEP_SECS` when the connection or ID count has changed.
 
 ## Clients
 

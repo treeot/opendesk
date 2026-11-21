@@ -92,3 +92,50 @@ async fn a_host_nobody_connects_to_is_closed_cleanly() {
     host.send(control(Control::Register { peer_id: "123456789".into(), token: "00".repeat(32), ver: 1 })).await.unwrap();
     assert_eq!(close_code(&mut host).await, Some(CloseCode::Normal));
 }
+
+async fn http_get(addr: &str, path: &str) -> String {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    response
+}
+
+#[tokio::test]
+async fn metrics_count_sessions_bytes_and_refusals() {
+    let relay = relay::spawn_test_server_with(relay::Settings::default()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let metrics_addr = listener.local_addr().unwrap().to_string();
+    let (_keep, stop) = tokio::sync::watch::channel(false);
+    tokio::spawn(relay::serve(listener, relay::metrics_router(relay.handle.clone()), Duration::from_secs(5), stop));
+    let url = format!("ws://{}/ws", relay.addr);
+
+    let (mut stray, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    stray.send(control(Control::Connect { target: "555555555".into(), peer_id: "987654321".into(), ver: 1 })).await.unwrap();
+    let _refused = stray.next().await;
+
+    let (mut host, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    host.send(control(Control::Register { peer_id: "123456789".into(), token: "00".repeat(32), ver: 1 })).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (mut viewer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    viewer.send(control(Control::Connect { target: "123456789".into(), peer_id: "987654321".into(), ver: 1 })).await.unwrap();
+    let _paired = viewer.next().await.unwrap().unwrap();
+    let payload = frame::wrap(Tag::Video, &[7; 100]);
+    host.send(Message::Binary(payload.clone().into())).await.unwrap();
+    assert_eq!(viewer.next().await.unwrap().unwrap().into_data(), payload);
+
+    let response = http_get(&metrics_addr, "/metrics").await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("text/plain; version=0.0.4"), "{response}");
+    for line in [
+        "relay_sessions 1",
+        "relay_pairings_total 1",
+        &format!("relay_relayed_bytes_total {}", payload.len()),
+        "relay_rejected_total{stage=\"pairing\",reason=\"peer_unavailable\"} 1",
+        "relay_connections_accepted_total 3",
+    ] {
+        assert!(response.lines().any(|candidate| candidate == line), "missing {line:?} in:\n{response}");
+    }
+    // The relay port itself does not serve metrics.
+    assert!(http_get(&relay.addr, "/metrics").await.starts_with("HTTP/1.1 404"));
+}

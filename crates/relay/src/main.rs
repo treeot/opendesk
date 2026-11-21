@@ -17,6 +17,14 @@ async fn main() {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (app, handle) = relay::relay(&settings, shutdown_rx.clone()).unwrap_or_else(|error| fail(error));
     log::info!("relay listening on {addr}");
+    // Off unless RELAY_METRICS_ADDR is set, and on its own listener so the
+    // numbers can stay on a private interface.
+    if let Some(metrics_addr) = settings.metrics_addr() {
+        let metrics = TcpListener::bind(metrics_addr).await
+            .unwrap_or_else(|error| fail(format!("could not listen on {metrics_addr} for metrics: {error}")));
+        log::info!("metrics at http://{metrics_addr}/metrics");
+        tokio::spawn(relay::serve(metrics, relay::metrics_router(handle.clone()), settings.handshake_timeout(), shutdown_rx.clone()));
+    }
     tokio::spawn(shutdown_signal(shutdown_tx));
 
     // Returns once a signal arrives; every open socket sees the same signal

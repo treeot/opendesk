@@ -1,5 +1,6 @@
 mod client_ip;
 mod config;
+mod metrics;
 mod ratemap;
 mod registry;
 mod serve;
@@ -15,6 +16,7 @@ use client_ip::TrustedProxies;
 pub use config::{ConfigError, Settings};
 pub use serve::serve;
 use futures_util::{SinkExt, StreamExt};
+use metrics::Metrics;
 use ratemap::RateMap;
 use registry::{CloseOutbound, Outbound, Registry};
 use session::Bridge;
@@ -76,6 +78,7 @@ pub struct RelayState {
     config: RelayConfig,
     proxies: Arc<TrustedProxies>,
     shutdown: watch::Receiver<bool>,
+    metrics: Arc<Metrics>,
     _shutdown_keepalive: Option<watch::Sender<bool>>,
 }
 
@@ -178,7 +181,7 @@ impl TokenBucket {
 
 /// Handle to a running relay's shared state, for stats and persistence.
 #[derive(Clone)]
-pub struct RelayHandle { registry: Registry, limits: Arc<ConnectionLimits> }
+pub struct RelayHandle { registry: Registry, limits: Arc<ConnectionLimits>, metrics: Arc<Metrics> }
 
 impl RelayHandle {
     pub fn active_connections(&self) -> usize { self.limits.active() }
@@ -193,6 +196,17 @@ impl RelayHandle {
 
     /// Saves ID bindings to `RELAY_STATE_FILE` if any changed. Call on shutdown.
     pub fn persist(&self) -> std::io::Result<bool> { self.registry.persist_if_dirty() }
+
+    /// Current counters in the Prometheus text format.
+    pub fn metrics_text(&self) -> String { self.metrics.render(self.limits.active(), self.registry.binding_count()) }
+}
+
+/// A router serving only `GET /metrics`, meant for its own listener
+/// (`RELAY_METRICS_ADDR`) so the numbers are not public on the relay port.
+pub fn metrics_router(handle: RelayHandle) -> Router {
+    Router::new().route("/metrics", get(|State(handle): State<RelayHandle>| async move {
+        ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], handle.metrics_text())
+    })).with_state(handle)
 }
 
 /// A relay with settings from the environment. Panics on invalid settings or
@@ -227,9 +241,10 @@ fn build(settings: &Settings, shutdown: watch::Receiver<bool>, keepalive: Option
         )))?;
         log::info!("loaded {count} id bindings from {}", path.display());
     }
-    let state = RelayState { registry: registry.clone(), limits: Arc::clone(&limits), config: settings.relay.clone(), proxies: Arc::new(settings.proxies.clone()), shutdown, _shutdown_keepalive: keepalive };
+    let metrics = Arc::new(Metrics::default());
+    let state = RelayState { registry: registry.clone(), limits: Arc::clone(&limits), config: settings.relay.clone(), proxies: Arc::new(settings.proxies.clone()), shutdown, metrics: Arc::clone(&metrics), _shutdown_keepalive: keepalive };
     spawn_maintenance(&state);
-    Ok((app_with_state(state), RelayHandle { registry, limits }))
+    Ok((app_with_state(state), RelayHandle { registry, limits, metrics }))
 }
 
 /// Every `sweep_interval`: drop expired bindings and idle rate buckets, save
@@ -286,7 +301,7 @@ async fn health_handler(State(state): State<RelayState>) -> Response {
 async fn ws_handler(ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap, State(state): State<RelayState>) -> Response {
     let client = state.proxies.client_ip(addr.ip(), &headers);
     let guard = state.limits.try_acquire(client);
-    if guard.is_none() { log_event("connection_rejected", client, "capacity"); }
+    if guard.is_none() { state.log_event("connection_rejected", client, "capacity"); }
     ws.max_message_size(state.config.max_signal_message).max_frame_size(state.config.max_signal_message)
         .on_upgrade(move |socket| handle(socket, state, client, guard))
 }
@@ -298,6 +313,7 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
         let _ = socket.send(Message::Close(Some(CloseFrame { code: 1013, reason: "relay capacity".into() }))).await;
         return;
     };
+    state.metrics.accepted();
     log::info!("event=connection_open remote={addr} reason=accepted active_connections={}", state.limits.active());
     let (mut sink, mut stream) = socket.split();
     // Kept short: a deep queue here is seconds of stale video when the
@@ -347,31 +363,34 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
 
     let mut shutdown = state.shutdown.clone();
     let first = tokio::select! {
-        _ = shutdown.changed() => { close_self(&close_tx, writer, going_away()).await; log_event("connection_close", addr, "shutdown"); return; }
+        _ = shutdown.changed() => { close_self(&close_tx, writer, going_away()).await; state.log_event("connection_close", addr, "shutdown"); return; }
         result = tokio::time::timeout(state.config.handshake_timeout, stream.next()) => result.ok().flatten().and_then(Result::ok),
     };
-    let Some(Message::Binary(first)) = first else { writer.abort(); log_event("connection_close", addr, "handshake"); return; };
+    let Some(Message::Binary(first)) = first else { writer.abort(); state.log_event("connection_close", addr, "handshake"); return; };
     // The first message is always a signal (Register/Connect/Presence), never a
     // forwarded frame, so it is tiny. Reject an oversized one before parsing it,
     // so a pre-auth connection cannot make the relay buffer or deserialize
     // megabytes (e.g. a huge Presence array) per socket.
-    if first.len() > SIGNAL_MESSAGE_MAX { writer.abort(); log_event("connection_rejected", addr, "signal_too_large"); return; }
+    if first.len() > SIGNAL_MESSAGE_MAX { writer.abort(); state.log_event("connection_rejected", addr, "signal_too_large"); return; }
     let mut bytes = TokenBucket::new(state.config.byte_burst, state.config.bytes_per_sec);
-    if !bytes.allow(first.len()) { writer.abort(); log_event("connection_rejected", addr, "byte_rate"); return; }
+    if !bytes.allow(first.len()) { writer.abort(); state.log_event("connection_rejected", addr, "byte_rate"); return; }
 
+    // Held for the life of a paired session, on the viewer's side only.
+    let mut _session = None;
     let bridge = session::classify(&first, my_tx.clone(), close_tx.clone(), &state.registry, addr);
     let (peer_tx, peer_close_tx, registered_peer) = match bridge {
         Ok(Bridge::ViewerPaired { host_tx, host_close_tx, requester_id, target_id }) => {
             let _ = host_tx.send(session::paired_frame("host", &requester_id)).await;
             let _ = my_tx.send(session::paired_frame("viewer", &target_id)).await;
-            log_event("pairing_success", addr, "viewer");
+            state.log_event("pairing_success", addr, "viewer");
+            _session = Some(state.metrics.session_started());
             (host_tx, host_close_tx, None)
         }
         Ok(Bridge::Presence { online }) => {
             // Answer the query, then close: a presence socket never pairs.
             let _ = my_tx.send(session::presence_frame(online)).await;
             let _ = close_tx.send(Some(CloseFrame { code: 1000, reason: "presence".into() }));
-            log_event("connection_close", addr, "presence");
+            state.log_event("connection_close", addr, "presence");
             let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
             return;
         }
@@ -387,9 +406,9 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
                 tokio::select! {
                     biased;
                     result = &mut pairing => break result.ok().and_then(Result::ok),
-                    _ = shutdown.changed() => { state.registry.unregister(&peer_id, &my_tx); close_self(&close_tx, writer, going_away()).await; log_event("connection_close", addr, "shutdown"); return; }
+                    _ = shutdown.changed() => { state.registry.unregister(&peer_id, &my_tx); close_self(&close_tx, writer, going_away()).await; state.log_event("connection_close", addr, "shutdown"); return; }
                     left = watch_parked_host(&mut stream, &mut early), if watching => {
-                        if left { state.registry.unregister(&peer_id, &my_tx); writer.abort(); log_event("connection_close", addr, "host_left"); return; }
+                        if left { state.registry.unregister(&peer_id, &my_tx); writer.abort(); state.log_event("connection_close", addr, "host_left"); return; }
                         // Too much early data: leave the rest in the socket.
                         watching = false;
                     }
@@ -398,13 +417,15 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
             let Some((peer, peer_close_tx, requester_id)) = peer else {
                 state.registry.unregister(&peer_id, &my_tx);
                 close_self(&close_tx, writer, CloseFrame { code: 1000, reason: "pair timeout".into() }).await;
-                log_event("pairing_failure", addr, "pair_timeout");
+                state.log_event("pairing_failure", addr, "pair_timeout");
                 return;
             };
             let _ = my_tx.send(session::paired_frame("host", &requester_id)).await;
-            log_event("pairing_success", addr, "host");
+            state.log_event("pairing_success", addr, "host");
             for frame in early {
-                if !bytes.allow(frame.len()) || peer.send(frame).await.is_err() { break; }
+                let len = frame.len();
+                if !bytes.allow(len) || peer.send(frame).await.is_err() { break; }
+                state.metrics.relayed(len);
             }
             (peer, peer_close_tx, Some(peer_id))
         }
@@ -424,7 +445,7 @@ async fn handle(socket: WebSocket, state: RelayState, addr: IpAddr, guard: Optio
             // Always say why: a bare close leaves the app guessing.
             let _ = my_tx.send(session::error_frame(reason)).await;
             let _ = close_tx.send(Some(CloseFrame { code: 1008, reason: reason.into() }));
-            log_event("pairing_failure", addr, reason);
+            state.log_event("pairing_failure", addr, reason);
             // Give the writer a moment to flush the error and close frames.
             let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
             return;
@@ -455,17 +476,19 @@ async fn forward_rest(stream: &mut futures_util::stream::SplitStream<WebSocket>,
         let next = tokio::select! {
             _ = close_rx.changed() => break,
             _ = shutdown.changed() => return true,
-            result = tokio::time::timeout(state.config.idle_timeout, stream.next()) => match result { Ok(value) => value, Err(_) => { log_event("connection_close", addr, "idle_timeout"); break; } },
+            result = tokio::time::timeout(state.config.idle_timeout, stream.next()) => match result { Ok(value) => value, Err(_) => { state.log_event("connection_close", addr, "idle_timeout"); break; } },
         };
         let Some(Ok(msg)) = next else { break; };
         if let Message::Binary(frame) = msg {
-            if !bytes.allow(frame.len()) { log_event("connection_rejected", addr, "byte_rate"); break; }
-            if frame.first() == Some(&(protocol::Tag::Control as u8)) && !control.allow(1) { log_event("connection_rejected", addr, "signaling_rate"); break; }
+            if !bytes.allow(frame.len()) { state.log_event("connection_rejected", addr, "byte_rate"); break; }
+            if frame.first() == Some(&(protocol::Tag::Control as u8)) && !control.allow(1) { state.log_event("connection_rejected", addr, "signaling_rate"); break; }
+            let len = frame.len();
             let queued = tokio::select! {
                 _ = shutdown.changed() => return true,
                 result = tokio::time::timeout(state.config.idle_timeout, peer_tx.send(Vec::from(frame))) => matches!(result, Ok(Ok(()))),
             };
             if !queued { break; }
+            state.metrics.relayed(len);
         }
     }
     false
@@ -504,7 +527,18 @@ fn close_peer(peer_close_tx: &CloseOutbound) {
     let _ = peer_close_tx.send(Some(CloseFrame { code: 1000, reason: "peer disconnected".into() }));
 }
 
-fn log_event(event: &str, addr: IpAddr, reason: &str) { log::info!("event={event} remote={addr} reason={reason}"); }
+impl RelayState {
+    /// Logs a connection event. Refusals and drops are also counted for
+    /// `/metrics`.
+    fn log_event(&self, event: &str, addr: IpAddr, reason: &'static str) {
+        log::info!("event={event} remote={addr} reason={reason}");
+        match (event, reason) {
+            ("connection_rejected", _) | ("connection_close", "handshake" | "idle_timeout") => self.metrics.rejected("connection", reason),
+            ("pairing_failure", _) => self.metrics.rejected("pairing", reason),
+            _ => {}
+        }
+    }
+}
 
 pub async fn spawn_test_server() -> String { spawn_test_server_with_handle().await.0 }
 
