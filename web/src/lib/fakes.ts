@@ -49,6 +49,7 @@ export class FakeViewer implements Viewer {
   renamePath(path: string, name: string) { return this.browse(6, path, name); }
   ping(now: number) { return this.live ? new Uint8Array([0x01, 0x50, now & 0xff]) : undefined; }
   secureAttention() { return new Uint8Array([0x01, 0x5a]); }
+  stillHere() { return new Uint8Array([0x01, 0x5d]); }
   setMaxBitrate(bps: number) { return new Uint8Array([0x01, 0x5b, bps >>> 20]); }
   textReadability(enabled: boolean) { return new Uint8Array([0x01, 0x5c, enabled ? 1 : 0]); }
   requestKeyframe() { return new Uint8Array([0x01, 0xaa]); }

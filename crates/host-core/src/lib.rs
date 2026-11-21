@@ -10,6 +10,7 @@ pub mod filexfer;
 pub mod folder;
 pub mod inject;
 pub mod relay_client;
+pub mod policy;
 pub mod privacy;
 pub mod reconnect;
 pub mod restart;

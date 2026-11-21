@@ -5,7 +5,7 @@
 // without launching the desktop app. It is never used inside the real Tauri
 // window (see `isTauri` in api.ts).
 
-import type { Contact, ContactEdit } from "./api";
+import type { AccessRules, Contact, ContactEdit } from "./api";
 
 const randomDigits = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 10)).join("");
 const randomPassword = () => Array.from({ length: 8 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
@@ -28,6 +28,12 @@ const state = {
     { id: "118273645", alias: "Mom's Laptop", last_connected: null, tags: ["Home"] },
   ] as Contact[],
   allowed: ["730514826", "905218437"],
+  access: {
+    mode: "mark_known",
+    allowed: [{ id: "730514826", label: "Home PC" }, { id: "905218437", label: "" }],
+    hours: { enabled: false, rules: [{ days: [0, 1, 2, 3, 4], start: 9 * 60, end: 17 * 60 }] },
+  } as AccessRules,
+  idleMinutes: 0,
   savedPasswords: new Set<string>(["730514826"]),
   recordings: [
     { name: "OpenDesk 2026-10-22 14-05.webm", path: "/Users/you/Movies/OpenDesk 2026-10-22 14-05.webm", size: 48_200_000, modified: Date.now() - 7200_000 },
@@ -57,6 +63,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_allowed: () => state.allowed,
   add_allowed: ({ peerId }) => { if (!state.allowed.includes(peerId as string)) state.allowed.push(peerId as string); },
   remove_allowed: ({ peerId }) => { state.allowed = state.allowed.filter((id) => id !== peerId); },
+  get_access_rules: () => state.access,
+  set_access_rules: ({ rules }) => { state.access = rules as AccessRules; state.allowed = state.access.allowed.map((entry) => entry.id); return state.access; },
+  get_idle_timeout: () => state.idleMinutes,
+  set_idle_timeout: ({ minutes }) => { state.idleMinutes = minutes as number; },
   add_contact: ({ alias, peerId }) => {
     const contact = { id: peerId as string, alias: alias as string, last_connected: null as number | null };
     state.contacts = [...state.contacts.filter((c) => c.id !== contact.id), contact];

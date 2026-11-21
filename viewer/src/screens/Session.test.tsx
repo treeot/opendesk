@@ -74,6 +74,8 @@ vi.mock("../lib/decode", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/decode")>()),
   makeDecoder: vi.fn(() => ({ push: decode, close: closeDecoder })),
 }));
+// Tested on its own in IdleWarning.test.tsx.
+vi.mock("../components/IdleWarning", () => ({ default: () => null }));
 
 import Session, { virtualDisplayRefusal } from "./Session";
 import { makeDecoder } from "../lib/decode";

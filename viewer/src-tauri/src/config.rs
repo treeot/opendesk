@@ -1,5 +1,7 @@
+use host_core::policy::{AccessRules, AllowMode, AllowedId, HoursSchedule};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -67,6 +69,20 @@ pub struct Config {
     /// are deleted after each new recording to stay under it. 0 means no cap.
     #[serde(default = "default_recordings_max_bytes")]
     pub recordings_max_bytes: u64,
+    /// Labels for IDs on `allow_list`, by ID. IDs without one have no entry.
+    #[serde(default)]
+    pub allow_labels: BTreeMap<String, String>,
+    /// How `allow_list` is used. Off (known devices are only marked in the
+    /// prompt) for configs from before this setting.
+    #[serde(default)]
+    pub allow_mode: AllowMode,
+    /// When viewers may connect, in local time. Off means any time.
+    #[serde(default)]
+    pub allowed_hours: HoursSchedule,
+    /// End a hosted session after this many minutes without viewer
+    /// activity. 0 (the default) never does.
+    #[serde(default)]
+    pub idle_timeout_minutes: u32,
 }
 
 fn default_true() -> bool { true }
@@ -92,6 +108,10 @@ impl Default for Config {
             clipboard_sync: true,
             allow_virtual_displays: true,
             recordings_max_bytes: default_recordings_max_bytes(),
+            allow_labels: BTreeMap::new(),
+            allow_mode: AllowMode::default(),
+            allowed_hours: HoursSchedule::default(),
+            idle_timeout_minutes: 0,
         }
     }
 }
@@ -258,7 +278,48 @@ impl ConfigStore {
 
     pub fn remove_allow(&mut self, id: &str) -> io::Result<()> {
         self.config.allow_list.retain(|allowed| allowed != id);
+        self.config.allow_labels.remove(id);
         self.save()
+    }
+
+    /// The allowed list, its mode and the allowed hours, as one set.
+    pub fn access_rules(&self) -> AccessRules {
+        let config = &self.config;
+        AccessRules {
+            mode: config.allow_mode,
+            allowed: config
+                .allow_list
+                .iter()
+                .map(|id| AllowedId { id: id.clone(), label: config.allow_labels.get(id).cloned().unwrap_or_default() })
+                .collect(),
+            hours: config.allowed_hours.clone(),
+        }
+    }
+
+    /// Replace the access rules after checking them. Nothing changes when
+    /// they are invalid.
+    pub fn set_access_rules(&mut self, rules: AccessRules) -> Result<AccessRules, String> {
+        let rules = rules.validated()?;
+        self.config.allow_mode = rules.mode;
+        self.config.allow_list = rules.allowed.iter().map(|entry| entry.id.clone()).collect();
+        self.config.allow_labels = rules
+            .allowed
+            .iter()
+            .filter(|entry| !entry.label.is_empty())
+            .map(|entry| (entry.id.clone(), entry.label.clone()))
+            .collect();
+        self.config.allowed_hours = rules.hours.clone();
+        self.save().map_err(|error| error.to_string())?;
+        Ok(rules)
+    }
+
+    /// Set the idle timeout in minutes, 0 for none.
+    pub fn set_idle_timeout_minutes(&mut self, minutes: u32) -> Result<(), String> {
+        if minutes > host_core::policy::MAX_IDLE_MINUTES {
+            return Err("The idle timeout can be at most a day.".into());
+        }
+        self.config.idle_timeout_minutes = minutes;
+        self.save().map_err(|error| error.to_string())
     }
 
     pub fn add_recent(&mut self, id: &str) -> io::Result<()> {
@@ -562,6 +623,46 @@ mod tests {
         add_unique(&mut values, "123456789");
         assert_eq!(values, vec!["123456789"]);
         assert!(values.iter().any(|id| id == "123456789"));
+    }
+
+    #[test]
+    fn access_rules_round_trip_and_old_configs_keep_the_old_behavior() {
+        use host_core::policy::{HoursRule, LocalTime};
+        let old: Config = serde_json::from_str(r#"{"id":"123456789","relay_url":"wss://x","allow_list":["111111111"],"recent_ids":[]}"#).unwrap();
+        assert_eq!(old.allow_mode, AllowMode::MarkKnown);
+        assert!(!old.allowed_hours.enabled);
+        assert_eq!(old.idle_timeout_minutes, 0);
+
+        let dir = test_dir();
+        let mut store = ConfigStore::load_on(&dir, None).unwrap();
+        let rules = AccessRules {
+            mode: AllowMode::OnlyListed,
+            allowed: vec![
+                AllowedId { id: "111111111".into(), label: " Office ".into() },
+                AllowedId { id: "222222222".into(), label: String::new() },
+            ],
+            hours: HoursSchedule { enabled: true, rules: vec![HoursRule { days: vec![0, 1, 2, 3, 4], start: 9 * 60, end: 17 * 60 }] },
+        };
+        store.set_access_rules(rules).unwrap();
+        store.set_idle_timeout_minutes(15).unwrap();
+        let reloaded = ConfigStore::load_on(&dir, None).unwrap();
+        let loaded = reloaded.access_rules();
+        assert_eq!(loaded.mode, AllowMode::OnlyListed);
+        assert_eq!(loaded.allowed[0], AllowedId { id: "111111111".into(), label: "Office".into() });
+        assert_eq!(loaded.allowed[1].label, "");
+        assert!(loaded.hours.allows(LocalTime { weekday: 0, minute: 10 * 60 }));
+        assert!(!loaded.hours.allows(LocalTime { weekday: 6, minute: 10 * 60 }));
+        assert_eq!(reloaded.config.idle_timeout_minutes, 15);
+
+        // Invalid rules change nothing.
+        let mut store = reloaded;
+        assert!(store.set_access_rules(AccessRules { mode: AllowMode::OnlyListed, ..AccessRules::default() }).is_err());
+        assert_eq!(store.access_rules().allowed.len(), 2);
+        assert!(store.set_idle_timeout_minutes(host_core::policy::MAX_IDLE_MINUTES + 1).is_err());
+        // Removing an ID drops its label too.
+        store.remove_allow("111111111").unwrap();
+        assert!(!store.config.allow_labels.contains_key("111111111"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

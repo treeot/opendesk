@@ -15,6 +15,7 @@ import { StreamMeter, type StreamStats } from "../lib/stats";
 import { parseFrame } from "../lib/video";
 import { actualSize, loadScaleMode, saveScaleMode, type ScaleMode } from "../lib/scale";
 import StatsPanel from "../components/StatsPanel";
+import IdleWarning from "../components/IdleWarning";
 
 /** Why the host didn't add or remove a virtual display. */
 export function virtualDisplayRefusal(code: string): string {
@@ -680,7 +681,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
           <button type="button" className="session-restarting__cancel" onClick={onDisconnect}>Cancel</button>
         </div>
       )}
-      {role === "viewer" && !restarting && status === "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
+      {role === "viewer" && <IdleWarning />}
+      {role === "viewer" && !restarting && status === "reconnecting" &&<div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
       {role === "viewer" && !hasVideo && !restarting && status !== "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
       {role === "viewer" && (
         <div className="session-viewport" data-scale={scaleMode}>

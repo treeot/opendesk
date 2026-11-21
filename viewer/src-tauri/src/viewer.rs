@@ -195,6 +195,12 @@ pub(crate) async fn set_text_readability(state: tauri::State<'_, AppState>, enab
     send_control(&state, Control::TextReadability { enabled }).await
 }
 
+/// Answer the host's idle warning: someone is still here.
+#[tauri::command]
+pub(crate) async fn stay_connected(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    send_control(&state, Control::StillHere).await
+}
+
 /// Viewer: forward local `127.0.0.1:local_port` to the host's `127.0.0.1:remote_port`.
 #[tauri::command]
 pub(crate) async fn start_forward(app: AppHandle, local_port: u16, remote_port: u16) -> Result<(), String> {
@@ -397,6 +403,7 @@ pub(crate) fn connect(
                         Some(Control::PrivacyModeChanged { on }) => emit(&monitor_app, "privacy_mode_changed", PrivacyModeEvent { on }),
                         Some(Control::CursorShape { width, height, hot_x, hot_y, rgba }) => emit(&monitor_app, "cursor_shape", CursorShapeEvent { width, height, hot_x, hot_y, rgba: b64(&rgba) }),
                         Some(Control::CursorHidden) => emit(&monitor_app, "cursor_hidden", ()),
+                        Some(Control::IdleWarning { seconds }) => emit(&monitor_app, "idle_warning", crate::access::IdleWarningEvent { seconds }),
                         Some(Control::HostMac { mac }) => {
                             // Save the host's MAC to a saved contact for Wake-on-LAN, but
                             // only to fill an empty slot: a user-set MAC is left alone, and

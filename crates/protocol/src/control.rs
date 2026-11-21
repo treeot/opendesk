@@ -167,7 +167,22 @@ pub enum Control {
     /// the user typing it in. Sent only when the host could read one; older
     /// peers can't parse it and ignore it.
     HostMac { mac: String },
+    /// Host → viewer: nobody has used this session for a while, and the host
+    /// will end it in `seconds` unless the viewer does something. The viewer
+    /// offers to stay connected, which sends `StillHere`. Older viewers
+    /// ignore it and just see the session end.
+    IdleWarning { seconds: u32 },
+    /// Viewer → host: the person is still there; reset the idle timer. Older
+    /// hosts ignore it.
+    StillHere,
+    /// Host → viewer, just before a `Bye`: why the host is ending the session.
+    /// `code` is one of the `END_*` codes or a newer one. Older viewers ignore
+    /// it and show the plain "host ended the session" message.
+    EndReason { code: String },
 }
+
+/// `EndReason` code: nobody used the session for the host's idle timeout.
+pub const END_IDLE: &str = "idle";
 
 /// Most IDs one `Presence` query may ask about.
 pub const MAX_PRESENCE_IDS: usize = 50;
@@ -249,6 +264,9 @@ mod tests {
             Control::PrivacyModeSupport,
             Control::SetPrivacyMode { on: true },
             Control::PrivacyModeChanged { on: false },
+            Control::IdleWarning { seconds: 60 },
+            Control::StillHere,
+            Control::EndReason { code: END_IDLE.into() },
         ] {
             assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
         }
@@ -444,6 +462,16 @@ mod tests {
             monitors: vec![MonitorInfo { id: 3, name: "OpenDesk".into(), width: 0, height: 0, is_primary: false, is_virtual: true }],
         };
         assert!(matches!(beta5::from_bytes(&list.to_bytes()), Some(beta5::Control::MonitorList { .. })));
+    }
+
+    #[test]
+    fn idle_messages_use_stable_wire_names_and_old_peers_skip_them() {
+        assert_eq!(String::from_utf8(Control::IdleWarning { seconds: 60 }.to_bytes()).unwrap(), r#"{"t":"idle_warning","seconds":60}"#);
+        assert_eq!(String::from_utf8(Control::StillHere.to_bytes()).unwrap(), r#"{"t":"still_here"}"#);
+        assert_eq!(String::from_utf8(Control::EndReason { code: END_IDLE.into() }.to_bytes()).unwrap(), r#"{"t":"end_reason","code":"idle"}"#);
+        for newer in [Control::IdleWarning { seconds: 60 }, Control::StillHere, Control::EndReason { code: END_IDLE.into() }] {
+            assert!(beta5::from_bytes(&newer.to_bytes()).is_none(), "{newer:?}");
+        }
     }
 
     #[test]

@@ -69,6 +69,8 @@ impl From<Event> for ViewerEvent {
             Event::Chat(text) => ("chat", Vec::new(), text),
             Event::RoundTrip(ms) => ("rtt", Vec::new(), ms.to_string()),
             Event::Supports(feature) => ("supports", Vec::new(), feature.to_owned()),
+            // `text` is the seconds left before the host ends the session.
+            Event::IdleWarning(seconds) => ("idle-warning", Vec::new(), seconds.to_string()),
             Event::Ended(message) => ("ended", Vec::new(), message),
         };
         Self { kind, bytes, text }
@@ -208,6 +210,12 @@ impl Viewer {
     /// A round-trip probe; the answer arrives as an "rtt" event.
     pub fn ping(&mut self, now_ms: f64) -> Option<Vec<u8>> {
         self.session.ping(now_ms)
+    }
+
+    /// Keep the session after an "idle-warning".
+    #[wasm_bindgen(js_name = stillHere)]
+    pub fn still_here(&mut self) -> Option<Vec<u8>> {
+        self.session.still_here()
     }
 
     /// Ctrl+Alt+Del, once the host has sent "supports" "secure-attention".

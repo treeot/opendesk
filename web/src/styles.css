@@ -477,3 +477,4 @@ button.web-files__open .web-files__icon { color: var(--web-yellow); }
   .file-panel, .file-panel--wide { right: 12px; left: 12px; bottom: 64px; width: auto; max-height: 65vh; }
   .web-files__action { width: 34px; height: 34px; }
 }
+.idle-banner--web { position: fixed; top: 72px; }

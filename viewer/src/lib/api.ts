@@ -54,6 +54,19 @@ export interface ViewerPermissions { control: boolean; files: boolean; clipboard
 export type Capability = keyof ViewerPermissions;
 /** One line in the host's session activity log; `at` is Unix milliseconds. */
 export interface Activity { at: number; kind: string; detail: string }
+/** How the host uses its allowed IDs: only mark them in the prompt, accept them without the prompt, or refuse every other ID. */
+export type AllowMode = "mark_known" | "auto_accept" | "only_listed";
+export interface AllowedId { id: string; label: string }
+/** A weekly window in the host's local time. Days are 0 (Monday) to 6 (Sunday); times are minutes after midnight. An end before the start runs past midnight; equal start and end is the whole day. */
+export interface HoursRule { days: number[]; start: number; end: number }
+export interface HoursSchedule { enabled: boolean; rules: HoursRule[] }
+export interface AccessRules { mode: AllowMode; allowed: AllowedId[]; hours: HoursSchedule }
+export const getAccessRules = () => invoke<AccessRules>("get_access_rules");
+export const setAccessRules = (rules: AccessRules) => invoke<AccessRules>("set_access_rules", { rules });
+export const getIdleTimeout = () => invoke<number>("get_idle_timeout");
+export const setIdleTimeout = (minutes: number) => invoke<void>("set_idle_timeout", { minutes });
+/** Answer the host's idle warning so it keeps the session. */
+export const stayConnected = () => invoke<void>("stay_connected");
 export interface AuditEvent { at: number; event: string; peer_id: string | null; address: string | null; detail: string | null; duration_seconds: number | null; filename: string | null; size_bytes: number | null; path?: string | null }
 export const getAuditEvents = () => invoke<AuditEvent[]>("get_audit_events");
 
@@ -293,6 +306,8 @@ export const requestRemoteRestart = () => invoke<void>("request_remote_restart")
 export const onPrivacyModeSupport = (handler: () => void) => on("privacy_mode_support", handler);
 /** Privacy mode turned on or off on the host. */
 export const onPrivacyModeChanged = (handler: (payload: { on: boolean }) => void) => on("privacy_mode_changed", handler);
+/** The host will end this unused session in `seconds` unless someone acts. */
+export const onIdleWarning = (handler: (payload: { seconds: number }) => void) => on("idle_warning", handler);
 /** Turn the host's privacy mode on or off. */
 export const setPrivacyMode = (on: boolean) => invoke<void>("set_privacy_mode", { on });
 

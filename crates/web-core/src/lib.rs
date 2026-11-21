@@ -26,7 +26,7 @@ use protocol::{
     filexfer::FileMsg,
     frame, kex, pake, Tag,
 };
-use reconnect::{rejection_error, HOST_ENDED_MESSAGE};
+use reconnect::{host_ended_message, rejection_error};
 
 const KEX_MSG: u8 = 0x01;
 const KEX_CONFIRM: u8 = 0x02;
@@ -75,6 +75,9 @@ pub enum Event {
     /// The host can do something optional; the name says what. Only
     /// "secure-attention" (Ctrl+Alt+Del) is surfaced so far.
     Supports(&'static str),
+    /// The host will end an unused session in this many seconds unless the
+    /// viewer does something; [`ViewerSession::still_here`] keeps it.
+    IdleWarning(u32),
     /// The session is over. The text matches the desktop viewer's errors,
     /// so [`reconnect::after_failure`] can decide what to do next.
     Ended(String),
@@ -164,6 +167,8 @@ struct Live {
     gate: VideoGate,
     next_keepalive: f64,
     peer_deadline: f64,
+    /// Why the host is ending the session, from an `EndReason` before its `Bye`.
+    end_code: Option<String>,
 }
 
 impl Live {
@@ -355,6 +360,7 @@ impl ViewerSession {
             gate: VideoGate::new(),
             next_keepalive: now_ms + KEEPALIVE_INTERVAL_MS,
             peer_deadline: now_ms + DEAD_PEER_TIMEOUT_MS,
+            end_code: None,
         });
         // Always sent, empty when there is no code, so a 2FA host answers
         // at once; other hosts ignore it. It must be the first control frame.
@@ -376,7 +382,12 @@ impl ViewerSession {
                 live.peer_deadline = now_ms + DEAD_PEER_TIMEOUT_MS;
                 match Control::from_bytes(&plaintext) {
                     Some(Control::Error { code }) => self.end(rejection_error(&code)),
-                    Some(Control::Bye { .. }) => self.end(HOST_ENDED_MESSAGE),
+                    Some(Control::Bye { .. }) => self.end(host_ended_message(live.end_code.as_deref())),
+                    Some(Control::EndReason { code }) => {
+                        live.end_code = Some(code);
+                        Vec::new()
+                    }
+                    Some(Control::IdleWarning { seconds }) => vec![Event::IdleWarning(seconds)],
                     Some(Control::MonitorList { monitors }) => {
                         vec![Event::Monitors(
                             serde_json::to_string(&monitors).unwrap_or_else(|_| "[]".into()),
@@ -605,6 +616,11 @@ impl ViewerSession {
     pub fn ping(&mut self, now_ms: f64) -> Option<Vec<u8>> {
         let sent_us = (now_ms.max(0.0) * 1000.0) as u64;
         Some(self.live()?.control(&Control::Ping { sent_us }))
+    }
+
+    /// Tell the host someone is still here, after an `IdleWarning`.
+    pub fn still_here(&mut self) -> Option<Vec<u8>> {
+        Some(self.live()?.control(&Control::StillHere))
     }
 
     /// Ask the host to send Ctrl+Alt+Del (after `Supports("secure-attention")`).
@@ -986,9 +1002,27 @@ mod tests {
         });
         assert_eq!(
             viewer.receive(&bye, 9.0),
-            vec![Event::Ended(HOST_ENDED_MESSAGE.into())]
+            vec![Event::Ended(reconnect::HOST_ENDED_MESSAGE.into())]
         );
         assert!(viewer.input(&[1]).is_none());
+    }
+
+    #[test]
+    fn idle_warning_surfaces_and_an_idle_end_explains_itself() {
+        let mut viewer = ViewerSession::new("pw", "");
+        let mut host = authenticate(&mut viewer, "pw").unwrap();
+        let warning = host.control(&Control::IdleWarning { seconds: 60 });
+        assert_eq!(viewer.receive(&warning, 3.0), vec![Event::IdleWarning(60)]);
+        let still_here = viewer.still_here().unwrap();
+        assert_eq!(host.open_control(&still_here), Some(Control::StillHere));
+        let reason = host.control(&Control::EndReason { code: protocol::control::END_IDLE.into() });
+        assert!(viewer.receive(&reason, 4.0).is_empty());
+        let bye = host.control(&Control::Bye { session: String::new() });
+        let ended = viewer.receive(&bye, 5.0);
+        assert_eq!(ended, vec![Event::Ended(reconnect::IDLE_ENDED_MESSAGE.into())]);
+        let reconnect::NextStep::Stop { .. } = reconnect::after_failure(reconnect::IDLE_ENDED_MESSAGE, true, 0, std::time::Duration::ZERO) else {
+            panic!("an idle end must not reconnect");
+        };
     }
 
     #[test]

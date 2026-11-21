@@ -19,6 +19,11 @@ pub mod kind {
     pub const TWOFA_FAILED: &str = "twofa_failed";
     /// The host user declined the request, or nobody answered it.
     pub const CONNECTION_DENIED: &str = "connection_denied";
+    /// The access rules turned the viewer away without asking anyone: its ID
+    /// is not on the list, or it came outside the allowed hours.
+    pub const CONNECTION_REFUSED: &str = "connection_refused";
+    /// The host ended a session nobody had used for its idle timeout.
+    pub const IDLE_DISCONNECT: &str = "idle_disconnect";
     /// A file the viewer offered to this computer.
     pub const FILE_UPLOAD_ACCEPTED: &str = "file_upload_accepted";
     pub const FILE_UPLOAD_REJECTED: &str = "file_upload_rejected";

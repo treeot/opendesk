@@ -365,7 +365,7 @@ pub(crate) async fn run_paired_host_session(
     let HostSessionParams { password, session_password, unattended_enabled, twofa_enabled, totp_secret, unattended_problem, allow_virtual_displays } = params;
     // Every session starts with all four viewer permissions enabled, and a
     // fresh per-session disconnect signal distinct from the stop-hosting one.
-    let (gates, mut disconnect_rx) = {
+    let (gates, mut disconnect_rx, admission) = {
         let state = app.state::<AppState>();
         let mut state = state.lock();
         state.viewer_permissions.reset();
@@ -382,14 +382,17 @@ pub(crate) async fn run_paired_host_session(
             event.address.get_or_insert_with(|| audit_session.clone());
             write_audit(&audit_app, &event);
         });
+        let (admission, idle_timeout) = access::session_policy(&state.config, &peer_id);
         let gates = host_core::roles::SessionGates {
             control: state.viewer_permissions.control.clone(),
             audio: state.viewer_permissions.audio.clone(),
             audit: Some(audit),
+            refusal: admission.refusal(),
+            idle_timeout,
         };
         let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
         state.disconnect_viewer = Some(disconnect_tx);
-        (gates, disconnect_rx)
+        (gates, disconnect_rx, admission)
     };
     emit(app, "viewer_permissions", app.state::<AppState>().lock().viewer_permissions.snapshot());
     if let Some(problem) = unattended_problem {
@@ -397,10 +400,11 @@ pub(crate) async fn run_paired_host_session(
         emit(app, "error", ErrorEvent { message: problem });
     }
     // The viewer's peer ID comes from the relay's pairing message and is not
-    // authenticated, so an allow-listed ID never skips approval; the prompt
-    // only marks it as a known device. Unattended access (its own password,
-    // plus optional TOTP) is the only path without a prompt.
+    // authenticated, so by default an allow-listed ID never skips approval;
+    // the prompt only marks it as a known device. The host user can opt in to
+    // auto-accepting listed IDs, which still need the password.
     let known = app.state::<AppState>().lock().config.is_allowed(&peer_id);
+    let auto_accept = admission == host_core::policy::Admission::AutoAccept;
     let remote_id = peer_id.clone();
     let audit_app = app.clone();
     let audit_peer = peer_id.clone();
@@ -412,7 +416,7 @@ pub(crate) async fn run_paired_host_session(
         let mut event = AuditEvent::new(audit_kind::SESSION_START, Some(audit_peer));
         event.address = Some(audit_address);
         write_audit(&audit_app, &event);
-        if unattended_enabled {
+        if unattended_enabled || auto_accept {
             emit_host_status(&approve_app, "in_session");
             emit(&approve_app, "session_started", SessionStarted { role: "host", remote_id: peer_id.clone() });
             emit_activity(&approve_app, "session", format!("{} connected", peer_id));

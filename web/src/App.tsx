@@ -6,6 +6,7 @@ import type { BrowseSignal, Core, FileSignal, HostFeature, MonitorInfo } from ".
 import ConnectForm, { type ConnectRequest } from "./screens/ConnectForm";
 import Session, { type SessionControls } from "./screens/Session";
 import TwofaPrompt from "./screens/TwofaPrompt";
+import IdleBanner from "./components/IdleBanner";
 
 export interface AppProps {
   loadCore(): Promise<Core>;
@@ -28,6 +29,8 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
   const [lastTarget, setLastTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [twofa, setTwofa] = useState<"required" | "invalid" | null>(null);
+  // When the host will end the unused session, after its idle warning.
+  const [idleEndsAt, setIdleEndsAt] = useState<number | null>(null);
   const lastRequest = useRef<ConnectRequest | null>(null);
   const connection = useRef<Connection | null>(null);
   const videoSink = useRef<((frame: Uint8Array) => void) | null>(null);
@@ -38,7 +41,8 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
   const chatSink = useRef<((text: string) => void) | null>(null);
 
   const controls = useMemo<SessionControls>(() => ({
-    sendInput: (event) => connection.current?.sendInput(event),
+    // Input resets the host's idle timer, so it also clears the warning.
+    sendInput: (event) => { connection.current?.sendInput(event); setIdleEndsAt(null); },
     requestKeyframe: () => connection.current?.requestKeyframe(),
     selectMonitor: (id) => connection.current?.selectMonitor(id),
     setVideoSink: (sink) => { videoSink.current = sink; },
@@ -104,9 +108,11 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
         chat: (text) => chatSink.current?.(text),
         roundTrip: setRoundTrip,
         supports: (feature) => setFeatures((current) => (current.includes(feature) ? current : [...current, feature])),
+        idleWarning: (seconds) => setIdleEndsAt(Date.now() + seconds * 1000),
         ended: (error) => {
           if (connection.current === conn) connection.current = null;
           setActive(null);
+          setIdleEndsAt(null);
           setBusy(false);
           setMessage(error === null ? undefined : friendlyError(error));
         },
@@ -133,6 +139,7 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
   if (active) {
     return <>
       <Session remoteId={active.remoteId} status={active.status} monitors={monitors} controls={controls} roundTrip={roundTrip} features={features} onDisconnect={() => connection.current?.disconnect()} />
+      {idleEndsAt !== null && <IdleBanner endsAt={idleEndsAt} onStay={() => { connection.current?.stillHere(); setIdleEndsAt(null); }} />}
       {prompt}
     </>;
   }

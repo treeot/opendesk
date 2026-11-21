@@ -48,6 +48,9 @@ tauri-plugin-process = "2.4.0"
 tauri-plugin-autostart = "=2.7.0"
 tauri-plugin-single-instance = "=2.4.5"
 sha2 = "0.11"
+# Local weekday and time for allowed connection hours. Already in the tree
+# (with its clock feature) through tauri.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Already in the tree through tauri-plugin-autostart; reads MachineGuid.
 [target.'cfg(windows)'.dependencies]

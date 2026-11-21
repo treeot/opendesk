@@ -40,6 +40,8 @@ export interface ConnectionHandlers {
   roundTrip?(ms: number): void;
   /** The host offers an optional feature. */
   supports?(feature: HostFeature): void;
+  /** The host will end the unused session in `seconds` unless someone acts. */
+  idleWarning?(seconds: number): void;
   /** The connection is over: `error` is null after the user disconnected. */
   ended(error: string | null): void;
   /** The host wants a 2FA code: "required" (none sent) or "invalid" (rejected). */
@@ -195,6 +197,7 @@ export class Connection {
         else if (kind === "chat") this.handlers.chat?.(event.text);
         else if (kind === "rtt") this.handlers.roundTrip?.(Number(event.text));
         else if (kind === "supports") this.handlers.supports?.(event.text as HostFeature);
+        else if (kind === "idle-warning") this.handlers.idleWarning?.(Number(event.text) || 60);
         else if (kind === "ended") {
           const message = event.text;
           event.free();
@@ -341,6 +344,11 @@ export class Connection {
 
   secureAttention() {
     this.send(this.viewer?.secureAttention());
+  }
+
+  /** Answer the host's idle warning so it keeps the session. */
+  stillHere() {
+    this.send(this.viewer?.stillHere());
   }
 
   setMaxBitrate(bps: number) {

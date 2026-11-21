@@ -1,3 +1,4 @@
+mod access;
 mod config;
 mod contacts;
 mod permissions;
@@ -1098,6 +1099,11 @@ pub fn run() {
             list_allowed,
             add_allowed,
             remove_allowed,
+            access::get_access_rules,
+            access::set_access_rules,
+            access::get_idle_timeout,
+            access::set_idle_timeout,
+            stay_connected,
             add_contact,
             remove_contact,
             touch_contact,

@@ -7,13 +7,13 @@ export interface ViewerEvent {
   /**
    * "send", "authenticated", "video", "audio", "monitors", "clipboard",
    * "file-offer", "file-progress", "file-received", "file-sent", "file-error",
-   * "browse", "chat", "rtt", "supports" or "ended".
+   * "browse", "chat", "rtt", "supports", "idle-warning" or "ended".
    */
   readonly kind: string;
   /**
    * Monitors JSON, clipboard text, the audio channel count, a file-transfer
-   * or browse JSON record, chat text, a round trip in ms, a feature name or
-   * the end message.
+   * or browse JSON record, chat text, a round trip in ms, a feature name,
+   * the seconds left before an idle end, or the end message.
    */
   readonly text: string;
   takeBytes(): Uint8Array;
@@ -40,6 +40,7 @@ export interface Viewer {
   renamePath(path: string, name: string): Uint8Array | undefined;
   ping(nowMs: number): Uint8Array | undefined;
   secureAttention(): Uint8Array | undefined;
+  stillHere(): Uint8Array | undefined;
   setMaxBitrate(bps: number): Uint8Array | undefined;
   textReadability(enabled: boolean): Uint8Array | undefined;
   requestKeyframe(): Uint8Array | undefined;

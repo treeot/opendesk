@@ -130,6 +130,7 @@ describe("Connection", () => {
         { kind: "browse", text: '{"t":"dir_listing","req":1,"path":"/home","entries":[]}' },
         { kind: "rtt", text: "37" },
         { kind: "supports", text: "secure-attention" },
+        { kind: "idle-warning", text: "60" },
       ];
     };
     const connection = new Connection(
@@ -140,6 +141,7 @@ describe("Connection", () => {
         browse: (signal) => seen.push(["browse", signal]),
         roundTrip: (ms) => seen.push(["rtt", ms]),
         supports: (feature) => seen.push(["supports", feature]),
+        idleWarning: (seconds) => seen.push(["idle", seconds]),
       },
       { core, openSocket: (url) => new FakeSocket(url), now: () => 0 },
     );
@@ -151,7 +153,10 @@ describe("Connection", () => {
       ["browse", { t: "dir_listing", req: 1, path: "/home", entries: [] }],
       ["rtt", 37],
       ["supports", "secure-attention"],
+      ["idle", 60],
     ]);
+    connection.stillHere();
+    expect(FakeSocket.all[0].sent.at(-1)).toEqual([0x01, 0x5d]);
   });
 
   it("pings on the timer once the session is live", () => {

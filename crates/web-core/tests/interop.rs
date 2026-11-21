@@ -249,8 +249,17 @@ fn reconnect_rules_match_host_core() {
         &desktop::rejection_error(desktop::reject_code::NO_ANSWER),
         &desktop::rejection_error(desktop::reject_code::NO_DISPLAY),
         &desktop::rejection_error(reconnect::reject_code::NO_DISPLAY),
+        &desktop::rejection_error(desktop::reject_code::NOT_ALLOWED),
+        &desktop::rejection_error(reconnect::reject_code::NOT_ALLOWED),
+        &desktop::rejection_error(desktop::reject_code::OUTSIDE_HOURS),
+        &desktop::rejection_error(reconnect::reject_code::OUTSIDE_HOURS),
+        desktop::IDLE_ENDED_MESSAGE,
+        reconnect::IDLE_ENDED_MESSAGE,
         &desktop::rejection_error("future_code"),
     ];
+    for code in [None, Some(protocol::control::END_IDLE), Some("from_a_newer_host")] {
+        assert_eq!(reconnect::host_ended_message(code), desktop::host_ended_message(code), "{code:?}");
+    }
     for message in messages {
         let reason = format!("{:?}", desktop::classify_viewer_error(message));
         assert_eq!(format!("{:?}", reconnect::classify_viewer_error(message)), reason, "{message}");

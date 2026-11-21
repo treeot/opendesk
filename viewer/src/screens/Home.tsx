@@ -4,6 +4,7 @@ import { friendlyError, useNotify } from "../lib/notify";
 import QrCode from "../components/QrCode";
 import { CHECK_NOW_EVENT } from "../components/UpdateBanner";
 import Recordings from "../components/Recordings";
+import AccessRules, { IdleTimeout } from "../components/AccessRules";
 import { buildInviteLink, parseInvite } from "../lib/invite";
 import { auditDetails, auditLabel } from "../lib/audit";
 import { allTags, buildSections, describeImport, parseTags } from "../lib/addressBook";
@@ -30,8 +31,6 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
   const [showPassword, setShowPassword] = useState(false);
   const [recentIds, setRecentIds] = useState<string[]>([]);
   const [contacts, setContacts] = useState<api.Contact[]>([]);
-  const [allowedDevices, setAllowedDevices] = useState<string[]>([]);
-  const [allowedId, setAllowedId] = useState("");
   const [targetId, setTargetId] = useState(initialTargetId);
   // Prefill when a deep link arrives after mount (App updates this prop).
   useEffect(() => { if (initialTargetId) setTargetId(initialTargetId); }, [initialTargetId]);
@@ -96,8 +95,8 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
 
   useEffect(() => {
     let mounted = true;
-    void Promise.all([api.getIdentity(), api.getConfig(), api.getUnattendedStatus(), api.listContacts(), api.listAllowed()]).then(([loadedIdentity, config, unattendedStatus, loadedContacts, loadedAllowed]) => {
-      if (mounted) { const configuredRelays = config.relay_urls?.length ? config.relay_urls : [config.relay_url]; setIdentity(loadedIdentity); setRecentIds(config.recent_ids); setAllowVirtualDisplays(config.allow_virtual_displays ?? true); setRelays(configuredRelays); setRelayText(configuredRelays.join("\n")); setUnattended(unattendedStatus); setUnattendedEnabled(unattendedStatus.enabled); setContacts(loadedContacts); setAllowedDevices(loadedAllowed); setMessage(unattendedStatus.problem); }
+    void Promise.all([api.getIdentity(), api.getConfig(), api.getUnattendedStatus(), api.listContacts()]).then(([loadedIdentity, config, unattendedStatus, loadedContacts]) => {
+      if (mounted) { const configuredRelays = config.relay_urls?.length ? config.relay_urls : [config.relay_url]; setIdentity(loadedIdentity); setRecentIds(config.recent_ids); setAllowVirtualDisplays(config.allow_virtual_displays ?? true); setRelays(configuredRelays); setRelayText(configuredRelays.join("\n")); setUnattended(unattendedStatus); setUnattendedEnabled(unattendedStatus.enabled); setContacts(loadedContacts); setMessage(unattendedStatus.problem); }
     }).catch((error: unknown) => mounted && setMessage(friendlyError(error)));
     void api.getStartAtSignIn().then((enabled) => { if (mounted) setStartAtSignIn(enabled); }).catch(() => undefined);
     void Promise.resolve().then(api.getDisplayDriver).then((driver) => { if (mounted) setDisplayDriver(driver ?? null); }).catch(() => undefined);
@@ -334,14 +333,6 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
     try { await api.wakeContact(id); setMessage(`Wake signal sent to ${alias}.`); }
     catch (error) { setMessage(friendlyError(error)); }
   };
-  const addAllowedDevice = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!/^\d{9}$/.test(allowedId)) { setMessage("Enter the 9-digit ID."); return; }
-    try { await api.addAllowed(allowedId); setAllowedDevices((current) => current.includes(allowedId) ? current : [...current, allowedId]); setAllowedId(""); } catch (error) { setMessage(friendlyError(error)); }
-  };
-  const removeAllowedDevice = async (id: string) => {
-    try { await api.removeAllowed(id); setAllowedDevices((current) => current.filter((device) => device !== id)); } catch (error) { setMessage(friendlyError(error)); }
-  };
   const unattendedDirty = unattendedEnabled !== unattended.enabled || unattendedPassword.length > 0;
   // 2FA protects unattended access, so it can only be turned on once that is
   // saved as enabled; turning it off is always allowed.
@@ -426,7 +417,6 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
       ? <div className="new-id-confirm driver-confirm" role="group" aria-label="Install virtual display driver"><p>OpenDesk downloads Amyuni's free virtual display driver from amyuni.com, checks it is the exact known file, and installs it. Windows asks for administrator approval, and any user on this computer can then add and remove its displays. Amyuni's licence:</p><pre className="driver-license">{displayDriver.license}</pre><div><button className="ghost-button" type="button" disabled={driverBusy} onClick={() => setConfirmingDriver(false)}>Cancel</button><button className="primary-button" type="button" disabled={driverBusy} onClick={() => void changeDisplayDriver(true)}>{driverBusy ? "Installing…" : "Accept and install"}</button></div></div>
       : <div className="driver-row"><span className="caption">Windows needs a driver for virtual displays.</span><button className="quiet-button" type="button" onClick={() => setConfirmingDriver(true)}>Install virtual display driver</button></div>)}</section>;
 
-  const allowListCard = <section className="card allow-list-card"><span className="eyebrow">ALLOWED DEVICES</span><h2>Known devices</h2><p className="caption">Known devices are marked in the approval prompt. They still need your approval and the session password.</p>{allowedDevices.length > 0 ? <div className="contact-list">{allowedDevices.map((id) => <div className="contact-row" key={id}><span className="mono">{id}</span><button className="icon-button" type="button" onClick={() => void removeAllowedDevice(id)} aria-label={`Remove allowed device ${id}`}>×</button></div>)}</div> : <p className="caption">No devices are allowed yet.</p>}<form className="contact-form" onSubmit={(event) => void addAllowedDevice(event)}><input className="mono" inputMode="numeric" maxLength={9} value={allowedId} onChange={(event) => setAllowedId(event.target.value.replace(/\D/g, ""))} placeholder="Device ID" aria-label="Allowed device ID" /><button className="primary-button" type="submit">Add</button></form></section>;
 
   const networkCard = <section className="card relay-card"><span className="eyebrow">RELAY REGIONS</span><h2>Relay endpoints</h2><textarea className="relay-editor mono" value={relayText} onChange={(event) => setRelayText(event.target.value)} aria-label="Relay URLs" rows={Math.max(2, relays.length)} /><button className="quiet-button" type="button" onClick={() => void saveRelays()}>Save relay list</button><p className="caption">One WebSocket URL per line. OpenDesk contacts them all at once and uses whichever answers fastest, so add relays near the people you connect with.</p></section>;
 
@@ -463,7 +453,7 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
       <nav className="settings-nav" aria-label="Settings sections">{settingsTabs.map((tab) => <button key={tab.id} type="button" className={`settings-nav__item${settingsTab === tab.id ? " settings-nav__item--active" : ""}`} aria-current={settingsTab === tab.id} onClick={() => setSettingsTab(tab.id)}>{tab.label}</button>)}</nav>
       <div className="settings-panel">
         {settingsTab === "access" && accessCard}
-        {settingsTab === "security" && <>{displaysCard}{allowListCard}</>}
+        {settingsTab === "security" && <>{displaysCard}<AccessRules /><IdleTimeout /></>}
         {settingsTab === "network" && networkCard}
         {settingsTab === "recordings" && <Recordings />}
         {settingsTab === "audit" && auditCard}

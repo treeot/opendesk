@@ -553,11 +553,16 @@ pub struct SessionGates {
     /// Receives security-relevant session events (failed logins, Ctrl+Alt+Del,
     /// restart, privacy mode) for the host's audit log. Never given secrets.
     pub audit: Option<crate::audit::AuditSink>,
+    /// The access rules refuse this viewer: once it proves the password, it
+    /// gets this reason instead of a prompt (or unattended access).
+    pub refusal: Option<crate::policy::Refusal>,
+    /// End the session after this long without viewer activity.
+    pub idle_timeout: Option<Duration>,
 }
 
 impl Default for SessionGates {
     fn default() -> Self {
-        Self { control: Arc::new(AtomicBool::new(true)), audio: Arc::new(AtomicBool::new(true)), audit: None }
+        Self { control: Arc::new(AtomicBool::new(true)), audio: Arc::new(AtomicBool::new(true)), audit: None, refusal: None, idle_timeout: None }
     }
 }
 
@@ -706,6 +711,13 @@ where
     // relay nor the viewer's dead-peer timer drops a session that is waiting
     // on the host user's approval.
     let _keepalive = spawn_keepalive(sender.clone(), Arc::clone(&control_sealer), timings.keepalive);
+    // The access rules apply to unattended access too. Checked only after the
+    // password, so only someone who knows it learns why.
+    if let Some(refusal) = gates.refusal {
+        audit(audit_sink.as_ref(), crate::audit::kind::CONNECTION_REFUSED, refusal.detail());
+        send_rejection(&sender, &control_sealer, refusal.code()).await;
+        return Err(Box::new(SessionError(refusal.detail())));
+    }
     let mut code_received = false;
     let code_valid = if unattended_enabled && twofa_enabled {
         let body = tokio::time::timeout(Duration::from_secs(30), recv_control(&mut control_rx)).await.ok().flatten();
@@ -843,6 +855,12 @@ where
     }
     let path = transport.path();
     let (transport_tx, transport_rx) = transport.into_split();
+    // Input, data-channel traffic (files, clipboard, chat) and "stay
+    // connected" all count as the viewer using the session.
+    let activity = crate::policy::Activity::new();
+    let mut idle = gates.idle_timeout.map(crate::policy::IdleTimer::new);
+    let mut idle_check = tokio::time::Instant::now();
+    let data_rx = if idle.is_some() { note_data_activity(data_rx, activity.clone()) } else { data_rx };
     if let Some(ready) = data_ready {
         let _ = ready.send(DataHandle {
             sender: reliable.sender(),
@@ -888,7 +906,7 @@ where
     // Also read by the control loop so view-only blocks host-state changes
     // (privacy, restart, virtual displays, secure attention), not just input.
     let control_gate = Arc::clone(&gates.control);
-    let mut input_forwarder = AbortOnDrop(tokio::spawn(forward_input(transport_rx, opener, inject_tx, gates.control)));
+    let mut input_forwarder = AbortOnDrop(tokio::spawn(forward_input(transport_rx, opener, inject_tx, gates.control, activity.clone())));
     let mut media = AbortOnDrop(tokio::spawn(send_media(transport_tx, sealer, audio_rx, Arc::clone(&video.units), aux_rx, gates.audio)));
     // The viewer keepalives on the relay socket even when media is direct, so
     // silence there means the viewer is gone (a direct transport may never
@@ -923,6 +941,25 @@ where
             _ = tokio::time::sleep_until(peer_deadline) => {
                 log::warn!("viewer sent no control traffic for {}s; ending the session", timings.dead_peer.as_secs());
                 return Ok(());
+            },
+            _ = tokio::time::sleep_until(idle_check), if idle.is_some() => {
+                let Some(timer) = idle.as_mut() else { continue };
+                match timer.poll(activity.last(), tokio::time::Instant::now()) {
+                    crate::policy::IdleAction::Wait { next } => idle_check = next,
+                    crate::policy::IdleAction::Warn { seconds, next } => {
+                        idle_check = next;
+                        let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &Control::IdleWarning { seconds })).await;
+                    }
+                    crate::policy::IdleAction::End => {
+                        let minutes = gates.idle_timeout.unwrap_or_default().as_secs() / 60;
+                        log::info!("no viewer activity for {minutes} min; ending the session");
+                        audit(audit_sink.as_ref(), crate::audit::kind::IDLE_DISCONNECT, format!("no activity for {minutes} min"));
+                        let reason = Control::EndReason { code: protocol::control::END_IDLE.into() };
+                        let _ = tokio::time::timeout(Duration::from_millis(150), sender.send_frame(Tag::Control, &seal_control(&control_sealer, &reason))).await;
+                        send_bye(&sender, &control_sealer).await;
+                        return Ok(());
+                    }
+                }
             },
             body = session_control_rx.recv() => {
                 // The reliable (WebSocket) channel closed: the peer is gone.
@@ -1088,6 +1125,7 @@ where
                     Some(Control::Ping { sent_us }) => {
                         let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &Control::Pong { sent_us })).await;
                     }
+                    Some(Control::StillHere) => activity.touch(),
                     _ => {}
                 }
             },
@@ -1756,6 +1794,7 @@ async fn forward_input(
     mut opener: Opener,
     inject_tx: mpsc::Sender<InputEvent>,
     control_allowed: Arc<AtomicBool>,
+    activity: crate::policy::Activity,
 ) -> InputForwardEnd {
     let mut pending_move: Option<InputEvent> = None;
     loop {
@@ -1770,6 +1809,8 @@ async fn forward_input(
                 if tag != Tag::Input { continue; }
                 let Some(plaintext) = opener.open(&[Tag::Input as u8], &body) else { continue };
                 let Some((event, _timestamp_us)) = InputEvent::from_bytes(&plaintext) else { continue };
+                // Someone is at the viewer, even when view-only drops the event.
+                activity.touch();
                 // Host-enforced control gate: decrypt to keep the opener's nonce
                 // sequence in step, then drop the event so nothing is injected.
                 if !control_allowed.load(Ordering::Relaxed) { pending_move = None; continue; }
@@ -1792,6 +1833,19 @@ async fn forward_input(
             }
         }
     }
+}
+
+/// Passes data-channel frames (files, clipboard, chat) through unchanged,
+/// noting each one as viewer activity for the idle timer.
+fn note_data_activity(mut rx: mpsc::Receiver<Vec<u8>>, activity: crate::policy::Activity) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, out) = mpsc::channel(1);
+    tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            activity.touch();
+            if tx.send(frame).await.is_err() { break; }
+        }
+    });
+    out
 }
 
 /// Run the viewer side of a transport after SPAKE2 and key confirmation.
@@ -2110,6 +2164,8 @@ async fn run_viewer_media_loop_with_control(
     // A decodable frame the frame sink had no room for yet. Video never
     // blocks this loop: input and control keep flowing while it waits.
     let mut pending_video: Option<Vec<u8>> = None;
+    // Why the host is ending the session, from an `EndReason` before its `Bye`.
+    let mut end_code: Option<String> = None;
     loop {
         tokio::select! {
             // Input is polled before media so a video burst never delays it.
@@ -2124,11 +2180,13 @@ async fn run_viewer_media_loop_with_control(
                 };
                 peer_deadline = tokio::time::Instant::now() + dead_peer;
                 match Control::from_bytes(&plaintext) {
-                    Some(Control::Bye { .. }) => return Err(crate::reconnect::HOST_ENDED_MESSAGE.into()),
+                    Some(Control::Bye { .. }) => return Err(crate::reconnect::host_ended_message(end_code.as_deref()).into()),
+                    Some(Control::EndReason { code }) => end_code = Some(code),
                     Some(Control::MonitorList { .. } | Control::VirtualDisplaySupport { .. } | Control::VirtualDisplayAdded { .. } | Control::VirtualDisplayRefused { .. } | Control::SecureAttentionSupport
                         | Control::MultiMonitorSupport { .. } | Control::MonitorStreamOpened { .. } | Control::MonitorStreamClosed { .. } | Control::MonitorStreamRefused { .. }
                         | Control::RestartSupport | Control::Restarting
-                        | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. } | Control::HostMac { .. }) => {
+                        | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. } | Control::HostMac { .. }
+                        | Control::IdleWarning { .. }) => {
                         if let Some(sink) = &monitor_sink { let _ = sink.send(plaintext).await; }
                     }
                     Some(Control::Pong { sent_us }) if relay_ping.is_some() => {
@@ -2572,7 +2630,7 @@ mod tests {
         let (wire_tx, wire_rx) = mpsc::channel(16);
         // Capacity 1 and no consumer yet: the queue is full after one event.
         let (inject_tx, mut inject_rx) = mpsc::channel(1);
-        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::new(AtomicBool::new(true))));
+        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::new(AtomicBool::new(true)), crate::policy::Activity::new()));
 
         let key = |code| InputEvent::Key { code, down: true, modifiers: 0 };
         let mv = |x| InputEvent::MouseMove { x, y: x };
@@ -2599,7 +2657,7 @@ mod tests {
         let shared = [6u8; 32];
         let (viewer_send, _) = derive_keys(&shared, false);
         let (_, host_recv) = derive_keys(&shared, true);
-        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::new(AtomicBool::new(true))));
+        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::new(AtomicBool::new(true)), crate::policy::Activity::new()));
         let event = InputEvent::Key { code: 65, down: true, modifiers: 0 };
         let sealed = Sealer::new(viewer_send).seal(&[Tag::Input as u8], &event.to_bytes(0));
         wire_tx.send((Tag::Input, sealed)).await.unwrap();
@@ -2622,7 +2680,7 @@ mod tests {
         let (wire_tx, wire_rx) = mpsc::channel(16);
         let (inject_tx, mut inject_rx) = mpsc::channel(4);
         let control = Arc::new(AtomicBool::new(false));
-        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::clone(&control)));
+        let forwarder = tokio::spawn(forward_input(Box::new(ChannelReceiver(wire_rx)), Opener::new(host_recv), inject_tx, Arc::clone(&control), crate::policy::Activity::new()));
 
         let key = |code| InputEvent::Key { code, down: true, modifiers: 0 };
         // Gated off: this event must never reach the injector.
@@ -3789,6 +3847,73 @@ mod tests {
             first_frame(&mut viewer).await;
             host.abort();
             viewer.task.abort();
+        }
+
+        type AuditLog = Arc<Mutex<Vec<crate::audit::AuditEvent>>>;
+
+        fn spawn_host_with_gates(ws: WebSocketStream<DuplexStream>, gates: impl FnOnce(SessionGates) -> SessionGates, asked: oneshot::Sender<()>) -> (JoinHandle<SessionResult<()>>, AuditLog) {
+            let log: AuditLog = Arc::default();
+            let sink: crate::audit::AuditSink = {
+                let log = Arc::clone(&log);
+                Arc::new(move |event| log.lock().unwrap().push(event))
+            };
+            let gates = gates(SessionGates { audit: Some(sink), ..SessionGates::default() });
+            let host = tokio::spawn(async move {
+                run_host_session_with_data_and_accept_and_2fa_with_factory(
+                    ws, PASSWORD, None, SESSION, || Some(FakeCapturer::new(64, 64)),
+                    |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
+                    || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
+                    true, false, None, move || { let _ = asked.send(()); async { true } }, None, SessionTimings::default(), HostDisplays::default(), gates,
+                ).await
+            });
+            (host, log)
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn access_rules_refuse_even_unattended_viewers_with_a_reason() {
+            for refusal in [crate::policy::Refusal::NotAllowed, crate::policy::Refusal::OutsideHours] {
+                let (_relay, host_ws, viewer_ws) = TestRelay::start(Duration::from_secs(3600)).await;
+                let (asked_tx, mut asked) = oneshot::channel();
+                let (host, log) = spawn_host_with_gates(host_ws, |gates| SessionGates { refusal: Some(refusal), ..gates }, asked_tx);
+                let viewer = spawn_viewer(viewer_ws, SessionTimings::default());
+                let error = timeout(Duration::from_secs(10), viewer.task).await.expect("viewer kept waiting").unwrap().expect_err("a refusal ends the attempt");
+                assert_eq!(crate::reconnect::rejection_code(&error.message), Some(refusal.code()));
+                assert!(!crate::reconnect::should_retry_viewer(error.reason, true), "{}", error.message);
+                assert!(timeout(Duration::from_secs(3), host).await.expect("host kept going").unwrap().is_err());
+                assert!(asked.try_recv().is_err(), "nobody is asked about a refused viewer");
+                let log = log.lock().unwrap();
+                assert_eq!(log.len(), 1, "{log:?}");
+                assert_eq!(log[0].event, crate::audit::kind::CONNECTION_REFUSED);
+                assert_eq!(log[0].detail.as_deref(), Some(refusal.detail()));
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_unused_session_is_warned_then_ended_cleanly() {
+            let (_relay, host_ws, viewer_ws) = TestRelay::start(Duration::from_secs(3600)).await;
+            let (asked_tx, _asked) = oneshot::channel();
+            let (host, log) = spawn_host_with_gates(host_ws, |gates| SessionGates { idle_timeout: Some(Duration::from_secs(2)), ..gates }, asked_tx);
+            let (frame_tx, _frames) = mpsc::channel(64);
+            let (_input, input_rx) = mpsc::channel(4);
+            let (monitor_tx, mut monitor_rx) = mpsc::channel(64);
+            let viewer = tokio::spawn(async move {
+                run_viewer_session_inner(viewer_ws, PASSWORD, SESSION, frame_tx, input_rx, None, Some(monitor_tx), None, None, None, SessionTimings::default())
+                    .await
+                    .map_err(viewer_session_error)
+            });
+            let warned = timeout(Duration::from_secs(10), async {
+                while let Some(body) = monitor_rx.recv().await {
+                    if let Some(Control::IdleWarning { seconds }) = Control::from_bytes(&body) { return seconds; }
+                }
+                panic!("monitor sink closed before the idle warning");
+            }).await.expect("no idle warning");
+            assert!((1..=2).contains(&warned), "{warned}");
+            let error = timeout(Duration::from_secs(10), viewer).await.expect("the idle session never ended").unwrap().expect_err("the host ended it");
+            assert_eq!(error.message, crate::reconnect::IDLE_ENDED_MESSAGE);
+            assert_eq!(error.reason, DisconnectReason::CleanUserDisconnect);
+            assert!(timeout(Duration::from_secs(3), host).await.unwrap().unwrap().is_ok());
+            let log = log.lock().unwrap();
+            assert!(log.iter().any(|event| event.event == crate::audit::kind::IDLE_DISCONNECT), "{log:?}");
         }
     }
 }

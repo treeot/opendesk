@@ -127,6 +127,11 @@ pub mod reject_code {
     pub const NO_ANSWER: &str = "no_answer";
     /// The host has no screen (headless) and could not add a virtual one.
     pub const NO_DISPLAY: &str = "no_display";
+    /// The host only takes connections from the IDs on its list, and this
+    /// viewer's ID is not on it.
+    pub const NOT_ALLOWED: &str = "not_allowed";
+    /// The host only takes connections during set hours, and this is not one.
+    pub const OUTSIDE_HOURS: &str = "outside_hours";
 }
 
 /// What the viewer shows when the host has no screen to share.
@@ -148,13 +153,26 @@ pub fn rejection_code(error: &str) -> Option<&str> {
 /// sealed `Control::Bye`. It is a clean end: the viewer must not reconnect.
 pub const HOST_ENDED_MESSAGE: &str = "The host ended the session.";
 
+/// Viewer error text when the host ended the session because nobody used it
+/// for its idle timeout. A clean end like [`HOST_ENDED_MESSAGE`].
+pub const IDLE_ENDED_MESSAGE: &str = "The host ended the session because it wasn't used for a while.";
+
+/// The viewer's error for a host `Bye`, given the `EndReason` code that came
+/// before it, if any.
+pub fn host_ended_message(end_code: Option<&str>) -> &'static str {
+    match end_code {
+        Some(protocol::control::END_IDLE) => IDLE_ENDED_MESSAGE,
+        _ => HOST_ENDED_MESSAGE,
+    }
+}
+
 /// Only explicit authentication signals are fatal: a failed PAKE (wrong
 /// password) or the host's explicit rejection. A host's explicit `Bye` is a
 /// clean end. Everything else — including a connection that closes after the
 /// key exchange but before video — is treated as transient and retried
 /// within the reconnect window.
 pub fn classify_viewer_error(error: &str) -> DisconnectReason {
-    if error == HOST_ENDED_MESSAGE {
+    if error == HOST_ENDED_MESSAGE || error == IDLE_ENDED_MESSAGE {
         return DisconnectReason::CleanUserDisconnect;
     }
     if error == PEER_UNAVAILABLE_MESSAGE {
@@ -204,6 +222,12 @@ pub fn auth_failure_message(error: &str, after_session: bool) -> String {
             "The other device can't share its screen. On that device, check that a display is on and Screen Recording is allowed for OpenDesk, restart it, and connect again.".to_owned()
         }
         Some(reject_code::NO_DISPLAY) => NO_DISPLAY_MESSAGE.to_owned(),
+        Some(reject_code::NOT_ALLOWED) => {
+            "The other computer only accepts connections from devices on its list, and this one isn't on it. Ask its owner to add your ID.".to_owned()
+        }
+        Some(reject_code::OUTSIDE_HOURS) => {
+            "The other computer doesn't accept connections at this time. Try again during its allowed hours.".to_owned()
+        }
         Some(other) => format!("The host rejected the session ({other})."),
         None if error == KEY_NOT_CONFIRMED => {
             "The other device hung up while checking the password, so the password is probably wrong. It changes after every session: get the current one and connect again.".to_owned()
@@ -411,6 +435,28 @@ mod tests {
         // An explicit rejection keeps its own wording.
         let denied = rejection_error(reject_code::DENIED);
         assert_eq!(restart_stop_message(&denied, classify_viewer_error(&denied), true), "The host declined the connection request.");
+    }
+
+    #[test]
+    fn access_rule_refusals_stop_with_their_reason() {
+        for (code, text) in [(reject_code::NOT_ALLOWED, "isn't on it"), (reject_code::OUTSIDE_HOURS, "allowed hours")] {
+            let error = rejection_error(code);
+            let reason = classify_viewer_error(&error);
+            assert!(!should_retry_viewer(reason, false) && !should_retry_viewer(reason, true), "{code}");
+            assert!(stop_message(&error, reason, true).contains(text), "{code}");
+        }
+    }
+
+    #[test]
+    fn an_idle_end_is_clean_and_explained() {
+        assert_eq!(host_ended_message(None), HOST_ENDED_MESSAGE);
+        assert_eq!(host_ended_message(Some("from_a_newer_host")), HOST_ENDED_MESSAGE);
+        let message = host_ended_message(Some(protocol::control::END_IDLE));
+        assert_eq!(message, IDLE_ENDED_MESSAGE);
+        let reason = classify_viewer_error(message);
+        assert_eq!(reason, DisconnectReason::CleanUserDisconnect);
+        assert!(!should_retry_viewer(reason, true));
+        assert_eq!(stop_message(message, reason, true), IDLE_ENDED_MESSAGE);
     }
 
     #[test]
