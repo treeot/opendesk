@@ -8,7 +8,12 @@ version = 2
 yanked = "warn"
 # Add specific RustSec IDs here (with a comment) only for an unavoidable
 # transitive advisory that has no fixed upgrade path yet.
-ignore = []
+ignore = [
+    # pin-utils is archived (unmaintained, no vulnerability). It comes in via
+    # nix 0.26, which webrtc-util 0.17 (latest, used by webrtc-ice) still
+    # requires. Drop this once webrtc-util moves to a newer nix.
+    "RUSTSEC-2026-0441",
+]
 
 [licenses]
 version = 2
