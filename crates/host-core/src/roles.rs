@@ -558,11 +558,14 @@ pub struct SessionGates {
     pub refusal: Option<crate::policy::Refusal>,
     /// End the session after this long without viewer activity.
     pub idle_timeout: Option<Duration>,
+    /// Host-side recording of what the session sends. When set, the viewer
+    /// is told the session is being recorded.
+    pub recording: Option<crate::recording::RecordingTap>,
 }
 
 impl Default for SessionGates {
     fn default() -> Self {
-        Self { control: Arc::new(AtomicBool::new(true)), audio: Arc::new(AtomicBool::new(true)), audit: None, refusal: None, idle_timeout: None }
+        Self { control: Arc::new(AtomicBool::new(true)), audio: Arc::new(AtomicBool::new(true)), audit: None, refusal: None, idle_timeout: None, recording: None }
     }
 }
 
@@ -853,6 +856,10 @@ where
     if let Some(mac) = crate::wol::local_mac() {
         reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &Control::HostMac { mac })).await?;
     }
+    // The viewer must be able to show that this host records the session.
+    if gates.recording.is_some() {
+        reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &Control::SessionRecording { on: true })).await?;
+    }
     let path = transport.path();
     let (transport_tx, transport_rx) = transport.into_split();
     // Input, data-channel traffic (files, clipboard, chat) and "stay
@@ -907,7 +914,7 @@ where
     // (privacy, restart, virtual displays, secure attention), not just input.
     let control_gate = Arc::clone(&gates.control);
     let mut input_forwarder = AbortOnDrop(tokio::spawn(forward_input(transport_rx, opener, inject_tx, gates.control, activity.clone())));
-    let mut media = AbortOnDrop(tokio::spawn(send_media(transport_tx, sealer, audio_rx, Arc::clone(&video.units), aux_rx, gates.audio)));
+    let mut media = AbortOnDrop(tokio::spawn(send_media(transport_tx, sealer, audio_rx, Arc::clone(&video.units), aux_rx, gates.audio, gates.recording)));
     // The viewer keepalives on the relay socket even when media is direct, so
     // silence there means the viewer is gone (a direct transport may never
     // report a dead peer on its own).
@@ -1189,6 +1196,7 @@ async fn send_media(
     units: Arc<UnitSlot>,
     mut aux_rx: mpsc::Receiver<(u32, Vec<u8>)>,
     audio_allowed: Arc<AtomicBool>,
+    recording: Option<crate::recording::RecordingTap>,
 ) -> SessionResult<()> {
     let mut video_ready = false;
     loop {
@@ -1198,6 +1206,7 @@ async fn send_media(
                 // Host-enforced mute: drain the frame but never send it so no
                 // host audio reaches the viewer while the gate is off.
                 if !audio_allowed.load(Ordering::Relaxed) { continue; }
+                if let Some(tap) = &recording { tap.audio(&audio_frame); }
                 let sealed = sealer.seal(&[Tag::Audio as u8], &audio_frame.to_bytes());
                 let _ = transport_tx.send(Tag::Audio, &sealed).await;
             },
@@ -1205,6 +1214,7 @@ async fn send_media(
             unit = units.take(), if video_ready => {
                 let plaintext = unit?;
                 video_ready = false;
+                if let Some(tap) = &recording { tap.video(&plaintext); }
                 let sealed = sealer.seal(&[Tag::Video as u8], &plaintext);
                 transport_tx.send(Tag::Video, &sealed).await?;
             },
@@ -2186,7 +2196,8 @@ async fn run_viewer_media_loop_with_control(
                         | Control::MultiMonitorSupport { .. } | Control::MonitorStreamOpened { .. } | Control::MonitorStreamClosed { .. } | Control::MonitorStreamRefused { .. }
                         | Control::RestartSupport | Control::Restarting
                         | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. } | Control::HostMac { .. }
-                        | Control::IdleWarning { .. }) => {
+                        | Control::IdleWarning { .. }
+                        | Control::SessionRecording { .. }) => {
                         if let Some(sink) = &monitor_sink { let _ = sink.send(plaintext).await; }
                     }
                     Some(Control::Pong { sent_us }) if relay_ping.is_some() => {
@@ -3498,6 +3509,50 @@ mod tests {
             assert_eq!(error.reason, DisconnectReason::CleanUserDisconnect);
             assert!(!crate::reconnect::should_reconnect(error.reason));
             host.abort();
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_recording_host_tells_the_viewer_and_records_what_it_sends() {
+            let timings = SessionTimings::default();
+            let (_relay, host_ws, viewer_ws) = TestRelay::start(Duration::from_secs(3600)).await;
+            let dir = std::env::temp_dir().join(format!("opendesk-recording-session-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let (event_tx, event_rx) = std::sync::mpsc::channel();
+            let event_tx = Mutex::new(event_tx);
+            let events: crate::recording::RecordingEvents = Arc::new(move |event| { let _ = event_tx.lock().unwrap().send(event); });
+            let tap = crate::recording::RecordingTap::start(dir.clone(), "session".into(), events).unwrap();
+            let gates = SessionGates { recording: Some(tap), ..SessionGates::default() };
+            let host = tokio::spawn(async move {
+                run_host_session_with_data_and_accept_and_2fa_with_factory(
+                    host_ws, PASSWORD, None, SESSION, || Some(FakeCapturer::new(64, 64)),
+                    |width, height, _codec| H264Encoder::new(width, height, 15, 1_000_000),
+                    || Box::new(NoopInjector::default()) as Box<dyn InputInjector>,
+                    false, false, None, || async { true }, None, timings, HostDisplays::default(), gates,
+                ).await
+            });
+            let (frame_tx, mut frames) = mpsc::channel(64);
+            let (monitor_tx, mut monitor_rx) = mpsc::channel(64);
+            let (_input, input_rx) = mpsc::channel(4);
+            let viewer = tokio::spawn(async move {
+                run_viewer_session_inner(viewer_ws, PASSWORD, SESSION, frame_tx, input_rx, None, Some(monitor_tx), None, None, None, timings).await
+            });
+            let told = timeout(Duration::from_secs(20), async {
+                while let Some(body) = monitor_rx.recv().await {
+                    if Control::from_bytes(&body) == Some(Control::SessionRecording { on: true }) { return true; }
+                }
+                false
+            }).await.expect("no recording notice");
+            assert!(told, "the viewer must hear that the host records");
+            timeout(Duration::from_secs(20), frames.recv()).await.unwrap().unwrap();
+            let started = event_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let crate::recording::RecordingEvent::Started { path } = started else { panic!("{started:?}") };
+            assert_eq!(path, dir.join("session.mkv"));
+            // Ending the session closes the file.
+            host.abort();
+            viewer.abort();
+            let stopped = event_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            assert!(matches!(stopped, crate::recording::RecordingEvent::Stopped { bytes, .. } if bytes > 0), "{stopped:?}");
+            let _ = std::fs::remove_dir_all(dir);
         }
 
         /// A capturer whose displays and health the test changes mid-session.

@@ -69,6 +69,11 @@ describe("Session", () => {
     expect(screen.getByRole("button", { name: "Chat" })).toBeTruthy();
   });
 
+  it("says so when the host records the session", () => {
+    renderSession({ features: ["recorded"] });
+    expect(screen.getByText("This session is being recorded by the remote computer")).toBeTruthy();
+  });
+
   it("sends special keys, using secure attention when the host offers it", () => {
     const { controls } = renderSession({ features: ["secure-attention"] });
     fireEvent.click(screen.getByRole("button", { name: "Special keys" }));

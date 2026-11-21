@@ -42,6 +42,10 @@ pub mod kind {
     pub const PRIVACY_MODE: &str = "privacy_mode";
     /// The host user allowed or blocked a viewer permission.
     pub const PERMISSION_CHANGED: &str = "permission_changed";
+    /// Host-side session recording opened or closed a file (`filename`).
+    pub const RECORDING_STARTED: &str = "recording_started";
+    pub const RECORDING_STOPPED: &str = "recording_stopped";
+    pub const RECORDING_FAILED: &str = "recording_failed";
 }
 
 /// Where a session reports its audit events. The caller fills in what the

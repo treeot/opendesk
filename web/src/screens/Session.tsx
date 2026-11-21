@@ -498,6 +498,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
       onDrop={onDrop}
     >
       <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" />
+      {features.includes("recorded") && <div className="session-recorded" role="status"><span className="session-recorded__dot" aria-hidden="true" />This session is being recorded by the remote computer</div>}
       {overlay && (
         <div className="session-host-overlay web-overlay" aria-live="polite">
           <span className="connecting-spinner" aria-hidden="true" />

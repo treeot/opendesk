@@ -72,8 +72,9 @@ pub enum Event {
     Chat(String),
     /// A measured relay round trip in whole milliseconds, from a `Pong`.
     RoundTrip(u32),
-    /// The host can do something optional; the name says what. Only
-    /// "secure-attention" (Ctrl+Alt+Del) is surfaced so far.
+    /// The host can do something optional, or tells the page something it
+    /// must show; the name says what: "secure-attention" (Ctrl+Alt+Del) or
+    /// "recorded" (the host records this session).
     Supports(&'static str),
     /// The host will end an unused session in this many seconds unless the
     /// viewer does something; [`ViewerSession::still_here`] keeps it.
@@ -405,6 +406,9 @@ impl ViewerSession {
                     }
                     Some(Control::SecureAttentionSupport) => {
                         vec![Event::Supports("secure-attention")]
+                    }
+                    Some(Control::SessionRecording { on: true }) => {
+                        vec![Event::Supports("recorded")]
                     }
                     _ => Vec::new(),
                 }
@@ -1202,6 +1206,11 @@ mod tests {
         assert_eq!(
             viewer.receive(&support, 1_060.0),
             vec![Event::Supports("secure-attention")]
+        );
+        let recorded = host.control(&Control::SessionRecording { on: true });
+        assert_eq!(
+            viewer.receive(&recorded, 1_070.0),
+            vec![Event::Supports("recorded")]
         );
         let sas = viewer.secure_attention().unwrap();
         assert_eq!(host.open_control(&sas), Some(Control::RequestSecureAttention));

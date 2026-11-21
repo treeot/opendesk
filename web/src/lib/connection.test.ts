@@ -131,6 +131,7 @@ describe("Connection", () => {
         { kind: "rtt", text: "37" },
         { kind: "supports", text: "secure-attention" },
         { kind: "idle-warning", text: "60" },
+        { kind: "supports", text: "recorded" },
       ];
     };
     const connection = new Connection(
@@ -154,6 +155,7 @@ describe("Connection", () => {
       ["rtt", 37],
       ["supports", "secure-attention"],
       ["idle", 60],
+      ["supports", "recorded"],
     ]);
     connection.stillHere();
     expect(FakeSocket.all[0].sent.at(-1)).toEqual([0x01, 0x5d]);

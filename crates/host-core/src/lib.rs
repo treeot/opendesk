@@ -12,6 +12,7 @@ pub mod inject;
 pub mod relay_client;
 pub mod policy;
 pub mod privacy;
+pub mod recording;
 pub mod reconnect;
 pub mod restart;
 pub mod roles;

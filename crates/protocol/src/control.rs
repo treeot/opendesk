@@ -179,6 +179,11 @@ pub enum Control {
     /// `code` is one of the `END_*` codes or a newer one. Older viewers ignore
     /// it and show the plain "host ended the session" message.
     EndReason { code: String },
+    /// Host → viewer: this host is recording the session to its own disk
+    /// (`on`), so the viewer must say so on screen. Sent after the first
+    /// `MonitorList`; hosts that don't record never send it, and older
+    /// viewers can't parse it and ignore it.
+    SessionRecording { on: bool },
 }
 
 /// `EndReason` code: nobody used the session for the host's idle timeout.
@@ -267,9 +272,17 @@ mod tests {
             Control::IdleWarning { seconds: 60 },
             Control::StillHere,
             Control::EndReason { code: END_IDLE.into() },
+            Control::SessionRecording { on: true },
         ] {
             assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
         }
+    }
+
+    #[test]
+    fn session_recording_wire_shape() {
+        let c = Control::SessionRecording { on: true };
+        assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"session_recording","on":true}"#);
+        assert_eq!(Control::from_bytes(br#"{"t":"session_recording","on":false}"#), Some(Control::SessionRecording { on: false }));
     }
 
     #[test]
