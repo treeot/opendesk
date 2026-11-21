@@ -67,6 +67,15 @@ describe("pointer mapping with object-fit: contain", () => {
     expect(mapPointer(150, 50, { left: 0, top: 0, width: 400, height: 400 }, 800, 400)).toBeNull();
   });
 
+  it("uses the whole element when the frame fills it (stretch or actual size)", () => {
+    // Stretched: the old bar areas are part of the frame.
+    expect(mapPointer(100, 50, element, 1920, 1080, false)).toEqual({ x: 0, y: 0 });
+    expect(mapPointer(1100, 550, element, 1920, 1080, false)).toEqual({ x: 65535, y: 65535 });
+    expect(mapPointer(120, 300, element, 1920, 1080, false)).not.toBeNull();
+    // Actual size scrolled left: the element starts off screen.
+    expect(mapPointer(0, 0, { left: -960, top: 0, width: 1920, height: 1080 }, 1920, 1080, false)).toEqual({ x: 32768, y: 0 });
+  });
+
   it("uses the whole element before the first frame arrives", () => {
     expect(mapPointer(50, 25, { left: 0, top: 0, width: 100, height: 50 }, 0, 0)).toEqual({ x: 32768, y: 32768 });
   });

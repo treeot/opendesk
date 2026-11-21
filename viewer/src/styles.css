@@ -66,6 +66,13 @@ input, textarea, [contenteditable="true"], .chat-panel__bubble { user-select: te
 
 .session-screen { position: relative; width: 100vw; height: 100vh; overflow: hidden; background: #070a0e; }
 .session-canvas { display: block; width: 100%; height: 100%; object-fit: contain; outline: none; }
+.session-viewport { position: absolute; inset: 0; overflow: hidden; }
+.session-viewport[data-scale="stretch"] .session-canvas { object-fit: fill; }
+.session-viewport[data-scale="actual"] { display: grid; overflow: auto; }
+.session-viewport[data-scale="actual"] .session-canvas { margin: auto; object-fit: fill; }
+.session-viewport::-webkit-scrollbar { width: 10px; height: 10px; }
+.session-viewport::-webkit-scrollbar-thumb { background: rgba(230, 237, 243, 0.35); border-radius: 5px; }
+.session-viewport::-webkit-scrollbar-track, .session-viewport::-webkit-scrollbar-corner { background: rgba(10, 14, 20, 0.6); }
 .session-restarting { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 9px; padding: 9px 15px; border-radius: 999px; background: rgba(10, 14, 20, 0.92); color: #e6edf3; font-size: 13px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 .session-restarting__spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(230, 237, 243, 0.3); border-top-color: #e6edf3; animation: session-spin 0.8s linear infinite; }
 .session-restarting__elapsed { color: #9aa4b2; font-size: 12px; }

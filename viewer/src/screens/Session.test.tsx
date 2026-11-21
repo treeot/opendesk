@@ -302,6 +302,33 @@ describe("Session viewer transport", () => {
     expect([up[0], up[12], up[13], up[14]]).toEqual([4, 115, 0, 4]);
   });
 
+  it("switches scaling modes and remembers the choice per device", () => {
+    window.localStorage.clear();
+    const view = render(<Session remoteId="111111111" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    const viewport = () => view.container.querySelector(".session-viewport")!;
+    expect(viewport().getAttribute("data-scale")).toBe("fit");
+    // A 1280x720 frame sets the size actual mode draws at.
+    const frame = new Uint8Array(18 + 10);
+    const header = new DataView(frame.buffer);
+    header.setUint8(12, 1);
+    header.setUint16(14, 1280);
+    header.setUint16(16, 720);
+    act(() => latest(startVideo)(frame.buffer));
+    fireEvent.click(view.getByRole("button", { name: "More" }));
+    fireEvent.click(view.getByRole("menuitem", { name: /Scaling/ }));
+    fireEvent.click(view.getByRole("menuitem", { name: /Actual size/ }));
+    expect(viewport().getAttribute("data-scale")).toBe("actual");
+    const canvas = view.container.querySelector("canvas")!;
+    expect(canvas.style.width).toBe(`${1280 / window.devicePixelRatio}px`);
+    view.unmount();
+    // Same device: actual size again. Another device: fit.
+    const again = render(<Session remoteId="111111111" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    expect(again.container.querySelector(".session-viewport")!.getAttribute("data-scale")).toBe("actual");
+    again.unmount();
+    const other = render(<Session remoteId="222222222" role="viewer" status="in_session" onDisconnect={vi.fn()} />);
+    expect(other.container.querySelector(".session-viewport")!.getAttribute("data-scale")).toBe("fit");
+  });
+
   it("warns before a restart that a one-time password won't get back in", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     requestRemoteRestart.mockClear();

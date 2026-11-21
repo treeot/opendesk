@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LinkStats, MonitorInfo, Status } from "../lib/api";
 import { SEND_KEYS, type SendKey } from "../lib/input";
+import { SCALE_MODES, type ScaleMode } from "../lib/scale";
 
 interface ToolbarProps {
   remoteId: string;
@@ -53,6 +54,9 @@ interface ToolbarProps {
   onQualityChange?: (bps: number) => void;
   textReadability?: boolean;
   onTextReadabilityChange?: (enabled: boolean) => void;
+  /** How the remote screen is drawn: fit, actual size, or stretched. */
+  scaleMode?: ScaleMode;
+  onScaleModeChange?: (mode: ScaleMode) => void;
   /** The session stats overlay is showing. */
   statsOpen?: boolean;
   onStatsToggle?: () => void;
@@ -180,10 +184,11 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, statsOpen = false, onStatsToggle = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, scaleMode = "fit", onScaleModeChange = () => {}, statsOpen = false, onStatsToggle = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
+  const [scaleOpen, setScaleOpen] = useState(false);
 
   useEffect(() => {
     const startedAt = Date.now();
@@ -235,6 +240,8 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
               {moreOpen && <div className="session-toolbar__more" role="menu">
                 <MoreItem icon={icons.clipboard} label="Clipboard sync" on={clipboardSync} onClick={() => { onClipboardSyncChange(!clipboardSync); setMoreOpen(false); }} />
                 <MoreItem icon={icons.eye} label="Text readability" on={textReadability} onClick={() => { onTextReadabilityChange(!textReadability); setMoreOpen(false); }} />
+                <MoreItem icon={icons.fullscreen} label="Scaling" expanded={scaleOpen} onClick={() => setScaleOpen((open) => !open)} />
+                {scaleOpen && SCALE_MODES.map(({ mode, label }) => <MoreItem key={mode} sub label={label} on={scaleMode === mode} onClick={() => { onScaleModeChange(mode); setMoreOpen(false); }} />)}
                 <MoreItem icon={icons.activity} label="Session stats" on={statsOpen} onClick={() => { onStatsToggle(); setMoreOpen(false); }} />
                 <MoreItem icon={icons.eye} label="View only" on={viewOnly} onClick={() => { onViewOnlyChange(!viewOnly); setMoreOpen(false); }} />
                 <MoreItem icon={icons.forward} label="Port forwarding" on={forwardOpen} onClick={() => { onForwardToggle(); setMoreOpen(false); }} />

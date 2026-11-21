@@ -125,9 +125,11 @@ export function containedRect(element: ClientRect, contentWidth: number, content
 /**
  * Map a client-space pointer position to the protocol's 0..65535 remote
  * coordinates. Returns null when the pointer is over a letterbox bar.
+ * `contained` is false when the frame fills the element (stretched, or
+ * sized to the frame for actual size), so there are no bars.
  */
-export function mapPointer(clientX: number, clientY: number, element: ClientRect, contentWidth: number, contentHeight: number): { x: number; y: number } | null {
-  const drawn = containedRect(element, contentWidth, contentHeight);
+export function mapPointer(clientX: number, clientY: number, element: ClientRect, contentWidth: number, contentHeight: number, contained = true): { x: number; y: number } | null {
+  const drawn = contained ? containedRect(element, contentWidth, contentHeight) : element;
   if (drawn.width <= 0 || drawn.height <= 0) return null;
   const fx = (clientX - drawn.left) / drawn.width;
   const fy = (clientY - drawn.top) / drawn.height;
@@ -195,6 +197,7 @@ function isModifierKey(key: string): boolean {
 export function attachInput(
   canvas: HTMLCanvasElement,
   send: (bytes: Uint8Array) => Promise<void>,
+  options: { contained?: () => boolean } = {},
 ): () => void {
   if (canvas.tabIndex < 0) canvas.tabIndex = 0;
 
@@ -228,7 +231,7 @@ export function attachInput(
     });
   };
 
-  const pointer = (event: MouseEvent) => mapPointer(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height);
+  const pointer = (event: MouseEvent) => mapPointer(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.width, canvas.height, options.contained?.() ?? true);
 
   // Buttons and keys held right now, so focus loss can release them: without
   // this, a button or key still down when the window loses focus (Cmd-Tab, a

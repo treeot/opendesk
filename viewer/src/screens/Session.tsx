@@ -12,6 +12,7 @@ import { friendlyError, useNotify } from "../lib/notify";
 import { formatWait, restartConfirmText, RESTART_NO_SHOW_MS } from "../lib/restart";
 import { StreamMeter, type StreamStats } from "../lib/stats";
 import { parseFrame } from "../lib/video";
+import { actualSize, loadScaleMode, saveScaleMode, type ScaleMode } from "../lib/scale";
 import StatsPanel from "../components/StatsPanel";
 
 /** Why the host didn't add or remove a virtual display. */
@@ -131,6 +132,15 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [selectedMonitor, setSelectedMonitor] = useState<number>();
   const [multiMonitorMax, setMultiMonitorMax] = useState<number>();
   const [link, setLink] = useState<api.LinkStats>();
+  // Fit, actual size (scrolls) or stretch; remembered per device.
+  const [scaleMode, setScaleMode] = useState<ScaleMode>(() => loadScaleMode(remoteId));
+  const scaleModeRef = useRef(scaleMode);
+  scaleModeRef.current = scaleMode;
+  useEffect(() => { setScaleMode(loadScaleMode(remoteId)); }, [remoteId]);
+  const chooseScaleMode = (mode: ScaleMode) => { setScaleMode(mode); saveScaleMode(remoteId, mode); };
+  // The stream's frame size, for actual-size mode.
+  const [videoSize, setVideoSize] = useState<{ width: number; height: number }>();
+  const videoSizeRef = useRef<{ width: number; height: number } | undefined>(undefined);
   // Session stats overlay: frames are only measured while it is open.
   const [statsOpen, setStatsOpen] = useState(false);
   const statsOpenRef = useRef(false);
@@ -611,14 +621,19 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     const decoder = makeDecoder(canvas, { requestKeyframe: () => void api.requestKeyframe().catch(() => {}) });
     const push = (frame: ArrayBuffer) => {
       if (!hasVideoRef.current) { hasVideoRef.current = true; setHasVideo(true); }
-      if (statsOpenRef.current) {
-        const parsed = parseFrame(frame);
-        if (parsed) streamMeterRef.current.onFrame(performance.now(), parsed.data.byteLength, parsed);
+      const parsed = parseFrame(frame);
+      if (parsed) {
+        if (statsOpenRef.current) streamMeterRef.current.onFrame(performance.now(), parsed.data.byteLength, parsed);
+        const size = videoSizeRef.current;
+        if (parsed.width > 0 && parsed.height > 0 && (size?.width !== parsed.width || size.height !== parsed.height)) {
+          videoSizeRef.current = { width: parsed.width, height: parsed.height };
+          setVideoSize(videoSizeRef.current);
+        }
       }
       decoder.push(frame);
     };
     const stopVideo = api.startVideo(push);
-    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes));
+    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit" });
 
     return () => {
       stopVideo();
@@ -666,7 +681,11 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "viewer" && !restarting && status === "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Connection lost. Reconnecting…</div>}
       {role === "viewer" && !hasVideo && !restarting && status !== "reconnecting" && <div className="session-restarting" role="status"><span className="session-restarting__spinner" aria-hidden="true" />Waiting for the host to accept the connection…</div>}
-      {role === "viewer" && <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />}
+      {role === "viewer" && (
+        <div className="session-viewport" data-scale={scaleMode}>
+          <canvas ref={canvasRef} className="session-canvas" tabIndex={0} aria-label="Remote screen" style={scaleMode === "actual" && videoSize ? actualSize(videoSize.width, videoSize.height, window.devicePixelRatio) : undefined} onPointerEnter={reclaimInput} onPointerDown={reclaimInput} />
+        </div>
+      )}
       {role === "viewer" && !barVisible && (
         <button type="button" className="session-peek" aria-label="Show session controls" title="Show session controls" onMouseEnter={revealBar} onFocus={revealBar} onClick={revealBar}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
@@ -674,7 +693,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}
