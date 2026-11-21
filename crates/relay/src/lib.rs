@@ -194,6 +194,10 @@ impl RelayHandle {
         }).await.is_ok()
     }
 
+    /// Whether a host with this ID is registered and online. Lets tests wait
+    /// for a registration to land instead of sleeping.
+    pub fn is_online(&self, id: &str) -> bool { self.registry.is_online(id) }
+
     /// Saves ID bindings to `RELAY_STATE_FILE` if any changed. Call on shutdown.
     pub fn persist(&self) -> std::io::Result<bool> { self.registry.persist_if_dirty() }
 

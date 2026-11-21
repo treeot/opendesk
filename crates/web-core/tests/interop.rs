@@ -32,11 +32,17 @@ impl InputInjector for CountingInjector {
     }
 }
 
-async fn register_host(addr: &str) -> relay_client::RelayWebSocket {
+async fn register_host(addr: &str, relay: &relay::RelayHandle) -> relay_client::RelayWebSocket {
     let mut ws = relay_client::connect(&format!("ws://{addr}/ws")).await.expect("host connects");
     relay_client::register(&mut ws, HOST_ID, &"ab".repeat(32)).await.expect("host registers");
-    // The relay parks the registration before the browser's connect.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The relay must park the registration before the browser's connect.
+    timeout(Duration::from_secs(10), async {
+        while !relay.is_online(HOST_ID) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("relay never parked the host registration");
     ws
 }
 
@@ -112,9 +118,9 @@ fn fake_host_parts() -> (FakeCapturer, impl Fn(u16, u16, host_core::encode::Code
 
 #[tokio::test(flavor = "multi_thread")]
 async fn browser_viewer_streams_and_controls_a_real_host() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let injected = Arc::new(AtomicUsize::new(0));
-    let host_ws = register_host(&addr).await;
+    let host_ws = register_host(&addr, &relay).await;
     let (capturer, encoder) = fake_host_parts();
     let injector = CountingInjector(Arc::clone(&injected));
     let host = tokio::spawn(async move {
@@ -162,8 +168,8 @@ async fn browser_viewer_streams_and_controls_a_real_host() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn wrong_password_gets_the_desktop_error() {
-    let addr = relay::spawn_test_server().await;
-    let host_ws = register_host(&addr).await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
+    let host_ws = register_host(&addr, &relay).await;
     let (capturer, encoder) = fake_host_parts();
     let host = tokio::spawn(async move {
         run_host_session(host_ws, PASSWORD, "s1", capturer, encoder, CountingInjector(Arc::default())).await.is_err()
@@ -185,8 +191,8 @@ async fn offline_host_is_reported_as_unavailable() {
 }
 
 async fn rejected_with(unattended: bool, twofa: bool, auth_code: &str) -> String {
-    let addr = relay::spawn_test_server().await;
-    let host_ws = register_host(&addr).await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
+    let host_ws = register_host(&addr, &relay).await;
     let (capturer, encoder) = fake_host_parts();
     let _host = tokio::spawn(async move {
         run_host_session_with_data_and_accept_and_2fa(

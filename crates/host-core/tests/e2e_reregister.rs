@@ -40,6 +40,18 @@ async fn viewer_pair(url: &str, viewer_id: &str) -> Result<RelayWebSocket, Strin
     }
 }
 
+/// Waits until the relay has parked `HOST_ID`'s registration, so a viewer
+/// that connects next cannot race it and be told the host is unavailable.
+async fn wait_registered(relay: &relay::RelayHandle) {
+    timeout(Duration::from_secs(10), async {
+        while !relay.is_online(HOST_ID) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("relay never parked the host registration");
+}
+
 /// Run one host+viewer session over already paired sockets and wait for the
 /// first decrypted video frame. Returns the running tasks so the caller can
 /// drop the session.
@@ -76,13 +88,14 @@ async fn run_session_until_first_frame(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn host_reregisters_with_same_token_after_session_drop() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let url = format!("ws://{addr}/ws");
     let urls = vec![url.clone()];
     let token = "ab".repeat(32);
 
     // 1. Host registers; the first viewer pairs and a session streams.
     let (_, mut host_ws) = register_host(&urls, HOST_ID, &token).await.expect("first registration");
+    wait_registered(&relay).await;
     let viewer_ws = viewer_pair(&url, "555555555").await.expect("first viewer pairs");
     let pairing = timeout(Duration::from_secs(5), await_pairing(&mut host_ws))
         .await
@@ -103,6 +116,7 @@ async fn host_reregisters_with_same_token_after_session_drop() {
     // 3. The host re-registers with the same ID and token (accepted under the
     //    relay's ownership lease); a different token still cannot take the ID.
     let (_, mut host_ws) = register_host(&urls, HOST_ID, &token).await.expect("re-registration");
+    wait_registered(&relay).await;
     let (_, mut squatter) = register_host(&urls, HOST_ID, &"cd".repeat(32)).await.expect("squatter connects");
     let rejected = timeout(Duration::from_secs(5), await_pairing(&mut squatter))
         .await
@@ -126,16 +140,19 @@ async fn host_reregisters_with_same_token_after_session_drop() {
 /// reject it, and tells a foreign ID from a copy of this device.
 #[tokio::test(flavor = "multi_thread")]
 async fn settling_tells_accepted_taken_and_in_use_apart() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let urls = vec![format!("ws://{addr}/ws")];
     let settle = Duration::from_millis(300);
     let token = "ab".repeat(32);
     let (url, mut owner) = register_host(&urls, HOST_ID, &token).await.expect("register");
     assert_eq!(url, urls[0]);
     assert_eq!(relay_client::settle_registration(&mut owner, settle).await, Ok(None));
+    // The owner's registration must land before the squatter's.
+    wait_registered(&relay).await;
 
     let (_, mut squatter) = register_host(&urls, HOST_ID, &"cd".repeat(32)).await.expect("squatter connects");
-    let taken = relay_client::settle_registration(&mut squatter, settle).await.expect_err("taken");
+    // A refusal ends settling at once; the long window only absorbs a slow relay.
+    let taken = relay_client::settle_registration(&mut squatter, Duration::from_secs(10)).await.expect_err("taken");
     assert!(relay_client::is_id_taken(&taken) && !relay_client::is_id_in_use(&taken), "{taken}");
 
     // A copy of this device keeps taking the registration over.
@@ -159,9 +176,10 @@ async fn viewer_rejection(
     twofa: bool,
     viewer_code: Option<&str>,
 ) -> host_core::roles::ViewerSessionError {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let url = format!("ws://{addr}/ws");
     let (_, mut host_ws) = register_host(std::slice::from_ref(&url), HOST_ID, &"ab".repeat(32)).await.expect("register");
+    wait_registered(&relay).await;
     let viewer_ws = viewer_pair(&url, "555555555").await.expect("viewer pairs");
     await_pairing(&mut host_ws).await.expect("host paired");
     let host = tokio::spawn(async move {

@@ -62,18 +62,28 @@ impl InputInjector for RecordingInjector {
     }
 }
 
-async fn connect_to_peer(addr: &str, viewer: bool) -> relay_client::RelayWebSocket {
-    let ws_url = format!("ws://{addr}/ws");
-    let mut ws = relay_client::connect(&ws_url).await.expect("relay connect");
-    if viewer {
-        relay_client::connect_to(&mut ws, PEER_ID, if viewer { "222222222" } else { "333333333" })
-            .await
-            .expect("relay connect_to");
-    } else {
-        relay_client::register(&mut ws, PEER_ID, &"00".repeat(32))
-            .await
-            .expect("relay register");
-    }
+/// Registers the host and waits until the relay has parked it, so a viewer
+/// that connects next cannot race the registration and get "unavailable".
+async fn register_host(addr: &str, relay: &relay::RelayHandle) -> relay_client::RelayWebSocket {
+    let mut ws = relay_client::connect(&format!("ws://{addr}/ws")).await.expect("relay connect");
+    relay_client::register(&mut ws, PEER_ID, &"00".repeat(32))
+        .await
+        .expect("relay register");
+    timeout(Duration::from_secs(10), async {
+        while !relay.is_online(PEER_ID) {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("relay never parked the host registration");
+    ws
+}
+
+async fn connect_viewer(addr: &str) -> relay_client::RelayWebSocket {
+    let mut ws = relay_client::connect(&format!("ws://{addr}/ws")).await.expect("relay connect");
+    relay_client::connect_to(&mut ws, PEER_ID, "222222222")
+        .await
+        .expect("relay connect_to");
     ws
 }
 
@@ -87,12 +97,29 @@ async fn wait_for_count(count: &AtomicUsize) {
     .expect("host did not inject the viewer input");
 }
 
+/// Waits for a session's Data handle. If the session ends first, the panic
+/// carries the session's own result instead of a bare `RecvError`.
+async fn await_ready<T, R: std::fmt::Debug>(
+    what: &str,
+    ready: tokio::sync::oneshot::Receiver<T>,
+    session: &mut tokio::task::JoinHandle<R>,
+) -> T {
+    match timeout(Duration::from_secs(30), ready).await {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(_)) => {
+            let result = timeout(Duration::from_secs(5), session).await;
+            panic!("{what} session closed before Data handle: {result:?}");
+        }
+        Err(_) => panic!("timed out waiting for {what} Data handle"),
+    }
+}
+
 async fn run_positive_session() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let injector_count = Arc::new(AtomicUsize::new(0));
     let host_injector_count = Arc::clone(&injector_count);
 
-    let host_ws = connect_to_peer(&addr, false).await;
+    let host_ws = register_host(&addr, &relay).await;
     let host = tokio::spawn(async move {
         run_host_session(
             host_ws,
@@ -105,7 +132,7 @@ async fn run_positive_session() {
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(4);
     let (input_tx, input_rx) = tokio::sync::mpsc::channel(4);
     let viewer = tokio::spawn(run_viewer_session(
@@ -139,8 +166,8 @@ async fn run_positive_session() {
 }
 
 async fn run_wrong_password_session() {
-    let addr = relay::spawn_test_server().await;
-    let host_ws = connect_to_peer(&addr, false).await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
+    let host_ws = register_host(&addr, &relay).await;
     let host = tokio::spawn(async move {
         run_host_session(
             host_ws,
@@ -153,7 +180,7 @@ async fn run_wrong_password_session() {
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(4);
     let (_input_tx, input_rx) = tokio::sync::mpsc::channel(4);
     let viewer = tokio::spawn(run_viewer_session(
@@ -198,7 +225,7 @@ async fn large_file_with_delayed_accept_keeps_the_session_alive() {
 }
 
 async fn run_live_file_transfer(label: &str, size: usize, consent_delay: Duration) {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let root = test_temp_dir(label);
     let source_dir = root.join("source");
     let downloads_dir = root.join("downloads");
@@ -213,9 +240,9 @@ async fn run_live_file_transfer(label: &str, size: usize, consent_delay: Duratio
     }
     tokio::fs::write(&source_path, &expected).await.expect("write source file");
 
-    let host_ws = connect_to_peer(&addr, false).await;
+    let host_ws = register_host(&addr, &relay).await;
     let (host_ready_tx, host_ready_rx) = tokio::sync::oneshot::channel();
-    let host = tokio::spawn(async move {
+    let mut host = tokio::spawn(async move {
         run_host_session_with_data(
             host_ws,
             PASSWORD,
@@ -228,11 +255,11 @@ async fn run_live_file_transfer(label: &str, size: usize, consent_delay: Duratio
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, _frame_rx) = tokio::sync::mpsc::channel(4);
     let (_input_tx, input_rx) = tokio::sync::mpsc::channel(4);
     let (viewer_ready_tx, viewer_ready_rx) = tokio::sync::oneshot::channel();
-    let viewer = tokio::spawn(run_viewer_session_with_data(
+    let mut viewer = tokio::spawn(run_viewer_session_with_data(
         viewer_ws,
         PASSWORD,
         "e2e-filexfer",
@@ -241,14 +268,8 @@ async fn run_live_file_transfer(label: &str, size: usize, consent_delay: Duratio
         Some(viewer_ready_tx),
     ));
 
-    let host_handle = timeout(Duration::from_secs(15), host_ready_rx)
-        .await
-        .expect("timed out waiting for host Data handle")
-        .expect("host session closed before Data handle");
-    let viewer_handle = timeout(Duration::from_secs(15), viewer_ready_rx)
-        .await
-        .expect("timed out waiting for viewer Data handle")
-        .expect("viewer session closed before Data handle");
+    let host_handle = await_ready("host", host_ready_rx, &mut host).await;
+    let viewer_handle = await_ready("viewer", viewer_ready_rx, &mut viewer).await;
     let DataHandle { sender, sealer, receiver: host_receiver, opener: host_opener, .. } = host_handle;
     let DataHandle { receiver, opener, sender: viewer_sender, sealer: viewer_sealer, .. } = viewer_handle;
 
@@ -298,11 +319,11 @@ async fn run_live_file_transfer(label: &str, size: usize, consent_delay: Duratio
 
 #[tokio::test(flavor = "multi_thread")]
 async fn live_clipboard_is_sealed_and_relayed_end_to_end() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
 
-    let host_ws = connect_to_peer(&addr, false).await;
+    let host_ws = register_host(&addr, &relay).await;
     let (host_ready_tx, host_ready_rx) = tokio::sync::oneshot::channel();
-    let host = tokio::spawn(async move {
+    let mut host = tokio::spawn(async move {
         run_host_session_with_data(
             host_ws,
             PASSWORD,
@@ -315,11 +336,11 @@ async fn live_clipboard_is_sealed_and_relayed_end_to_end() {
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, _frame_rx) = tokio::sync::mpsc::channel(4);
     let (_input_tx, input_rx) = tokio::sync::mpsc::channel(4);
     let (viewer_ready_tx, viewer_ready_rx) = tokio::sync::oneshot::channel();
-    let viewer = tokio::spawn(run_viewer_session_with_data(
+    let mut viewer = tokio::spawn(run_viewer_session_with_data(
         viewer_ws,
         PASSWORD,
         "e2e-clipboard",
@@ -328,14 +349,8 @@ async fn live_clipboard_is_sealed_and_relayed_end_to_end() {
         Some(viewer_ready_tx),
     ));
 
-    let host_handle = timeout(Duration::from_secs(15), host_ready_rx)
-        .await
-        .expect("timed out waiting for host Data handle")
-        .expect("host session closed before Data handle");
-    let viewer_handle = timeout(Duration::from_secs(15), viewer_ready_rx)
-        .await
-        .expect("timed out waiting for viewer Data handle")
-        .expect("viewer session closed before Data handle");
+    let host_handle = await_ready("host", host_ready_rx, &mut host).await;
+    let viewer_handle = await_ready("viewer", viewer_ready_rx, &mut viewer).await;
     let DataHandle { sender, mut sealer, .. } = host_handle;
     let DataHandle { mut receiver, mut opener, .. } = viewer_handle;
 
@@ -396,11 +411,11 @@ impl Drop for DropFlagInjector {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_injection_does_not_stall_video_frames() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let injected = Arc::new(AtomicUsize::new(0));
     let host_injector = SlowInjector { delay: Duration::from_millis(1_000), injected: Arc::clone(&injected) };
 
-    let host_ws = connect_to_peer(&addr, false).await;
+    let host_ws = register_host(&addr, &relay).await;
     let host = tokio::spawn(async move {
         run_host_session(
             host_ws,
@@ -413,7 +428,7 @@ async fn slow_injection_does_not_stall_video_frames() {
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(4);
     let (input_tx, input_rx) = tokio::sync::mpsc::channel(16);
     let viewer = tokio::spawn(run_viewer_session(viewer_ws, PASSWORD, "e2e-slow-inject", frame_tx, input_rx));
@@ -444,11 +459,11 @@ async fn slow_injection_does_not_stall_video_frames() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn host_session_ends_cleanly_on_viewer_bye() {
-    let addr = relay::spawn_test_server().await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
     let injector_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let host_injector = DropFlagInjector(Arc::clone(&injector_dropped));
 
-    let host_ws = connect_to_peer(&addr, false).await;
+    let host_ws = register_host(&addr, &relay).await;
     let host = tokio::spawn(async move {
         run_host_session_with_data(
             host_ws,
@@ -462,11 +477,11 @@ async fn host_session_ends_cleanly_on_viewer_bye() {
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(4);
     let (_input_tx, input_rx) = tokio::sync::mpsc::channel(4);
     let (viewer_ready_tx, viewer_ready_rx) = tokio::sync::oneshot::channel();
-    let viewer = tokio::spawn(run_viewer_session_with_data(
+    let mut viewer = tokio::spawn(run_viewer_session_with_data(
         viewer_ws,
         PASSWORD,
         "e2e-bye",
@@ -474,10 +489,7 @@ async fn host_session_ends_cleanly_on_viewer_bye() {
         input_rx,
         Some(viewer_ready_tx),
     ));
-    let DataHandle { control_sender, control_sealer, .. } = timeout(Duration::from_secs(15), viewer_ready_rx)
-        .await
-        .expect("timed out waiting for viewer Data handle")
-        .expect("viewer session closed before Data handle");
+    let DataHandle { control_sender, control_sealer, .. } = await_ready("viewer", viewer_ready_rx, &mut viewer).await;
     timeout(Duration::from_secs(15), frame_rx.recv())
         .await
         .expect("timed out waiting for the first video frame")
@@ -505,8 +517,8 @@ async fn host_session_ends_cleanly_on_viewer_bye() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn host_session_ends_when_viewer_disappears() {
-    let addr = relay::spawn_test_server().await;
-    let host_ws = connect_to_peer(&addr, false).await;
+    let (addr, relay) = relay::spawn_test_server_with_handle().await;
+    let host_ws = register_host(&addr, &relay).await;
     let host = tokio::spawn(async move {
         run_host_session(
             host_ws,
@@ -519,7 +531,7 @@ async fn host_session_ends_when_viewer_disappears() {
         .await
     });
 
-    let viewer_ws = connect_to_peer(&addr, true).await;
+    let viewer_ws = connect_viewer(&addr).await;
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(4);
     let (_input_tx, input_rx) = tokio::sync::mpsc::channel(4);
     let viewer = tokio::spawn(run_viewer_session(viewer_ws, PASSWORD, "e2e-peer-gone", frame_tx, input_rx));
