@@ -12,6 +12,8 @@ interface Transfer {
   status: "transferring" | "done" | "error";
   error?: string;
   savedTo?: string;
+  /** Set for a folder: files finished so far and in all. */
+  files?: { done: number; total: number };
 }
 
 interface PendingOffer extends api.FileOffer { responding?: boolean }
@@ -34,7 +36,13 @@ const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 function transferStatus(transfer: Transfer): string {
   if (transfer.status === "error") return transfer.error ?? "Failed";
   if (transfer.status === "done") return transfer.savedTo ? `Saved to ${transfer.savedTo}` : "Sent";
-  return `${formatFileSize(transfer.transferred)} / ${formatFileSize(transfer.total)}`;
+  const bytes = `${formatFileSize(transfer.transferred)} / ${formatFileSize(transfer.total)}`;
+  return transfer.files ? `${transfer.files.done} of ${transfer.files.total} files · ${bytes}` : bytes;
+}
+
+/** "3 files" or "1 file". */
+export function fileCount(count: number): string {
+  return `${count} ${count === 1 ? "file" : "files"}`;
 }
 
 export interface FileTransferProps {
@@ -57,6 +65,9 @@ export default function FileTransfer({ open, onOpenChange, variant = "panel" }: 
   const [offers, setOffers] = useState<PendingOffer[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [dragging, setDragging] = useState(false);
+  // The latest incoming folder offer, so the file manager knows a folder it
+  // asked for has arrived.
+  const [folderArrived, setFolderArrived] = useState<{ name: string; id: number } | null>(null);
   // Read through a ref so a new callback identity never resubscribes.
   const onOpenChangeRef = useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;
@@ -76,20 +87,23 @@ export default function FileTransfer({ open, onOpenChange, variant = "panel" }: 
     subscription(api.onFileOffer, (offer) => {
       seen.current.delete(offer.id);
       announce(offer.id);
+      const files = offer.files === undefined ? undefined : { done: 0, total: offer.files };
+      if (files) setFolderArrived({ name: offer.name, id: offer.id });
       setOffers((current) => [...current.filter(({ id }) => id !== offer.id), offer]);
       setTransfers((current) => current.some(({ id }) => id === offer.id) ? current : [...current, {
         id: offer.id, name: offer.name, size: offer.size, direction: "receive", transferred: 0,
-        total: offer.size, status: "transferring",
+        total: offer.size, status: "transferring", files,
       }]);
     }, () => active, add);
     subscription(api.onFileProgress, (progress) => {
       announce(progress.id);
       setTransfers((current) => {
         const direction = progress.direction === "receive" ? "receive" : "send";
+        const files = progress.files_total === undefined ? undefined : { done: progress.files_done ?? 0, total: progress.files_total };
         if (!current.some(({ id }) => id === progress.id)) {
-          return [...current, { id: progress.id, name: "File transfer", size: progress.total, direction, transferred: progress.transferred, total: progress.total, status: "transferring" }];
+          return [...current, { id: progress.id, name: files ? "Folder transfer" : "File transfer", size: progress.total, direction, transferred: progress.transferred, total: progress.total, status: "transferring", files }];
         }
-        return current.map((transfer) => transfer.id === progress.id ? { ...transfer, transferred: progress.transferred, total: progress.total, size: progress.total, direction } : transfer);
+        return current.map((transfer) => transfer.id === progress.id ? { ...transfer, transferred: progress.transferred, total: progress.total, size: progress.total, direction, files: files ?? transfer.files } : transfer);
       });
     }, () => active, add);
     subscription(api.onFileDone, ({ id, path }) => setTransfers((current) => current.map((transfer) => transfer.id === id ? { ...transfer, transferred: transfer.total, status: "done", savedTo: path ?? undefined } : transfer)), () => active, add);
@@ -121,11 +135,15 @@ export default function FileTransfer({ open, onOpenChange, variant = "panel" }: 
     return () => { active = false; stop?.(); };
   }, []);
 
-  const choose = async () => {
+  const choose = async (folder = false) => {
     try {
-      const path = await api.pickFile();
+      const path = folder ? await api.pickFolder() : await api.pickFile();
       if (path) await sendPath(path);
     } catch (error) { setMessage(String(error)); }
+  };
+
+  const cancel = async (id: number) => {
+    try { await api.cancelTransfer(id); } catch (error) { setMessage(String(error)); }
   };
 
   const answer = async (offer: PendingOffer, accept: boolean) => {
@@ -145,18 +163,20 @@ export default function FileTransfer({ open, onOpenChange, variant = "panel" }: 
     <section className={`file-transfer${isWindow ? " file-transfer--window" : ""}${dragging ? " file-transfer--dragging" : ""}`} aria-label="File transfer" hidden={!visible}>
       <div className="file-transfer__send">
         <div className="file-transfer__header"><span className="eyebrow">FILE TRANSFER</span>{!isWindow && <button className="icon-button file-transfer__close" type="button" onClick={() => onOpenChange(false)} aria-label="Close file transfer">×</button>}</div>
-        <div className="file-transfer__control"><button className="primary-button" type="button" onClick={() => void choose()}>Send file…</button><small>or drop files anywhere on this window</small></div>
+        <div className="file-transfer__control"><button className="primary-button" type="button" onClick={() => void choose()}>Send file…</button><button className="ghost-button" type="button" onClick={() => void choose(true)}>Send folder…</button><small>or drop files and folders anywhere on this window</small></div>
         {message && <p className="message" role="alert">{message}</p>}
       </div>
-      {visible && <FileBrowser />}
-      {offers.map((offer) => <div className="file-transfer__offer" role="dialog" aria-label={`Incoming file ${offer.name}`} key={offer.id}>
-        <span className="eyebrow">INCOMING FILE</span><strong>{offer.name}</strong><span>{formatFileSize(offer.size)} · from {offer.from}</span>
+      {visible && <FileBrowser folderArrived={folderArrived} />}
+      {offers.map((offer) => <div className="file-transfer__offer" role="dialog" aria-label={`Incoming ${offer.files === undefined ? "file" : "folder"} ${offer.name}`} key={offer.id}>
+        <span className="eyebrow">{offer.files === undefined ? "INCOMING FILE" : "INCOMING FOLDER"}</span><strong>{offer.name}</strong><span>{offer.files === undefined ? "" : `${fileCount(offer.files)} · `}{formatFileSize(offer.size)} · from {offer.from}</span>
         <div className="incoming-actions"><button className="ghost-button" type="button" disabled={offer.responding} onClick={() => void answer(offer, false)}>Reject</button><button className="primary-button" type="button" disabled={offer.responding} onClick={() => void answer(offer, true)}>Accept</button></div>
       </div>)}
       {transfers.length > 0 && <div className="file-transfer__list"><span className="eyebrow">TRANSFERS</span>{transfers.map((transfer) => <div className="file-transfer__row" key={transfer.id}>
         <div className="file-transfer__meta"><strong>{transfer.name}</strong><span>{transfer.direction === "receive" ? "Receiving" : "Sending"}</span></div>
         <span className="file-transfer__status" title={transferStatus(transfer)}>{transferStatus(transfer)}</span>
         <progress aria-label={`${transfer.name} progress`} value={transfer.total ? transfer.transferred : undefined} max={transfer.total || 1} />
+        {transfer.files && transfer.status === "transferring" && !offers.some(({ id }) => id === transfer.id) && <button className="quiet-button file-transfer__cancel" type="button" aria-label={`Cancel ${transfer.name}`} onClick={() => void cancel(transfer.id)}>Cancel</button>}
+
       </div>)}</div>}
     </section>
   </>;

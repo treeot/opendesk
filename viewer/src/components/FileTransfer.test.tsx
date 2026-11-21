@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respondFile, sendFile, pickFile, browseLocal, browseRemote, onRemoteListing } = vi.hoisted(() => ({
+const { onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respondFile, sendFile, pickFile, pickFolder, cancelTransfer, browseLocal, browseRemote, onRemoteListing, pullRemote } = vi.hoisted(() => ({
   onFileOffer: vi.fn(), onFileProgress: vi.fn(), onFileDone: vi.fn(), onFileError: vi.fn(), onFileDrop: vi.fn(),
-  respondFile: vi.fn(() => Promise.resolve()), sendFile: vi.fn(() => Promise.resolve(1)), pickFile: vi.fn(),
+  respondFile: vi.fn(() => Promise.resolve()), sendFile: vi.fn(() => Promise.resolve(1)), pickFile: vi.fn(), pickFolder: vi.fn(), cancelTransfer: vi.fn(() => Promise.resolve()),
   browseLocal: vi.fn(() => Promise.resolve({ path: "/home", entries: [] })), browseRemote: vi.fn(() => Promise.resolve()), onRemoteListing: vi.fn(() => Promise.resolve(() => {})), pullRemote: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("../lib/api", () => ({ onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respondFile, sendFile, pickFile, browseLocal, browseRemote, onRemoteListing }));
+vi.mock("../lib/api", () => ({ onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respondFile, sendFile, pickFile, pickFolder, cancelTransfer, browseLocal, browseRemote, onRemoteListing, pullRemote }));
 
 import FileTransfer from "./FileTransfer";
 
@@ -75,5 +75,50 @@ describe("FileTransfer", () => {
     drop.current!({ type: "drop", paths: ["/tmp/photo.png"] });
     expect(onOpenChange).toHaveBeenCalledWith(true);
     await waitFor(() => expect(sendFile).toHaveBeenCalledWith("/tmp/photo.png"));
+  });
+
+  it("sends a picked folder and shows file counts with a cancel button", async () => {
+    [onFileOffer, onFileDone, onFileError, onFileDrop].forEach((mock) => capture(mock));
+    const progress = capture<{ id: number; transferred: number; total: number; direction: string; files_done?: number; files_total?: number }>(onFileProgress);
+    pickFolder.mockResolvedValueOnce("/tmp/photos");
+    sendFile.mockResolvedValueOnce(9);
+    const view = render(<FileTransfer open onOpenChange={vi.fn()} />);
+
+    fireEvent.click(view.getByRole("button", { name: "Send folder…" }));
+    await waitFor(() => expect(sendFile).toHaveBeenCalledWith("/tmp/photos"));
+    expect(await view.findByText("photos")).toBeTruthy();
+    progress.current!({ id: 9, transferred: 1024, total: 4096, direction: "send", files_done: 1, files_total: 3 });
+    expect(await view.findByText("1 of 3 files · 1 KB / 4 KB")).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "Cancel photos" }));
+    await waitFor(() => expect(cancelTransfer).toHaveBeenCalledWith(9));
+  });
+
+  it("shows an incoming folder with its file count", async () => {
+    const offer = capture<{ id: number; name: string; size: number; from: string; files?: number }>(onFileOffer);
+    [onFileProgress, onFileDone, onFileError, onFileDrop].forEach((mock) => capture(mock));
+    const view = render(<FileTransfer open onOpenChange={vi.fn()} />);
+    await waitFor(() => expect(offer.current).toBeTypeOf("function"));
+    offer.current!({ id: 5, name: "music", size: 2048, from: "peer-7", files: 2 });
+    const dialog = await view.findByRole("dialog", { name: "Incoming folder music" });
+    expect(dialog.textContent).toContain("INCOMING FOLDER");
+    expect(dialog.textContent).toContain("2 files · 2 KB · from peer-7");
+    expect(view.queryByRole("button", { name: "Cancel music" })).toBeNull();
+  });
+
+  it("explains when a folder download never starts", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      [onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop].forEach((mock) => capture(mock));
+      const listing = capture<{ path: string; entries: { name: string; is_dir: boolean; size: number; modified: number }[]; error: string | null }>(onRemoteListing);
+      const view = render(<FileTransfer open onOpenChange={vi.fn()} />);
+      await waitFor(() => expect(listing.current).toBeTypeOf("function"));
+      act(() => listing.current!({ path: "/srv", entries: [{ name: "docs", is_dir: true, size: 0, modified: 0 }], error: null }));
+      fireEvent.click(await view.findByTitle("Download docs"));
+      expect(pullRemote).toHaveBeenCalledWith("/srv/docs");
+      act(() => { vi.advanceTimersByTime(20_000); });
+      expect(await view.findByText(/docs did not start/)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

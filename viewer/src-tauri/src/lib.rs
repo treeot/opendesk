@@ -316,24 +316,17 @@ fn handle_browse(
         }
         BrowseMsg::DirListing { path, entries, .. } => emit(app, "remote_listing", RemoteListingEvent { path, entries, error: None }),
         BrowseMsg::BrowseError { message, .. } => emit(app, "remote_listing", RemoteListingEvent { path: String::new(), entries: Vec::new(), error: Some(message) }),
-        BrowseMsg::Pull { path, .. } => {
-            // Host side: the viewer asked for this file; send it if file access
-            // is on. It reaches the viewer as a normal incoming transfer.
+        BrowseMsg::Pull { req, path } => {
+            // Host side: the viewer asked for this file or folder; send it if
+            // file access is on. It reaches the viewer as a normal incoming
+            // transfer.
             if !files_allowed.load(std::sync::atomic::Ordering::Relaxed) {
                 audit_hosted(app, host_core::audit::AuditEvent::new(host_core::audit::kind::FILE_DOWNLOAD_REJECTED, None).with_path(path).with_detail("file access off"));
                 return;
             }
             // Logged so the host can see which files the viewer pulled.
             emit_activity(app, "files", format!("sent \"{path}\""));
-            let (outgoing, sealer, router) = {
-                let state = app.state::<AppState>();
-                let state = state.lock();
-                (state.file_outgoing.clone(), state.file_sealer.clone(), state.file_router.clone())
-            };
-            if let (Some(outgoing), Some(sealer), Some(router)) = (outgoing, sealer, router) {
-                // The send runs in its own task; we don't need the offer-id future.
-                drop(files::spawn_outgoing_file(app.clone(), path, outgoing, sealer, router, TransferGate::new(files_allowed.clone()), Some("requested by viewer")));
-            }
+            files::serve_pull(app, req, path, files_allowed.clone());
         }
         BrowseMsg::SetUploadDir { dir } => {
             // Host side: the next incoming file goes here instead of Downloads.
@@ -1129,6 +1122,7 @@ pub fn run() {
             browse_remote,
             browse_local,
             pull_remote,
+            cancel_transfer,
             make_remote_dir,
             delete_remote,
             rename_remote,

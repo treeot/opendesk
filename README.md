@@ -42,7 +42,7 @@ path is used whenever the network allows it.
 | ⚡ **Direct when possible** | Peer-to-peer UDP with automatic fallback to the relay; latency badge in the toolbar |
 | 🖥️ **Hardware H.264** | VideoToolbox on macOS, Media Foundation on Windows, openh264 elsewhere |
 | 🔊 **System sound** | macOS 14.6+, Windows, Linux (PulseAudio / PipeWire) |
-| 📁 **Files and clipboard** | Encrypted file transfer with consent and hash check; text clipboard sync |
+| 📁 **Files and clipboard** | Encrypted file and folder transfer with consent and hash check; text clipboard sync |
 | 🎬 **Session recording** | Record to a local WebM file, browse past recordings, and cap the disk space they use |
 | 🪟 **Multi-monitor** | Pick a monitor, or add a virtual display on macOS and Windows |
 | 🌙 **Unattended access** | Stored password, optional 2FA code, start at sign-in with a tray icon |

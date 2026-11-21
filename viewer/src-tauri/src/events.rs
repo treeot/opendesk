@@ -171,6 +171,9 @@ pub(crate) struct FileOffer {
     /// Where the file will be saved, so the host sees a viewer-chosen upload
     /// directory before accepting (not just the default Downloads folder).
     pub(crate) dir: String,
+    /// For a folder: how many files it holds (`size` is their total).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) files: Option<u32>,
 }
 #[derive(Serialize, Clone)]
 pub(crate) struct FileProgress {
@@ -178,7 +181,13 @@ pub(crate) struct FileProgress {
     pub(crate) transferred: u64,
     pub(crate) total: u64,
     pub(crate) direction: &'static str,
+    /// For a folder: files finished so far and in all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) files_done: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) files_total: Option<u32>,
 }
+
 #[derive(Serialize, Clone)]
 pub(crate) struct FileDone {
     pub(crate) id: u64,

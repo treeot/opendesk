@@ -32,8 +32,10 @@ export interface ErrorEvent { message: string }
 export interface TwofaPrompt { reason: "required" | "invalid" }
 export interface StatusChanged { state: Status }
 export interface AudioFrame { sample_rate: number; channels: number; samples: string } // base64 of little-endian i16 PCM
-export interface FileOffer { id: number; name: string; size: number; from: string; dir: string }
-export interface FileProgress { id: number; transferred: number; total: number; direction: "send" | "receive" | string }
+/** An incoming file, or a folder when `files` (its file count) is set; `size` is then the total. */
+export interface FileOffer { id: number; name: string; size: number; from: string; dir: string; files?: number }
+/** `files_done`/`files_total` are set for folder transfers. */
+export interface FileProgress { id: number; transferred: number; total: number; direction: "send" | "receive" | string; files_done?: number; files_total?: number }
 export interface FileDone { id: number; path?: string | null }
 export interface FileError { id: number; message: string }
 export interface Contact { id: string; alias: string; last_connected: number | null; mac?: string | null; has_saved_password?: boolean }
@@ -186,6 +188,14 @@ export const pickFile = async (): Promise<string | null> => {
   const selected = await openDialog({ multiple: false, directory: false, title: "Send file" });
   return typeof selected === "string" ? selected : null;
 };
+/** Native folder picker; resolves to the chosen path or null when cancelled. */
+export const pickFolder = async (): Promise<string | null> => {
+  if (!useBridge) return "/Users/you/Documents/demo-folder";
+  const selected = await openDialog({ multiple: false, directory: true, title: "Send folder" });
+  return typeof selected === "string" ? selected : null;
+};
+/** Stop a folder transfer in either direction. */
+export const cancelTransfer = (id: number) => invoke<void>("cancel_transfer", { id });
 /** Files dropped anywhere on the window; `over` reports drag hover state. */
 export const onFileDrop = (handler: (event: { type: "over" | "drop" | "leave"; paths: string[] }) => void): Promise<UnlistenFn> =>
   !useBridge ? Promise.resolve(() => {}) :
@@ -271,9 +281,10 @@ export const browseLocal = (path: string) => invoke<{ path: string; entries: Dir
 export const browseRemote = (path: string) => invoke<void>("browse_remote", { path });
 /** A remote directory listing, or an error, for the file manager. */
 export const onRemoteListing = (handler: (payload: { path: string; entries: DirEntry[]; error: string | null }) => void) => on("remote_listing", handler);
-/** Download a remote file; it arrives as an incoming transfer (saved to Downloads). */
+/** Download a remote file or folder; it arrives as an incoming transfer (saved to Downloads). */
 export const pullRemote = (path: string) => invoke<void>("pull_remote", { path });
-/** Upload a local file into the remote folder `dir`. Returns the transfer id. */
+/** Upload a local file or folder into the remote folder `dir`. Returns the transfer id. */
+
 export const uploadToRemote = (dir: string, path: string) => invoke<number>("upload_to_remote", { dir, path });
 export const makeRemoteDir = (path: string, name: string) => invoke<void>("make_remote_dir", { path, name });
 export const deleteRemote = (path: string) => invoke<void>("delete_remote", { path });

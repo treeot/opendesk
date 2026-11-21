@@ -218,3 +218,4 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .host-panel__timer { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .host-panel__actions { display: flex; gap: 8px; }
 .host-panel__actions .ghost-button { flex: 1; text-align: center; }
+.file-transfer__cancel { justify-self: start; padding: 2px 8px; font-size: 11px; }

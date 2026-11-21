@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import * as api from "../lib/api";
 import { friendlyError, useNotify } from "../lib/notify";
-import { formatFileSize } from "./FileTransfer";
+import { fileCount, formatFileSize } from "./FileTransfer";
 
 /**
  * Asks the host user about files the viewer sends. Mounted for the whole
@@ -43,6 +43,7 @@ export default function IncomingFiles() {
   useEffect(() => { declineRef.current?.focus(); }, [offer?.id]);
   if (!offer) return null;
 
+  const folder = offer.files !== undefined;
   const answer = async (accept: boolean) => {
     if (busy) return;
     setBusy(true);
@@ -66,11 +67,12 @@ export default function IncomingFiles() {
   return (
     <div className="incoming-backdrop" role="presentation">
       <section className="incoming-modal" role="dialog" aria-modal="true" aria-labelledby="incoming-file-title" onKeyDown={onKeyDown}>
-        <span className="eyebrow">INCOMING FILE</span>
-        <h1 id="incoming-file-title">Accept this file?</h1>
-        <p className="incoming-lead">{offer.from} wants to send you a file. Check where it will be saved before you accept.</p>
+        <span className="eyebrow">{folder ? "INCOMING FOLDER" : "INCOMING FILE"}</span>
+        <h1 id="incoming-file-title">{folder ? "Accept this folder?" : "Accept this file?"}</h1>
+        <p className="incoming-lead">{offer.from} wants to send you {folder ? "a folder" : "a file"}. Check where it will be saved before you accept.</p>
         <div className="request-details">
-          <div><span className="request-label">FILE</span><strong className="request-peer">{offer.name}</strong><span>{formatFileSize(offer.size)}</span></div>
+          <div><span className="request-label">{folder ? "FOLDER" : "FILE"}</span><strong className="request-peer">{offer.name}</strong><span>{folder ? `${fileCount(offer.files ?? 0)} · ` : ""}{formatFileSize(offer.size)}</span></div>
+
           <div><span className="request-label">SAVE TO</span><span className="request-dir" title={offer.dir}>{offer.dir}</span></div>
         </div>
         <div className="incoming-actions">

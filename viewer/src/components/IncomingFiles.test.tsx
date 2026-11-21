@@ -47,4 +47,15 @@ describe("IncomingFiles", () => {
     emit("error", { id: 2, message: "disk full" });
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("Could not receive b.txt"));
   });
+
+  it("asks once for a whole folder and shows its file count", async () => {
+    render(<IncomingFiles />);
+    await waitFor(() => expect(handlers.has("offer")).toBe(true));
+    emit("offer", { ...offer(3, "photos"), files: 12, size: 4096 });
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Accept this folder?");
+    expect(dialog.textContent).toContain("12 files");
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(respondFile).toHaveBeenCalledWith(3, true));
+  });
 });

@@ -102,14 +102,18 @@ pub(crate) fn spawn_file_receiver(
     is_host: bool,
 ) {
     tauri::async_runtime::spawn(async move {
-        while let Some(IncomingTransfer { id, source }) = offers.recv().await {
+        while let Some(IncomingTransfer { id, source, folder }) = offers.recv().await {
             let (outgoing, sealer) = {
                 let state = app.state::<AppState>();
                 let state = state.lock();
                 (state.file_outgoing.clone(), state.file_sealer.clone())
             };
             let (Some(outgoing), Some(sealer)) = (outgoing, sealer) else { break };
-            tauri::async_runtime::spawn(receive_offer(app.clone(), source, id, from.clone(), outgoing, sealer, is_host));
+            if folder {
+                tauri::async_runtime::spawn(receive_folder_offer(app.clone(), source, id, from.clone(), outgoing, sealer, is_host));
+            } else {
+                tauri::async_runtime::spawn(receive_offer(app.clone(), source, id, from.clone(), outgoing, sealer, is_host));
+            }
         }
     });
 }
@@ -142,14 +146,7 @@ async fn receive_offer(
     // A viewer uploading into a browsed folder sets a one-shot destination;
     // consume it here, else fall back to Downloads. An invalid or non-directory
     // path also falls back, so a bad value never drops the file.
-    let dest_dir = {
-        let slot = { app.state::<AppState>().lock().upload_dir.clone() };
-        let chosen = lock_unpoisoned(&slot).take();
-        match chosen {
-            Some(dir) if std::path::Path::new(&dir).is_dir() => std::path::PathBuf::from(dir),
-            _ => downloads_dir(),
-        }
-    };
+    let dest_dir = take_upload_dir(&app);
     // Shown in the accept prompt so the host sees where the file would land.
     let dest_display = dest_dir.display().to_string();
     // Checked per chunk too, so turning file access off stops an accepted
@@ -199,6 +196,7 @@ async fn receive_offer(
                     size,
                     from,
                     dir: dest_display,
+                    files: None,
                 },
             );
 
@@ -222,6 +220,8 @@ async fn receive_offer(
                     transferred,
                     total,
                     direction: "receive",
+                    files_done: None,
+                    files_total: None,
                 },
             );
         },
@@ -276,7 +276,7 @@ pub(crate) async fn send_file(
     let router = router.ok_or_else(|| "no active reliable file channel".to_owned())?;
     // A host pushing a file to its viewer is audited like a pull.
     let audit = state.lock().hosted_peer.is_some().then_some("sent by host user");
-    let offer_rx = spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open(), audit);
+    let offer_rx = spawn_outgoing(app, path, outgoing, sealer, router, TransferGate::open(), audit);
     // FileSender allocates the id when it emits Offer. Returning after that
     // first sealed frame lets the UI track a transfer while it waits for the
     // receiver's answer and streams.
@@ -324,6 +324,8 @@ pub(crate) fn spawn_outgoing_file(
                         transferred,
                         total,
                         direction: "send",
+                        files_done: None,
+                        files_total: None,
                     },
                 );
             }
@@ -359,6 +361,289 @@ pub(crate) fn spawn_outgoing_file(
         }
     });
     offer_rx
+}
+
+/// The one-shot upload folder a viewer chose with SetUploadDir, or Downloads.
+/// An invalid or non-directory path also falls back, so a bad value never
+/// drops the transfer.
+fn take_upload_dir(app: &AppHandle) -> PathBuf {
+    let slot = { app.state::<AppState>().lock().upload_dir.clone() };
+    let chosen = lock_unpoisoned(&slot).take();
+    match chosen {
+        Some(dir) if Path::new(&dir).is_dir() => PathBuf::from(dir),
+        _ => downloads_dir(),
+    }
+}
+
+/// Cancel flags of the folder transfers in flight, by folder id.
+fn folder_cancels() -> &'static Mutex<HashMap<u64, Arc<AtomicBool>>> {
+    static CANCELS: std::sync::OnceLock<Mutex<HashMap<u64, Arc<AtomicBool>>>> = std::sync::OnceLock::new();
+    CANCELS.get_or_init(Mutex::default)
+}
+
+/// Stop a folder transfer in either direction. The other side is told, and a
+/// partially received folder is deleted.
+#[tauri::command]
+pub(crate) fn cancel_transfer(id: u64) -> Result<(), String> {
+    let flag = lock_unpoisoned(folder_cancels()).get(&id).cloned();
+    let flag = flag.ok_or_else(|| "that transfer has already finished".to_owned())?;
+    flag.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Send `path` as a folder if it is a directory, else as a single file.
+pub(crate) fn spawn_outgoing(
+    app: AppHandle,
+    path: String,
+    outgoing: ReliableSender,
+    sealer: Arc<Mutex<Sealer>>,
+    router: Arc<FileRouter>,
+    gate: TransferGate,
+    audit: Option<&'static str>,
+) -> oneshot::Receiver<Result<u64, String>> {
+    if Path::new(&path).is_dir() {
+        spawn_outgoing_folder(app, path, outgoing, sealer, router, gate, audit)
+    } else {
+        spawn_outgoing_file(app, path, outgoing, sealer, router, gate, audit)
+    }
+}
+
+/// Answer a viewer's Pull on the host: send the file or folder at `path`
+/// (gated on file access), and tell the viewer if it could not even start,
+/// for example a folder over the size limits.
+pub(crate) fn serve_pull(app: &AppHandle, req: u64, path: String, files_allowed: Arc<AtomicBool>) {
+    let (outgoing, sealer, router) = {
+        let state = app.state::<AppState>();
+        let state = state.lock();
+        (state.file_outgoing.clone(), state.file_sealer.clone(), state.file_router.clone())
+    };
+    let (Some(outgoing), Some(sealer), Some(router)) = (outgoing, sealer, router) else { return };
+    let started = spawn_outgoing(app.clone(), path, outgoing.clone(), sealer.clone(), router, TransferGate::new(files_allowed), Some("requested by viewer"));
+    tauri::async_runtime::spawn(async move {
+        let Ok(Err(message)) = started.await else { return };
+        let reply = protocol::browse::BrowseMsg::BrowseError { req, message };
+        let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &DataMsg::Browse(reply).to_bytes());
+        let _ = outgoing.send_frame(Tag::Data, &sealed).await;
+    });
+}
+
+/// The sink of an outgoing folder: routes the peer's replies for the folder
+/// and for each of its files to one channel, and stops routing a file's once
+/// the next file is offered (files go one at a time).
+struct FolderSink {
+    inner: ReliableFileSink,
+    router: Arc<FileRouter>,
+    replies: mpsc::Sender<FileMsg>,
+    current_file: Option<u64>,
+}
+
+#[async_trait::async_trait]
+impl FileSink for FolderSink {
+    async fn send(&mut self, message: FileMsg) {
+        match &message {
+            FileMsg::FolderOffer { id, .. } => {
+                *lock_unpoisoned(&self.inner.transfer_id) = Some(*id);
+                self.router.register_outgoing(*id, self.replies.clone());
+            }
+            FileMsg::FolderFile { id, .. } => {
+                if let Some(previous) = self.current_file.replace(*id) {
+                    self.router.finish_outgoing(previous);
+                }
+                self.router.register_outgoing(*id, self.replies.clone());
+            }
+            _ => {}
+        }
+        self.inner.send(message).await;
+    }
+}
+
+impl FolderSink {
+    fn finish(&mut self) {
+        if let Some(id) = *lock_unpoisoned(&self.inner.transfer_id) {
+            self.router.finish_outgoing(id);
+        }
+        if let Some(id) = self.current_file.take() {
+            self.router.finish_outgoing(id);
+        }
+    }
+}
+
+/// Spawn a task that sends the folder at `path`, one consented folder holding
+/// ordinary per-file transfers. Resolves to the folder id once its offer is
+/// on the wire, or to an error if the folder cannot be sent at all.
+pub(crate) fn spawn_outgoing_folder(
+    app: AppHandle,
+    path: String,
+    outgoing: ReliableSender,
+    sealer: Arc<Mutex<Sealer>>,
+    router: Arc<FileRouter>,
+    gate: TransferGate,
+    audit: Option<&'static str>,
+) -> oneshot::Receiver<Result<u64, String>> {
+    use host_core::folder::{FolderProgress, FolderSender, FolderTimeouts};
+    let (offer_tx, offer_rx) = oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let root = PathBuf::from(&path);
+        let plan = match tauri::async_runtime::spawn_blocking(move || host_core::folder::scan_folder(&root)).await {
+            Ok(Ok(plan)) => plan,
+            Ok(Err(error)) => {
+                let _ = offer_tx.send(Err(error.to_string()));
+                return;
+            }
+            Err(_) => {
+                let _ = offer_tx.send(Err("could not read that folder".to_owned()));
+                return;
+            }
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let gate = gate.with_cancel(cancelled.clone());
+        let folder_id = Arc::new(Mutex::new(None));
+        let (reply_tx, reply_rx) = mpsc::channel(64);
+        let mut replies = ReliableFileSource { incoming: reply_rx };
+        let mut sink = FolderSink {
+            inner: ReliableFileSink { outgoing, sealer, offer_id: None, transfer_id: folder_id.clone(), replies: None },
+            router,
+            replies: reply_tx,
+            current_file: None,
+        };
+        let on_offer = move |id| {
+            lock_unpoisoned(folder_cancels()).insert(id, cancelled);
+            let _ = offer_tx.send(Ok(id));
+        };
+        let progress_app = app.clone();
+        let progress_id = folder_id.clone();
+        let progress = move |state: FolderProgress| {
+            let Some(id) = *lock_unpoisoned(&progress_id) else { return };
+            emit(&progress_app, "file_progress", FileProgress {
+                id,
+                transferred: state.bytes_done,
+                total: state.bytes_total,
+                direction: "send",
+                files_done: Some(state.files_done),
+                files_total: Some(state.files_total),
+            });
+        };
+        let result = FolderSender::send(&plan, &mut sink, &mut replies, on_offer, progress, FolderTimeouts::default(), &gate).await;
+        sink.finish();
+        let id = *lock_unpoisoned(&folder_id);
+        if let Some(id) = id {
+            lock_unpoisoned(folder_cancels()).remove(&id);
+        }
+        if let Some(reason) = audit {
+            let files = plan.files.len();
+            let (kind, detail) = match &result {
+                Ok(_) => (audit_kind::FILE_DOWNLOAD_COMPLETED, format!("folder, {files} files: {reason}")),
+                Err(host_core::filexfer::FileError::Rejected) => (audit_kind::FILE_DOWNLOAD_REJECTED, format!("folder, {files} files: declined by viewer")),
+                Err(error) => (audit_kind::FILE_DOWNLOAD_FAILED, format!("folder, {files} files: {reason}: {error}")),
+            };
+            audit_hosted(&app, AuditEvent::new(kind, None).with_file(plan.name.clone(), Some(plan.total)).with_path(path.clone()).with_detail(detail));
+        }
+        match (result, id) {
+            (Ok(_), Some(id)) => emit(&app, "file_done", FileDone { id, path: None }),
+            (Err(error), Some(id)) => emit(&app, "file_error", FileError { id, message: error.to_string() }),
+            _ => {}
+        }
+    });
+    offer_rx
+}
+
+/// Ask the user about one incoming folder and, if accepted, receive the whole
+/// tree into a new folder. One prompt covers every file in it.
+async fn receive_folder_offer(
+    app: AppHandle,
+    mut source: host_core::datachan::TransferSource,
+    id: u64,
+    from: String,
+    outgoing: ReliableSender,
+    sealer: Arc<Mutex<Sealer>>,
+    is_host: bool,
+) {
+    use host_core::folder::{FolderProgress, FolderReceiver};
+    let mut answers = ReliableFileSink {
+        outgoing,
+        sealer,
+        offer_id: None,
+        transfer_id: Arc::new(Mutex::new(Some(id))),
+        replies: None,
+    };
+    let dest_dir = take_upload_dir(&app);
+    let dest_display = dest_dir.display().to_string();
+    let files_allowed = app.state::<AppState>().lock().viewer_permissions.files.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    lock_unpoisoned(folder_cancels()).insert(id, cancelled.clone());
+    // The file permission is checked per chunk across the whole folder.
+    let gate = TransferGate::new(files_allowed.clone()).with_cancel(cancelled);
+    // (name, total size, file count) of the offer, for the logs.
+    let offered = Arc::new(Mutex::new((String::new(), 0u64, 0u32)));
+    let offer_slot = offered.clone();
+    // Folder uploads into this host are audited once for the whole folder.
+    let audit_dir = dest_display.clone();
+    let audit = move |app: &AppHandle, kind: &str, offered: &(String, u64, u32), detail: Option<&str>| {
+        if !is_host { return; }
+        let (name, size, files) = offered;
+        let detail = match detail {
+            Some(detail) => format!("folder, {files} files: {detail}"),
+            None => format!("folder, {files} files"),
+        };
+        let event = AuditEvent::new(kind, None).with_path(audit_dir.clone()).with_file(name.clone(), Some(*size)).with_detail(detail);
+        audit_hosted(app, event);
+    };
+    let consent_audit = audit.clone();
+    let pending_app = app.clone();
+    let consent = move |offer: FileMsg| async move {
+        let FileMsg::FolderOffer { id, name, files, total } = offer else {
+            return ConsentDecision::Reject;
+        };
+        let details = (name.clone(), total, files);
+        *lock_unpoisoned(&offer_slot) = details.clone();
+        if !files_allowed.load(Ordering::Relaxed) {
+            emit_activity(&pending_app, "file", format!("blocked folder \"{name}\""));
+            consent_audit(&pending_app, audit_kind::FILE_UPLOAD_REJECTED, &details, Some("file access off"));
+            return ConsentDecision::Reject;
+        }
+        let (decision_tx, decision_rx) = oneshot::channel();
+        pending_app.state::<AppState>().lock().pending_file_requests.insert(id, decision_tx);
+        startup::reveal_if_hidden(&pending_app);
+        emit(&pending_app, "file_offer", FileOffer { id, name, size: total, from, dir: dest_display, files: Some(files) });
+        if decision_rx.await.unwrap_or(false) {
+            consent_audit(&pending_app, audit_kind::FILE_UPLOAD_ACCEPTED, &details, None);
+            ConsentDecision::Accept
+        } else {
+            consent_audit(&pending_app, audit_kind::FILE_UPLOAD_REJECTED, &details, Some("declined by host user"));
+            ConsentDecision::Reject
+        }
+    };
+    let progress_app = app.clone();
+    let progress = move |state: FolderProgress| {
+        emit(&progress_app, "file_progress", FileProgress {
+            id,
+            transferred: state.bytes_done,
+            total: state.bytes_total,
+            direction: "receive",
+            files_done: Some(state.files_done),
+            files_total: Some(state.files_total),
+        });
+    };
+    let result = FolderReceiver::receive(&mut source, &mut answers, &dest_dir, consent, progress, &gate).await;
+    lock_unpoisoned(folder_cancels()).remove(&id);
+    let details = lock_unpoisoned(&offered).clone();
+    match result {
+        Ok(received) => {
+            emit_activity(&app, "file", format!("received folder \"{}\" ({} files)", details.0, received.files));
+            // The saved name can differ from the offered one when a folder of
+            // that name already exists.
+            let saved = received.root.file_name().map_or(details.0.clone(), |saved| saved.to_string_lossy().into_owned());
+            audit(&app, audit_kind::FILE_UPLOAD_COMPLETED, &(saved, received.bytes, received.files), None);
+            emit(&app, "file_done", FileDone { id, path: Some(received.root.display().to_string()) });
+        }
+        Err(error) => {
+            // A refusal was already audited when it was decided.
+            if !matches!(error, host_core::filexfer::FileError::Rejected) {
+                audit(&app, audit_kind::FILE_UPLOAD_FAILED, &details, Some(&error.to_string()));
+            }
+            emit(&app, "file_error", FileError { id, message: error.to_string() });
+        }
+    }
 }
 
 /// A directory listing returned to the UI (the local pane of the file manager).
@@ -409,7 +694,8 @@ pub(crate) async fn upload_to_remote(state: tauri::State<'_, AppState>, app: App
     let message = protocol::datamsg::DataMsg::Browse(protocol::browse::BrowseMsg::SetUploadDir { dir });
     let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &message.to_bytes());
     outgoing.send_frame(Tag::Data, &sealed).await.map_err(|error| error.to_string())?;
-    spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open(), None)
+    spawn_outgoing(app, path, outgoing, sealer, router, TransferGate::open(), None)
+
         .await
         .map_err(|_| "file transfer stopped before sending its offer".to_owned())?
 }
