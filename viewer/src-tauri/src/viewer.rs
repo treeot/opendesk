@@ -252,14 +252,6 @@ pub(crate) fn connect(
         .config
         .add_recent(&target_id)
         .map_err(|e| e.to_string())?;
-    // A contact is only touched when it already exists; the regular recent-ID
-    // history above continues to cover connections made without saving one.
-    let touch_result = state.lock().contacts.touch(&target_id);
-    if let Err(error) = touch_result {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error.to_string());
-        }
-    }
     emit(&app, VIEWER_STATUS, StatusEvent { state: "connecting" });
     let (relay_urls, viewer_id) = {
         let mut state = state.lock();
@@ -452,6 +444,15 @@ pub(crate) fn connect(
                             },
                         );
                         session_started = true;
+                        // Saved devices record when they last connected, once
+                        // the session is actually up. Unsaved IDs are covered
+                        // by the recent-ID history instead.
+                        let touched = task_app.state::<AppState>().lock().contacts.touch(&target);
+                        if let Err(error) = touched {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                log::warn!("could not record last connection: {error}");
+                            }
+                        }
                     }
                     match session_task.join().await {
                         Ok(result) => result.map_err(|error| error.to_string()),
