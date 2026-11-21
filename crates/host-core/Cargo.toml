@@ -33,7 +33,7 @@ serde_json = { workspace = true }
 # Optional: hardware H.264 on Linux via VAAPI (the `vaapi` feature). Off by
 # default because it needs the system ffmpeg development libraries; enabling it
 # links libavcodec/libavutil. Experimental, needs validation on Linux hardware.
-ffmpeg-next = { version = "7.1", optional = true }
+ffmpeg-next = { version = "9.1", optional = true }
 
 [features]
 # Build the experimental VAAPI hardware encoder (Linux only at runtime).
@@ -61,7 +61,7 @@ objc2-video-toolbox = { version = "0.3.2", default-features = false, features = 
 # Not used directly: scap 0.0.8 accepts any windows-capture 1.x, but 1.5
 # changed Settings::new and breaks scap's Windows build. Cap it here.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-capture = ">=1.3.6, <1.5"
+windows-capture = ">=1.3.6, <2.1"
 # Device installation, IO, registry, security, shell and threading: the
 # virtual display driver (vdisplay/windows.rs), and synthetic pen and touch
 # input (inject/pen.rs).
