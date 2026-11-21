@@ -20,7 +20,7 @@ mod viewer;
 use config::ConfigStore;
 use contacts::{Contact, ContactStore};
 use futures_util::StreamExt;
-use host_core::{clipboard::{ArboardBackend, ClipboardSync}, datachan::{FileRouter, IncomingTransfer}, filexfer::{ConsentDecision, FileReceiver, FileSink, FileSource, FileSender}, roles::DataHandle, transport::reliable::ReliableSender};
+use host_core::{clipboard::{ArboardBackend, ClipboardSync}, datachan::{FileRouter, IncomingTransfer}, filexfer::{ConsentDecision, FileReceiver, FileSink, FileSource, FileSender, FlowTimeouts, TransferGate}, roles::DataHandle, transport::reliable::ReliableSender};
 use protocol::{chat::ChatMsg, clipboard::ClipboardContent, control::{Control, MonitorInfo}, crypto::{Opener, Sealer}, datamsg::DataMsg, filexfer::FileMsg, frame, Tag};
 use serde::Serialize;
 use std::{collections::HashMap, fs, fs::OpenOptions, io, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, Ordering}, mpsc as std_mpsc, Arc, Mutex}, time::{Duration, Instant}};
@@ -325,7 +325,7 @@ fn handle_browse(
             };
             if let (Some(outgoing), Some(sealer), Some(router)) = (outgoing, sealer, router) {
                 // The send runs in its own task; we don't need the offer-id future.
-                drop(files::spawn_outgoing_file(app.clone(), path, outgoing, sealer, router));
+                drop(files::spawn_outgoing_file(app.clone(), path, outgoing, sealer, router, TransferGate::new(files_allowed.clone())));
             }
         }
         BrowseMsg::SetUploadDir { dir } => {

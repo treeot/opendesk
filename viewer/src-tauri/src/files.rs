@@ -150,7 +150,10 @@ async fn receive_offer(
     };
     // Shown in the accept prompt so the host sees where the file would land.
     let dest_display = dest_dir.display().to_string();
-    let result = FileReceiver::receive_with_async_consent(
+    // Checked per chunk too, so turning file access off stops an accepted
+    // upload mid-way and deletes the partial file.
+    let gate = TransferGate::new(app.state::<AppState>().lock().viewer_permissions.files.clone());
+    let result = FileReceiver::receive_gated(
         &mut source,
         &mut answers,
         &dest_dir,
@@ -202,6 +205,7 @@ async fn receive_offer(
                 },
             );
         },
+        &gate,
     )
     .await;
     match result {
@@ -238,7 +242,7 @@ pub(crate) async fn send_file(
     let outgoing = outgoing.ok_or_else(|| "no active reliable file channel".to_owned())?;
     let sealer = sealer.ok_or_else(|| "file session keys are not ready".to_owned())?;
     let router = router.ok_or_else(|| "no active reliable file channel".to_owned())?;
-    let offer_rx = spawn_outgoing_file(app, path, outgoing, sealer, router);
+    let offer_rx = spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open());
     // FileSender allocates the id when it emits Offer. Returning after that
     // first sealed frame lets the UI track a transfer while it waits for the
     // receiver's answer and streams.
@@ -249,13 +253,15 @@ pub(crate) async fn send_file(
 
 /// Spawn a task that sends `path` over the data channel as a file transfer.
 /// Shared by the viewer's "Send file" and by answering a remote pull. Resolves
-/// to the transfer id once the offer is on the wire.
+/// to the transfer id once the offer is on the wire. A remote pull passes the
+/// host's file permission as `gate` so revoking it stops the transfer.
 pub(crate) fn spawn_outgoing_file(
     app: AppHandle,
     path: String,
     outgoing: ReliableSender,
     sealer: Arc<Mutex<Sealer>>,
     router: Arc<FileRouter>,
+    gate: TransferGate,
 ) -> oneshot::Receiver<Result<u64, String>> {
     let (offer_tx, offer_rx) = oneshot::channel();
     let task_app = app.clone();
@@ -272,7 +278,7 @@ pub(crate) fn spawn_outgoing_file(
             transfer_id: transfer_id.clone(),
             replies: Some((Arc::clone(&router), reply_tx)),
         };
-        let result = FileSender::send(Path::new(&path), &mut sink, &mut replies, move |transferred, total| {
+        let progress = move |transferred, total| {
             if let Some(id) = *lock_unpoisoned(&progress_id) {
                 emit(
                     &progress_app,
@@ -285,8 +291,8 @@ pub(crate) fn spawn_outgoing_file(
                     },
                 );
             }
-        })
-        .await;
+        };
+        let result = FileSender::send_gated(Path::new(&path), &mut sink, &mut replies, progress, FlowTimeouts::default(), &gate).await;
         let id = *lock_unpoisoned(&transfer_id);
         if let Some(id) = id {
             router.finish_outgoing(id);
@@ -356,7 +362,7 @@ pub(crate) async fn upload_to_remote(state: tauri::State<'_, AppState>, app: App
     let message = protocol::datamsg::DataMsg::Browse(protocol::browse::BrowseMsg::SetUploadDir { dir });
     let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &message.to_bytes());
     outgoing.send_frame(Tag::Data, &sealed).await.map_err(|error| error.to_string())?;
-    spawn_outgoing_file(app, path, outgoing, sealer, router)
+    spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open())
         .await
         .map_err(|_| "file transfer stopped before sending its offer".to_owned())?
 }

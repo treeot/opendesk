@@ -14,7 +14,7 @@ use std::{
     fmt::{self, Display, Formatter},
     io,
     path::{Path, PathBuf},
-    sync::{atomic::{AtomicU64, Ordering}, OnceLock},
+    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, OnceLock},
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -62,6 +62,55 @@ pub fn next_transfer_id() -> u64 {
         .fetch_add(1, Ordering::Relaxed)
 }
 
+/// What the peer is told when a host-side permission stops a transfer.
+pub const REVOKED_MESSAGE: &str = "The other computer turned off file access.";
+/// How often a gated transfer re-checks its permission while it waits.
+const GATE_POLL: Duration = Duration::from_millis(100);
+
+/// A host-enforced permission checked for the whole life of a transfer, not
+/// only when it is offered. Turning the flag off stops an in-flight transfer
+/// within one chunk (or [`GATE_POLL`] while it waits), tells the peer with a
+/// `FileMsg::Error` (or `Reject`), and discards a partially received file.
+#[derive(Clone, Default)]
+pub struct TransferGate(Option<Arc<AtomicBool>>);
+
+impl TransferGate {
+    /// No permission applies; the transfer is never stopped by a gate.
+    pub fn open() -> Self {
+        Self(None)
+    }
+
+    /// Gate the transfer on `flag`, which may be flipped at any time.
+    pub fn new(flag: Arc<AtomicBool>) -> Self {
+        Self(Some(flag))
+    }
+
+    pub fn allowed(&self) -> bool {
+        self.0.as_ref().is_none_or(|flag| flag.load(Ordering::Relaxed))
+    }
+
+    fn check(&self) -> Result<(), FileError> {
+        if self.allowed() { Ok(()) } else { Err(FileError::Revoked) }
+    }
+
+    /// Run `future` unless the permission is turned off first.
+    async fn guard<F: Future>(&self, future: F) -> Result<F::Output, FileError> {
+        if self.0.is_none() {
+            return Ok(future.await);
+        }
+        let revoked = async {
+            while self.allowed() {
+                tokio::time::sleep(GATE_POLL).await;
+            }
+        };
+        tokio::select! {
+            biased;
+            () = revoked => Err(FileError::Revoked),
+            output = future => Ok(output),
+        }
+    }
+}
+
 #[async_trait]
 pub trait FileSink {
     async fn send(&mut self, msg: FileMsg);
@@ -89,6 +138,8 @@ pub enum FileError {
     TimedOut(String),
     /// The peer reported an error and abandoned the transfer.
     Peer(String),
+    /// The host turned off the permission this transfer depends on.
+    Revoked,
 }
 
 impl Display for FileError {
@@ -101,6 +152,7 @@ impl Display for FileError {
             Self::Protocol(message) => write!(f, "file transfer protocol error: {message}"),
             Self::TimedOut(message) => write!(f, "file transfer cancelled: {message}"),
             Self::Peer(message) => write!(f, "file transfer failed on the other side: {message}"),
+            Self::Revoked => f.write_str("file transfer stopped: file access was turned off"),
         }
     }
 }
@@ -262,8 +314,27 @@ impl FileSender {
         path: P,
         sink: &mut S,
         replies: &mut R,
+        progress: impl FnMut(u64, u64),
+        timeouts: FlowTimeouts,
+    ) -> Result<(), FileError>
+    where
+        S: FileSink + Send,
+        R: FileSource + Send,
+        P: AsRef<Path>,
+    {
+        Self::send_gated(path, sink, replies, progress, timeouts, &TransferGate::open()).await
+    }
+
+    /// Like [`Self::send_with_timeouts`], but stop as soon as `gate` closes:
+    /// the receiver gets a `FileMsg::Error` and this returns
+    /// [`FileError::Revoked`].
+    pub async fn send_gated<S, R, P>(
+        path: P,
+        sink: &mut S,
+        replies: &mut R,
         mut progress: impl FnMut(u64, u64),
         timeouts: FlowTimeouts,
+        gate: &TransferGate,
     ) -> Result<(), FileError>
     where
         S: FileSink + Send,
@@ -282,6 +353,7 @@ impl FileSender {
         let mut buffer = vec![0u8; CHUNK_SIZE];
         let mut size = 0u64;
         loop {
+            gate.check()?;
             let read = file.read(&mut buffer).await?;
             if read == 0 {
                 break;
@@ -301,7 +373,11 @@ impl FileSender {
         })
         .await;
 
-        match tokio::time::timeout(timeouts.accept, next_reply(replies, id)).await {
+        let answer = match gate.guard(tokio::time::timeout(timeouts.accept, next_reply(replies, id))).await {
+            Ok(answer) => answer,
+            Err(error) => return Err(revoke(sink, id, error).await),
+        };
+        match answer {
             Err(_) => return Err(cancel(sink, id, "the receiver did not accept the file in time").await),
             Ok(Reply::Accepted) => {}
             Ok(Reply::Acked(_)) => return Err(FileError::Protocol("acknowledgement before acceptance".into())),
@@ -315,12 +391,15 @@ impl FileSender {
         let mut acked = 0u64;
         progress(0, size);
         loop {
+            if let Err(error) = gate.check() {
+                return Err(revoke(sink, id, error).await);
+            }
             let read = file.read(&mut buffer).await?;
             if read == 0 {
                 break;
             }
             while offset + read as u64 - acked > SEND_WINDOW_BYTES {
-                acked = acked.max(await_ack(sink, replies, id, timeouts.ack).await?);
+                acked = acked.max(await_ack(sink, replies, id, timeouts.ack, gate).await?);
             }
             sink.send(FileMsg::Chunk {
                 id,
@@ -333,8 +412,9 @@ impl FileSender {
         }
         sink.send(FileMsg::Done { id }).await;
         // Intermediate acks stay below `size`; the full-size ack comes only
-        // after the receiver verified the hash and stored the file.
-        while await_ack(sink, replies, id, timeouts.ack).await? < size {}
+        // after the receiver verified the hash and stored the file. Every
+        // byte is already out, so the gate no longer applies.
+        while await_ack(sink, replies, id, timeouts.ack, &TransferGate::open()).await? < size {}
         Ok(())
     }
 }
@@ -361,12 +441,22 @@ async fn next_reply<R: FileSource + Send>(replies: &mut R, id: u64) -> Reply {
     }
 }
 
-async fn await_ack<S, R>(sink: &mut S, replies: &mut R, id: u64, ack_timeout: Duration) -> Result<u64, FileError>
+async fn await_ack<S, R>(
+    sink: &mut S,
+    replies: &mut R,
+    id: u64,
+    ack_timeout: Duration,
+    gate: &TransferGate,
+) -> Result<u64, FileError>
 where
     S: FileSink + Send,
     R: FileSource + Send,
 {
-    match tokio::time::timeout(ack_timeout, next_reply(replies, id)).await {
+    let answer = match gate.guard(tokio::time::timeout(ack_timeout, next_reply(replies, id))).await {
+        Ok(answer) => answer,
+        Err(error) => return Err(revoke(sink, id, error).await),
+    };
+    match answer {
         Err(_) => Err(cancel(sink, id, "the receiver stopped acknowledging data").await),
         Ok(Reply::Acked(offset)) => Ok(offset),
         Ok(Reply::Accepted) => Err(FileError::Protocol("duplicate acceptance".into())),
@@ -380,6 +470,12 @@ where
 async fn cancel<S: FileSink + Send>(sink: &mut S, id: u64, reason: &str) -> FileError {
     sink.send(FileMsg::Error { id, message: reason.to_owned() }).await;
     FileError::TimedOut(reason.to_owned())
+}
+
+/// Tell the receiver the host withdrew permission and pass `error` through.
+async fn revoke<S: FileSink + Send>(sink: &mut S, id: u64, error: FileError) -> FileError {
+    sink.send(FileMsg::Error { id, message: REVOKED_MESSAGE.to_owned() }).await;
+    error
 }
 
 pub struct FileReceiver;
@@ -415,7 +511,28 @@ impl FileReceiver {
         sink: &mut K,
         downloads_dir: &Path,
         consent: C,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<PathBuf, FileError>
+    where
+        S: FileSource + Send,
+        K: FileSink + Send,
+        C: FnOnce(FileMsg) -> ConsentFuture,
+        ConsentFuture: Future<Output = ConsentDecision>,
+    {
+        Self::receive_gated(source, sink, downloads_dir, consent, progress, &TransferGate::open()).await
+    }
+
+    /// Like [`Self::receive_with_async_consent`], but stop as soon as `gate`
+    /// closes: the partial file is deleted, the sender gets a
+    /// `FileMsg::Error` (or a `Reject` if the gate closed during consent) and
+    /// this returns [`FileError::Revoked`].
+    pub async fn receive_gated<S, K, C, ConsentFuture>(
+        source: &mut S,
+        sink: &mut K,
+        downloads_dir: &Path,
+        consent: C,
         mut progress: impl FnMut(u64, u64),
+        gate: &TransferGate,
     ) -> Result<PathBuf, FileError>
     where
         S: FileSource + Send,
@@ -438,10 +555,16 @@ impl FileReceiver {
             sink.send(FileMsg::Reject { id, reason: "declined".into() }).await;
             return Err(FileError::Rejected);
         }
+        // The permission may have been turned off while the user decided.
+        if let Err(error) = gate.check() {
+            sink.send(FileMsg::Reject { id, reason: REVOKED_MESSAGE.into() }).await;
+            return Err(error);
+        }
         sink.send(FileMsg::Accept { id }).await;
-        let result = Self::store(source, sink, downloads_dir, &name, id, size, expected_hash, &mut progress).await;
+        let result = Self::store(source, sink, downloads_dir, &name, id, size, expected_hash, &mut progress, gate).await;
         match &result {
             Ok(_) => sink.send(FileMsg::Ack { id, offset: size }).await,
+            Err(FileError::Revoked) => sink.send(FileMsg::Error { id, message: REVOKED_MESSAGE.into() }).await,
             Err(error) => sink.send(FileMsg::Error { id, message: error.to_string() }).await,
         }
         result
@@ -457,6 +580,7 @@ impl FileReceiver {
         size: u64,
         expected_hash: [u8; 32],
         mut progress: impl FnMut(u64, u64),
+        gate: &TransferGate,
     ) -> Result<PathBuf, FileError>
     where
         S: FileSource + Send,
@@ -473,6 +597,7 @@ impl FileReceiver {
             size,
             expected_hash,
             &mut progress,
+            gate,
         )
         .await;
         match result {
@@ -509,6 +634,7 @@ impl FileReceiver {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn receive_to_temp<S, K>(
         source: &mut S,
         sink: &mut K,
@@ -517,6 +643,7 @@ impl FileReceiver {
         size: u64,
         expected_hash: [u8; 32],
         progress: &mut impl FnMut(u64, u64),
+        gate: &TransferGate,
     ) -> Result<(), FileError>
     where
         S: FileSource + Send,
@@ -527,9 +654,9 @@ impl FileReceiver {
         let mut chunks = 0u64;
         progress(0, size);
         loop {
-            let message = source
-                .recv()
-                .await
+            let message = gate
+                .guard(source.recv())
+                .await?
                 .ok_or_else(|| FileError::Protocol("source closed mid-transfer".into()))?;
             match message {
                 FileMsg::Chunk {
@@ -954,6 +1081,97 @@ mod tests {
         assert!(matches!(result, Err(FileError::Rejected)));
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
         assert!(matches!(reply_rx.recv().await, Some(FileMsg::Reject { id: 1, .. })));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoked_gate_stops_an_upload_and_deletes_the_partial_file() {
+        let dir = temp_dir("revoke-receive");
+        let downloads = dir.join("downloads");
+        let source_path = dir.join("upload.bin");
+        fs::write(&source_path, payload(3 * SEND_WINDOW_BYTES as usize)).unwrap();
+        let (mut out, mut replies, mut incoming, mut answers) = link();
+        let sender = tokio::spawn(async move { FileSender::send(source_path, &mut out, &mut replies, |_, _| {}).await });
+        let files = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&files);
+        // The host turns file access off once two chunks have landed.
+        let result = FileReceiver::receive_gated(&mut incoming, &mut answers, &downloads, |_| async { ConsentDecision::Accept }, move |done, _| {
+            if done >= 2 * CHUNK_SIZE as u64 { flag.store(false, Ordering::Relaxed); }
+        }, &TransferGate::new(files))
+        .await;
+        assert!(matches!(result, Err(FileError::Revoked)), "{result:?}");
+        assert_eq!(fs::read_dir(&downloads).unwrap().count(), 0, "the partial upload must be deleted");
+        let sent = timeout(Duration::from_secs(5), sender).await.expect("sender must stop").unwrap();
+        assert!(matches!(&sent, Err(FileError::Peer(message)) if message == REVOKED_MESSAGE), "{sent:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoked_gate_stops_a_receiver_waiting_for_data() {
+        let dir = temp_dir("revoke-idle");
+        let (tx, rx) = mpsc::channel(4);
+        let (reply_tx, mut reply_rx) = mpsc::channel(8);
+        tx.send(FileMsg::Offer { id: 1, name: "x.bin".into(), size: 10, hash: [0; 32] }).await.unwrap();
+        tx.send(FileMsg::Chunk { id: 1, offset: 0, data: vec![1, 2, 3] }).await.unwrap();
+        let files = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&files);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            flag.store(false, Ordering::Relaxed);
+        });
+        // The sender stalls after one chunk; the flip alone must end the wait.
+        let (mut source, mut sink, gate) = (Source(rx), Sink(reply_tx), TransferGate::new(files));
+        let receive = FileReceiver::receive_gated(&mut source, &mut sink, &dir, |_| async { ConsentDecision::Accept }, |_, _| {}, &gate);
+        let result = timeout(Duration::from_secs(2), receive).await.expect("the gate must end the wait");
+        assert!(matches!(result, Err(FileError::Revoked)), "{result:?}");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(reply_rx.recv().await, Some(FileMsg::Accept { id: 1 }));
+        assert_eq!(reply_rx.recv().await, Some(FileMsg::Error { id: 1, message: REVOKED_MESSAGE.into() }));
+        drop(tx);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn gate_closed_during_consent_rejects_the_offer() {
+        let dir = temp_dir("revoke-consent");
+        let (tx, rx) = mpsc::channel(1);
+        let (reply_tx, mut reply_rx) = mpsc::channel(1);
+        tx.send(FileMsg::Offer { id: 1, name: "x.bin".into(), size: 3, hash: [0; 32] }).await.unwrap();
+        let files = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&files);
+        let result = FileReceiver::receive_gated(&mut Source(rx), &mut Sink(reply_tx), &dir, move |_| async move {
+            flag.store(false, Ordering::Relaxed);
+            ConsentDecision::Accept
+        }, |_, _| {}, &TransferGate::new(files))
+        .await;
+        assert!(matches!(result, Err(FileError::Revoked)), "{result:?}");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(matches!(reply_rx.recv().await, Some(FileMsg::Reject { id: 1, .. })));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoked_gate_stops_a_download_and_tells_the_receiver() {
+        let dir = temp_dir("revoke-send");
+        let downloads = dir.join("downloads");
+        let source_path = dir.join("pulled.bin");
+        fs::write(&source_path, payload(3 * SEND_WINDOW_BYTES as usize)).unwrap();
+        let (mut out, mut replies, mut incoming, mut answers) = link();
+        let files = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&files);
+        let gate = TransferGate::new(files);
+        let sender = tokio::spawn(async move {
+            // The host turns file access off once two chunks are out.
+            FileSender::send_gated(source_path, &mut out, &mut replies, move |done, _| {
+                if done >= 2 * CHUNK_SIZE as u64 { flag.store(false, Ordering::Relaxed); }
+            }, FlowTimeouts::default(), &gate)
+            .await
+        });
+        let received = FileReceiver::receive(&mut incoming, &mut answers, &downloads, |_| ConsentDecision::Accept, |_, _| {}).await;
+        assert!(matches!(&received, Err(FileError::Peer(message)) if message == REVOKED_MESSAGE), "{received:?}");
+        assert_eq!(fs::read_dir(&downloads).unwrap().count(), 0, "the partial download must be deleted");
+        let sent = timeout(Duration::from_secs(5), sender).await.expect("sender must stop").unwrap();
+        assert!(matches!(sent, Err(FileError::Revoked)), "{sent:?}");
         fs::remove_dir_all(dir).unwrap();
     }
 
