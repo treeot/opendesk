@@ -7,7 +7,7 @@ import { NotifyContext } from "../lib/notify";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), setContactPassword: vi.fn(), setContactMac: vi.fn(), wakeContact: vi.fn(), permissionStatus: vi.fn(), appVersion: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), onContactMac: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn() };
+  return { ...actual, getIdentity: vi.fn(), getConfig: vi.fn(), getUnattendedStatus: vi.fn(), listContacts: vi.fn(), listAllowed: vi.fn(), startHosting: vi.fn(), getWindowsServiceStatus: vi.fn(), installWindowsService: vi.fn(), uninstallWindowsService: vi.fn(), closeKeepsRunning: vi.fn(), quitApp: vi.fn(), connect: vi.fn(), setUnattendedAccess: vi.fn(), setUnattended2fa: vi.fn(), confirmUnattended2fa: vi.fn(), rotatePassword: vi.fn(), addContact: vi.fn(), setContactPassword: vi.fn(), setContactMac: vi.fn(), wakeContact: vi.fn(), permissionStatus: vi.fn(), appVersion: vi.fn(), getStartAtSignIn: vi.fn(), setStartAtSignIn: vi.fn(), onIdentityChanged: vi.fn(), onContactMac: vi.fn(), resetIdentity: vi.fn(), getIdentityConflicts: vi.fn(), onIdentityConflicts: vi.fn(), setAllowVirtualDisplays: vi.fn(), getDisplayDriver: vi.fn(), installDisplayDriver: vi.fn(), uninstallDisplayDriver: vi.fn(), listRecordings: vi.fn(), deleteRecording: vi.fn(), updateContact: vi.fn(), exportContacts: vi.fn(), importContacts: vi.fn(), pickAddressBookExportPath: vi.fn(), pickAddressBookImportPath: vi.fn() };
 });
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(() => Promise.resolve()), revealItemInDir: vi.fn(() => Promise.resolve()) }));
 describe("Home", () => {
@@ -468,6 +468,99 @@ describe("Home", () => {
     render(<Home status="online" onConnect={vi.fn()} />);
     await screen.findByRole("button", { name: "Connect to Office" });
     expect(screen.queryByRole("button", { name: "Wake-on-LAN settings for Office" })).toBeNull();
+  });
+
+  describe("address book", () => {
+    const book: api.Contact[] = [
+      { id: "111111111", alias: "Home PC", last_connected: 1_700_000_000, tags: ["Home"], favorite: true, has_saved_password: true },
+      { id: "222222222", alias: "Acme Front Desk", last_connected: null, tags: ["Clients/Acme"], notes: "Ask for Sam" },
+    ];
+    beforeEach(() => {
+      try { localStorage.setItem("opendesk.addressView", "list"); localStorage.removeItem("opendesk.addressGroupByTag"); } catch { /* ignore */ }
+      vi.mocked(api.listContacts).mockResolvedValue(book);
+      vi.mocked(api.updateContact).mockReset(); vi.mocked(api.exportContacts).mockReset(); vi.mocked(api.importContacts).mockReset();
+    });
+
+    it("searches across notes and shows an empty state that clears", async () => {
+      render(<Home status="online" onConnect={vi.fn()} />);
+      await screen.findByText("Home PC");
+      fireEvent.change(screen.getByLabelText("Search devices"), { target: { value: "sam" } });
+      expect(screen.queryByText("Home PC")).toBeNull();
+      expect(screen.getByText("Acme Front Desk")).toBeTruthy();
+      fireEvent.change(screen.getByLabelText("Search devices"), { target: { value: "nobody" } });
+      expect(screen.getByText(/No devices match "nobody"/)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+      expect(screen.getByText("Home PC")).toBeTruthy();
+    });
+
+    it("filters by a parent tag and shows favorites in their own section", async () => {
+      render(<Home status="online" onConnect={vi.fn()} />);
+      expect(await screen.findByRole("region", { name: "Favorites" })).toBeTruthy();
+      fireEvent.change(screen.getByLabelText("Filter by tag"), { target: { value: "Clients" } });
+      expect(screen.queryByText("Home PC")).toBeNull();
+      expect(screen.getByText("Acme Front Desk")).toBeTruthy();
+    });
+
+    it("edits a device's name, tags and notes", async () => {
+      vi.mocked(api.updateContact).mockResolvedValue({ ...book[1], alias: "Acme Reception", tags: ["Clients/Acme", "Windows"] });
+      render(<Home status="online" onConnect={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Edit Acme Front Desk" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit device" });
+      fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Acme Reception" } });
+      fireEvent.change(within(dialog).getByLabelText("Tags"), { target: { value: "Clients/Acme, Windows" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(api.updateContact).toHaveBeenCalledWith("222222222", { alias: "Acme Reception", notes: "Ask for Sam", tags: ["Clients/Acme", "Windows"], favorite: false }));
+      expect(await screen.findByText("Acme Reception")).toBeTruthy();
+    });
+
+    it("pins a device to favorites", async () => {
+      vi.mocked(api.updateContact).mockResolvedValue({ ...book[1], favorite: true });
+      render(<Home status="online" onConnect={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Pin Acme Front Desk to favorites" }));
+      await waitFor(() => expect(api.updateContact).toHaveBeenCalledWith("222222222", expect.objectContaining({ favorite: true })));
+      expect(await screen.findByRole("button", { name: "Unpin Acme Front Desk from favorites" })).toBeTruthy();
+    });
+
+    it("exports without passwords unless the option is ticked, and warns when it is", async () => {
+      vi.mocked(api.pickAddressBookExportPath).mockResolvedValue("/tmp/book.json");
+      vi.mocked(api.exportContacts).mockResolvedValue(2);
+      render(<Home status="online" onConnect={vi.fn()} />);
+      await screen.findByText("Home PC");
+      fireEvent.click(screen.getByRole("button", { name: "Export" }));
+      let dialog = await screen.findByRole("dialog", { name: "Export address book" });
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+      await waitFor(() => expect(api.exportContacts).toHaveBeenCalledWith("/tmp/book.json", false));
+
+      fireEvent.click(await screen.findByRole("button", { name: "Export" }));
+      dialog = await screen.findByRole("dialog", { name: "Export address book" });
+      fireEvent.click(within(dialog).getByLabelText(/Include saved passwords/));
+      expect(within(dialog).getByRole("alert").textContent).toMatch(/plain text/);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Export with passwords" }));
+      await waitFor(() => expect(api.exportContacts).toHaveBeenLastCalledWith("/tmp/book.json", true));
+    });
+
+    it("imports a file, reloads the list and reports what changed", async () => {
+      const notify = vi.fn();
+      vi.mocked(api.pickAddressBookImportPath).mockResolvedValue("/tmp/book.json");
+      vi.mocked(api.importContacts).mockResolvedValue({ added: 1, updated: 0, unchanged: 2, passwords: { saved: 0, kept_existing: 0, failed: 0 } });
+      render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
+      await screen.findByText("Home PC");
+      vi.mocked(api.listContacts).mockResolvedValue([...book, { id: "333333333", alias: "Imported Box", last_connected: null }]);
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+      expect(await screen.findByText("Imported Box")).toBeTruthy();
+      expect(notify).toHaveBeenCalledWith("Imported: 1 device added, 2 already up to date.", "info");
+    });
+
+    it("shows a clear error for a malformed import", async () => {
+      const notify = vi.fn();
+      vi.mocked(api.pickAddressBookImportPath).mockResolvedValue("/tmp/bad.json");
+      vi.mocked(api.importContacts).mockRejectedValue("This file is not an OpenDesk address book.");
+      render(<NotifyContext.Provider value={notify}><Home status="online" onConnect={vi.fn()} /></NotifyContext.Provider>);
+      await screen.findByText("Home PC");
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+      await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.stringContaining("not an OpenDesk address book"), "error"));
+    });
   });
 
   it("refuses connecting to this device's own ID", async () => {

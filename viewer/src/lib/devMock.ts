@@ -5,6 +5,8 @@
 // without launching the desktop app. It is never used inside the real Tauri
 // window (see `isTauri` in api.ts).
 
+import type { Contact, ContactEdit } from "./api";
+
 const randomDigits = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 10)).join("");
 const randomPassword = () => Array.from({ length: 8 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
 
@@ -21,10 +23,10 @@ const state = {
   },
   unattended: { enabled: true, has_password: true, twofa_enabled: false, ready: true, problem: null as string | null },
   contacts: [
-    { id: "730514826", alias: "Home PC", last_connected: Math.floor(Date.now() / 1000) - 3600, mac: "A4:83:E7:2C:19:0F" as string | null },
-    { id: "905218437", alias: "Office Workstation", last_connected: Math.floor(Date.now() / 1000) - 86400 * 2 },
-    { id: "118273645", alias: "Mom's Laptop", last_connected: null as number | null },
-  ],
+    { id: "730514826", alias: "Home PC", last_connected: Math.floor(Date.now() / 1000) - 3600, mac: "A4:83:E7:2C:19:0F", tags: ["Home"], favorite: true },
+    { id: "905218437", alias: "Office Workstation", last_connected: Math.floor(Date.now() / 1000) - 86400 * 2, tags: ["Clients/Acme"], notes: "Front desk, ask for Sam" },
+    { id: "118273645", alias: "Mom's Laptop", last_connected: null, tags: ["Home"] },
+  ] as Contact[],
   allowed: ["730514826", "905218437"],
   savedPasswords: new Set<string>(["730514826"]),
   recordings: [
@@ -62,6 +64,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   remove_contact: ({ peerId }) => { state.contacts = state.contacts.filter((c) => c.id !== peerId); state.savedPasswords.delete(peerId as string); },
   touch_contact: () => undefined,
+  update_contact: ({ peerId, edit }) => {
+    const contact = state.contacts.find((c) => c.id === peerId);
+    if (contact) Object.assign(contact, edit as ContactEdit);
+    return contact;
+  },
+  export_contacts: () => state.contacts.length,
+  import_contacts: () => ({ added: 0, updated: 0, unchanged: state.contacts.length, passwords: { saved: 0, kept_existing: 0, failed: 0 } }),
   set_relay: () => undefined,
   set_relays: ({ urls }) => { state.config.relay_urls = urls as string[]; },
   list_relays: () => state.config.relay_urls,

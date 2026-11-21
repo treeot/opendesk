@@ -2,7 +2,7 @@ import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { devInvoke } from "./devMock";
 
 // True inside the real Tauri window; false in a plain browser (`npm run dev`),
@@ -38,7 +38,11 @@ export interface FileOffer { id: number; name: string; size: number; from: strin
 export interface FileProgress { id: number; transferred: number; total: number; direction: "send" | "receive" | string; files_done?: number; files_total?: number }
 export interface FileDone { id: number; path?: string | null }
 export interface FileError { id: number; message: string }
-export interface Contact { id: string; alias: string; last_connected: number | null; mac?: string | null; has_saved_password?: boolean }
+export interface Contact { id: string; alias: string; last_connected: number | null; mac?: string | null; has_saved_password?: boolean; notes?: string; tags?: string[]; favorite?: boolean }
+/** Editable details of a saved device. */
+export interface ContactEdit { alias: string; notes: string; tags: string[]; favorite: boolean }
+/** What an address book import changed; passwords go to the OS keyring. */
+export interface ImportSummary { added: number; updated: number; unchanged: number; passwords: { saved: number; kept_existing: number; failed: number } }
 export interface TotpEnrollment { uri: string; secret: string; qr_width: number; qr_modules: boolean[] }
 /** `is_virtual`: a virtual display this session added, which the viewer may remove. */
 export interface MonitorInfo { id: number; name: string; width: number; height: number; is_primary: boolean; is_virtual?: boolean }
@@ -69,6 +73,23 @@ export const touchContact = (peer_id: string) => invoke<void>("touch_contact", {
 export const setContactPassword = (peer_id: string, password: string | null) => invoke<void>("set_contact_password", { peerId: peer_id, password });
 export const setContactMac = (peer_id: string, mac: string) => invoke<Contact>("set_contact_mac", { peerId: peer_id, mac });
 export const wakeContact = (peer_id: string) => invoke<void>("wake_contact", { peerId: peer_id });
+export const updateContact = (peer_id: string, edit: ContactEdit) => invoke<Contact>("update_contact", { peerId: peer_id, edit });
+/** Write the address book to `path`; resolves to the number of devices written. */
+export const exportContacts = (path: string, includePasswords: boolean) => invoke<number>("export_contacts", { path, includePasswords });
+/** Validate and merge an address book file into the saved devices. */
+export const importContacts = (path: string) => invoke<ImportSummary>("import_contacts", { path });
+const addressBookFilter = [{ name: "OpenDesk address book", extensions: ["json"] }];
+/** Native save dialog for an address book export; null when cancelled. */
+export const pickAddressBookExportPath = async (): Promise<string | null> => {
+  if (!useBridge) return "/Users/you/Documents/opendesk-address-book.json";
+  return (await saveDialog({ title: "Export address book", defaultPath: "opendesk-address-book.json", filters: addressBookFilter })) ?? null;
+};
+/** Native open dialog for an address book import; null when cancelled. */
+export const pickAddressBookImportPath = async (): Promise<string | null> => {
+  if (!useBridge) return "/Users/you/Documents/opendesk-address-book.json";
+  const selected = await openDialog({ multiple: false, directory: false, title: "Import address book", filters: addressBookFilter });
+  return typeof selected === "string" ? selected : null;
+};
 export const setRelay = (url: string) => invoke<void>("set_relay", { url });
 export const setRelays = (urls: string[]) => invoke<void>("set_relays", { urls });
 export const listRelays = () => invoke<string[]>("list_relays");
