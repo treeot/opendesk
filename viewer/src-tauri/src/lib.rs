@@ -6,6 +6,7 @@ mod events;
 mod recording;
 mod deeplink;
 mod files;
+mod clipfiles;
 mod host;
 mod machine;
 mod menu;
@@ -158,6 +159,8 @@ struct ClipboardThread {
 }
 enum ClipboardCommand {
     Apply(ClipboardContent),
+    /// Put pasted files on the local clipboard; `true` even with sync off.
+    SetFiles(Vec<PathBuf>, bool),
     Stop,
 }
 struct AppState(Mutex<RuntimeState>);
@@ -211,6 +214,7 @@ fn spawn_clipboard_thread(
     sealer: Arc<Mutex<Sealer>>,
     enabled: Arc<AtomicBool>,
     allowed: Arc<AtomicBool>,
+    is_host: bool,
 ) -> Option<(std_mpsc::Sender<ClipboardCommand>, std::thread::JoinHandle<()>)> {
     let backend = ArboardBackend::new()?;
     let (command_tx, command_rx) = std_mpsc::channel();
@@ -218,7 +222,9 @@ fn spawn_clipboard_thread(
     // hasn't blocked the viewer's clipboard permission, in both directions.
     let active = move || enabled.load(Ordering::Relaxed) && allowed.load(Ordering::Relaxed);
     let join = std::thread::spawn(move || {
-        let mut sync = ClipboardSync::new(backend);
+        // Only the host announces copied files; the viewer's stay private.
+        let shared = clipfiles::shared_files().clone();
+        let mut sync = if is_host { ClipboardSync::new(backend).with_file_sharing(shared.clone()) } else { ClipboardSync::new(backend) };
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
         let Ok(runtime) = runtime else { return };
         loop {
@@ -226,9 +232,12 @@ fn spawn_clipboard_thread(
                 Ok(ClipboardCommand::Apply(content)) => {
                     if active() { sync.apply(&content); }
                 }
+                Ok(ClipboardCommand::SetFiles(paths, force)) => {
+                    if force || active() { sync.apply_files(&paths); }
+                }
                 Ok(ClipboardCommand::Stop) | Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                    if !active() { continue; }
+                    if !active() { shared.clear(); continue; }
                     let Some(message) = sync.poll_data() else { continue };
                     let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &message.to_bytes());
                     if runtime.block_on(outgoing.send_frame(Tag::Data, &sealed)).is_err() { break; }
@@ -264,6 +273,12 @@ fn dispatch_data(
         move |sealed: &[u8]| lock_unpoisoned(&opener).open(&[Tag::Data as u8], sealed),
         Arc::clone(&router),
         move |message| {
+            // Only a host announces copied files, and only a viewer pastes them.
+            if let ClipboardContent::Files(files) = message.content {
+                if !is_host { clipfiles::remote_clipboard_changed(&clipboard_app, message.seq, Some(files)); }
+                return;
+            }
+            if !is_host { clipfiles::remote_clipboard_changed(&clipboard_app, message.seq, None); }
             emit_activity(&clipboard_app, "clipboard", "clipboard received");
             if let Some(sender) = &clipboard_tx { let _ = sender.send(ClipboardCommand::Apply(message.content)); }
         },
@@ -291,7 +306,7 @@ fn handle_browse(
     // (DirListing/BrowseError) only on the viewer. Enforce it so a malicious peer
     // cannot drive the wrong half, e.g. a host making a viewer list or send its
     // own files.
-    let for_host = matches!(message, BrowseMsg::ListDir { .. } | BrowseMsg::Pull { .. } | BrowseMsg::SetUploadDir { .. } | BrowseMsg::MakeDir { .. } | BrowseMsg::Delete { .. } | BrowseMsg::Rename { .. });
+    let for_host = matches!(message, BrowseMsg::ListDir { .. } | BrowseMsg::Pull { .. } | BrowseMsg::SetUploadDir { .. } | BrowseMsg::MakeDir { .. } | BrowseMsg::Delete { .. } | BrowseMsg::Rename { .. } | BrowseMsg::PullClipboard { .. } | BrowseMsg::PasteNext { .. });
     if for_host != is_host { return; }
     match message {
         BrowseMsg::ListDir { req, path } => {
@@ -315,6 +330,7 @@ fn handle_browse(
             });
         }
         BrowseMsg::DirListing { path, entries, .. } => emit(app, "remote_listing", RemoteListingEvent { path, entries, error: None }),
+        BrowseMsg::BrowseError { req, message } if clipfiles::pull_refused(req, &message) => {}
         BrowseMsg::BrowseError { message, .. } => emit(app, "remote_listing", RemoteListingEvent { path: String::new(), entries: Vec::new(), error: Some(message) }),
         BrowseMsg::Pull { req, path } => {
             // Host side: the viewer asked for this file or folder; send it if
@@ -336,6 +352,10 @@ fn handle_browse(
             if !files_allowed.load(std::sync::atomic::Ordering::Relaxed) { return; }
             let slot = { app.state::<AppState>().lock().upload_dir.clone() };
             *lock_unpoisoned(&slot) = if dir.is_empty() { None } else { Some(dir) };
+        }
+        BrowseMsg::PullClipboard { req, seq, index } => clipfiles::serve_clipboard_pull(app, req, seq, index, files_allowed),
+        BrowseMsg::PasteNext { batch } => {
+            if files_allowed.load(std::sync::atomic::Ordering::Relaxed) { clipfiles::arm_paste(batch); }
         }
         BrowseMsg::MakeDir { req, path, name } => {
             let event = AuditEvent::new(audit_kind::FILE_MKDIR, None).with_path(path.clone()).with_file(name.clone(), None);
@@ -398,7 +418,7 @@ fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String, is_h
     let sealer = Arc::new(Mutex::new(sealer));
     // Port forwarding shares the sealed data channel; bind it for this session.
     app.state::<Arc<tunnel::TunnelManager>>().activate(sender.clone(), sealer.clone());
-    let clipboard_thread = spawn_clipboard_thread(sender.clone(), sealer.clone(), enabled, clipboard_allowed);
+    let clipboard_thread = spawn_clipboard_thread(sender.clone(), sealer.clone(), enabled, clipboard_allowed, is_host);
     let clipboard_tx = clipboard_thread.as_ref().map(|(tx, _)| tx.clone());
     let (file_router, offers) = dispatch_data(app.clone(), receiver, Arc::new(Mutex::new(opener)), clipboard_tx, sender.clone(), sealer.clone(), files_allowed, is_host);
     let state = app.state::<AppState>();
@@ -458,6 +478,7 @@ fn clear_data_channel(app: &AppHandle) {
         let saved = state.config.config.clipboard_sync;
         state.clipboard_enabled.store(saved, Ordering::Relaxed);
         state.pending_file_requests.clear();
+        clipfiles::reset();
         thread
     };
     if let Some(thread) = thread {
@@ -1125,6 +1146,9 @@ pub fn run() {
             browse_remote,
             browse_local,
             pull_remote,
+            clipfiles::paste_from_remote,
+            clipfiles::paste_to_remote,
+            clipfiles::remote_clipboard_files,
             cancel_transfer,
             make_remote_dir,
             delete_remote,

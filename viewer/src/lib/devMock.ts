@@ -99,6 +99,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_recordings: () => state.recordings,
   delete_recording: ({ path }) => { state.recordings = state.recordings.filter((r) => r.path !== path); },
   set_recordings_max_bytes: ({ bytes }) => { state.config.recordings_max_bytes = bytes as number; },
+  remote_clipboard_files: () => ({ files: [] }),
 };
 
 export const devInvoke = <T>(command: string, args?: Record<string, unknown>): Promise<T> => {

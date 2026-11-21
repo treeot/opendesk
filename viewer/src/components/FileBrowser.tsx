@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { formatFileSize } from "./FileTransfer";
+import { describeFiles, useRemoteClipboardFiles } from "./ClipboardFiles";
 
 interface PaneState { path: string; entries: api.DirEntry[]; error: string | null }
 const EMPTY: PaneState = { path: "", entries: [], error: null };
@@ -29,7 +30,7 @@ function parentPath(path: string): string | null {
   return trimmed.slice(0, trimmed[cut - 1] === ":" ? cut + 1 : cut);
 }
 
-function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload, onUploadFolder, onNewFolder, onDelete, onRename }: {
+function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload, onUploadFolder, onNewFolder, onDelete, onRename, onPaste, pasteHint }: {
   title: string;
   state: PaneState;
   onOpen: (entry: api.DirEntry) => void;
@@ -41,12 +42,16 @@ function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload, onU
   onNewFolder?: () => void;
   onDelete?: (entry: api.DirEntry) => void;
   onRename?: (entry: api.DirEntry) => void;
+  /** Paste copied files from the other computer into this folder. */
+  onPaste?: () => void;
+  pasteHint?: string;
 }) {
   return (
     <div className="fb-pane">
       <div className="fb-pane__head">
         <strong>{title}</strong>
         <div className="fb-pane__actions">
+          {onPaste && <button className="quiet-button" type="button" onClick={onPaste} disabled={!state.path} title={pasteHint}>Paste</button>}
           {onUpload && <button className="quiet-button" type="button" onClick={onUpload} disabled={!state.path}>Upload…</button>}
           {onUploadFolder && <button className="quiet-button" type="button" onClick={onUploadFolder} disabled={!state.path}>Upload folder…</button>}
           {onNewFolder && <button className="quiet-button" type="button" onClick={onNewFolder} disabled={!state.path}>New folder</button>}
@@ -89,6 +94,7 @@ function Pane({ title, state, onOpen, onUp, onRefresh, onDownload, onUpload, onU
 export default function FileBrowser({ folderArrived = null }: { folderArrived?: { name: string; id: number } | null }) {
   const [local, setLocal] = useState<PaneState>(EMPTY);
   const [remote, setRemote] = useState<PaneState>(EMPTY);
+  const remoteFiles = useRemoteClipboardFiles();
   // Folder downloads waiting for the host to start sending, by folder name.
   const pendingPulls = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
@@ -146,6 +152,8 @@ export default function FileBrowser({ folderArrived = null }: { folderArrived?: 
         onOpen={(entry) => void loadLocal(joinPath(local.path, entry.name))}
         onUp={() => { const up = parentPath(local.path); if (up !== null) void loadLocal(up); }}
         onRefresh={() => void loadLocal(local.path)}
+        onPaste={remoteFiles.length > 0 ? () => void api.pasteFromRemote(local.path).then(() => loadLocal(local.path)).catch((error) => setLocal((current) => ({ ...current, error: String(error) }))) : undefined}
+        pasteHint={remoteFiles.length > 0 ? `Paste ${describeFiles(remoteFiles)} copied on the remote computer` : undefined}
       />
       <Pane
         title="Remote computer"
@@ -154,6 +162,8 @@ export default function FileBrowser({ folderArrived = null }: { folderArrived?: 
         onUp={() => { const up = parentPath(remote.path); if (up !== null) void api.browseRemote(up); }}
         onRefresh={() => void api.browseRemote(remote.path)}
         onDownload={(entry) => entry.is_dir ? pullFolder(entry.name, joinPath(remote.path, entry.name)) : void api.pullRemote(joinPath(remote.path, entry.name))}
+        onPaste={() => void api.pasteToRemote(remote.path).catch((error) => setRemote((current) => ({ ...current, error: String(error) })))}
+        pasteHint="Paste the files copied on this computer here"
         onUpload={() => void (async () => { const file = await api.pickFile(); if (file) await api.uploadToRemote(remote.path, file); })().catch(() => {})}
         onUploadFolder={() => void (async () => { const folder = await api.pickFolder(); if (folder) await api.uploadToRemote(remote.path, folder); })().catch((error) => setRemote((current) => ({ ...current, error: String(error) })))}
 

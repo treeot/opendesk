@@ -145,8 +145,11 @@ async fn receive_offer(
     let name_slot = received_name.clone();
     // A viewer uploading into a browsed folder sets a one-shot destination;
     // consume it here, else fall back to Downloads. An invalid or non-directory
-    // path also falls back, so a bad value never drops the file.
-    let dest_dir = take_upload_dir(&app);
+    // path also falls back, so a bad value never drops the file. A viewer
+    // pasting files from the host saves them where the paste asked.
+    let (dest_dir, paste_batch) = paste_dest(&app, is_host);
+    let pasted = Arc::new(Mutex::new(None));
+    let pasted_slot = pasted.clone();
     // Shown in the accept prompt so the host sees where the file would land.
     let dest_display = dest_dir.display().to_string();
     // Checked per chunk too, so turning file access off stops an accepted
@@ -178,6 +181,13 @@ async fn receive_offer(
                 return ConsentDecision::Reject;
             }
             *lock_unpoisoned(&name_slot) = (name.clone(), size);
+            // The viewer asked for this file by pasting: no second prompt.
+            if !is_host {
+                if let Some(done) = clipfiles::claim_pull(&name) {
+                    *lock_unpoisoned(&pasted_slot) = Some(done);
+                    return ConsentDecision::Accept;
+                }
+            }
             let audit_name = name.clone();
             let (decision_tx, decision_rx) = oneshot::channel();
             pending_app
@@ -237,6 +247,7 @@ async fn receive_offer(
             let saved = path.file_name().map_or(name, |saved| saved.to_string_lossy().into_owned());
             audit_upload(&app, audit_kind::FILE_UPLOAD_COMPLETED, &saved, Some(size), None);
             emit(&app, "file_done", FileDone { id, path: Some(path.display().to_string()) });
+            finish_paste(&app, paste_batch, &pasted, Ok(path));
         }
         Err(error) => {
             // A refusal was already audited when it was decided.
@@ -245,6 +256,7 @@ async fn receive_offer(
                 let size = (!name.is_empty()).then_some(size);
                 audit_upload(&app, audit_kind::FILE_UPLOAD_FAILED, &name, size, Some(error.to_string()));
             }
+            finish_paste(&app, None, &pasted, Err(error.to_string()));
             emit(
                 &app,
                 "file_error",
@@ -375,6 +387,33 @@ fn take_upload_dir(app: &AppHandle) -> PathBuf {
     }
 }
 
+/// Where an incoming transfer is saved, and the host's paste batch it belongs
+/// to. A viewer with a paste waiting saves into the paste's folder; a host
+/// takes the upload folder and paste mark the viewer sent before the file.
+fn paste_dest(app: &AppHandle, is_host: bool) -> (PathBuf, Option<u64>) {
+    if is_host {
+        return (take_upload_dir(app), clipfiles::take_paste_mark());
+    }
+    match clipfiles::pull_dest() {
+        Some(dest) => (dest, None),
+        None => (take_upload_dir(app), None),
+    }
+}
+
+type PasteDone = Arc<Mutex<Option<oneshot::Sender<Result<PathBuf, String>>>>>;
+
+/// Report a received paste: to the viewer's waiting paste, or onto the
+/// host's clipboard with the rest of its batch.
+fn finish_paste(app: &AppHandle, batch: Option<u64>, pasted: &PasteDone, result: Result<PathBuf, String>) {
+    if let Some(done) = lock_unpoisoned(pasted).take() {
+        let _ = done.send(result);
+        return;
+    }
+    if let (Some(batch), Ok(path)) = (batch, result) {
+        clipfiles::pasted(app, batch, path);
+    }
+}
+
 /// Cancel flags of the folder transfers in flight, by folder id.
 fn folder_cancels() -> &'static Mutex<HashMap<u64, Arc<AtomicBool>>> {
     static CANCELS: std::sync::OnceLock<Mutex<HashMap<u64, Arc<AtomicBool>>>> = std::sync::OnceLock::new();
@@ -412,13 +451,18 @@ pub(crate) fn spawn_outgoing(
 /// (gated on file access), and tell the viewer if it could not even start,
 /// for example a folder over the size limits.
 pub(crate) fn serve_pull(app: &AppHandle, req: u64, path: String, files_allowed: Arc<AtomicBool>) {
+    serve_path(app, req, path, files_allowed, "requested by viewer");
+}
+
+/// Send `path` to the viewer on its request; `reason` goes to the audit log.
+pub(crate) fn serve_path(app: &AppHandle, req: u64, path: String, files_allowed: Arc<AtomicBool>, reason: &'static str) {
     let (outgoing, sealer, router) = {
         let state = app.state::<AppState>();
         let state = state.lock();
         (state.file_outgoing.clone(), state.file_sealer.clone(), state.file_router.clone())
     };
     let (Some(outgoing), Some(sealer), Some(router)) = (outgoing, sealer, router) else { return };
-    let started = spawn_outgoing(app.clone(), path, outgoing.clone(), sealer.clone(), router, TransferGate::new(files_allowed), Some("requested by viewer"));
+    let started = spawn_outgoing(app.clone(), path, outgoing.clone(), sealer.clone(), router, TransferGate::new(files_allowed), Some(reason));
     tauri::async_runtime::spawn(async move {
         let Ok(Err(message)) = started.await else { return };
         let reply = protocol::browse::BrowseMsg::BrowseError { req, message };
@@ -566,7 +610,9 @@ async fn receive_folder_offer(
         transfer_id: Arc::new(Mutex::new(Some(id))),
         replies: None,
     };
-    let dest_dir = take_upload_dir(&app);
+    let (dest_dir, paste_batch) = paste_dest(&app, is_host);
+    let pasted: PasteDone = Arc::new(Mutex::new(None));
+    let pasted_slot = pasted.clone();
     let dest_display = dest_dir.display().to_string();
     let files_allowed = app.state::<AppState>().lock().viewer_permissions.files.clone();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -600,6 +646,13 @@ async fn receive_folder_offer(
             emit_activity(&pending_app, "file", format!("blocked folder \"{name}\""));
             consent_audit(&pending_app, audit_kind::FILE_UPLOAD_REJECTED, &details, Some("file access off"));
             return ConsentDecision::Reject;
+        }
+        // The viewer asked for this folder by pasting: no second prompt.
+        if !is_host {
+            if let Some(done) = clipfiles::claim_pull(&name) {
+                *lock_unpoisoned(&pasted_slot) = Some(done);
+                return ConsentDecision::Accept;
+            }
         }
         let (decision_tx, decision_rx) = oneshot::channel();
         pending_app.state::<AppState>().lock().pending_file_requests.insert(id, decision_tx);
@@ -635,12 +688,14 @@ async fn receive_folder_offer(
             let saved = received.root.file_name().map_or(details.0.clone(), |saved| saved.to_string_lossy().into_owned());
             audit(&app, audit_kind::FILE_UPLOAD_COMPLETED, &(saved, received.bytes, received.files), None);
             emit(&app, "file_done", FileDone { id, path: Some(received.root.display().to_string()) });
+            finish_paste(&app, paste_batch, &pasted, Ok(received.root));
         }
         Err(error) => {
             // A refusal was already audited when it was decided.
             if !matches!(error, host_core::filexfer::FileError::Rejected) {
                 audit(&app, audit_kind::FILE_UPLOAD_FAILED, &details, Some(&error.to_string()));
             }
+            finish_paste(&app, None, &pasted, Err(error.to_string()));
             emit(&app, "file_error", FileError { id, message: error.to_string() });
         }
     }

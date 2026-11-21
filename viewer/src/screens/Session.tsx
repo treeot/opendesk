@@ -6,6 +6,7 @@ import Toolbar, { monitorName, virtualDisplaySize } from "../components/Toolbar"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen } from "@tauri-apps/api/event";
 import PortForward from "../components/PortForward";
+import ClipboardFiles from "../components/ClipboardFiles";
 import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import HostControlPanel from "../components/HostControlPanel";
 import { friendlyError, useNotify } from "../lib/notify";
@@ -697,6 +698,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}
+      {role === "viewer" && <ClipboardFiles />}
     </main>
   );
 }

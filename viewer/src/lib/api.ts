@@ -310,7 +310,19 @@ export const pullRemote = (path: string) => invoke<void>("pull_remote", { path }
 /** Upload a local file or folder into the remote folder `dir`. Returns the transfer id. */
 
 export const uploadToRemote = (dir: string, path: string) => invoke<number>("upload_to_remote", { dir, path });
-export const makeRemoteDir = (path: string, name: string) => invoke<void>("make_remote_dir", { path, name });
+/** A file or folder copied on the remote computer, announced by name only. */
+export interface ClipboardFile { name: string; size: number; is_dir: boolean }
+/** What the remote computer has on its clipboard right now (empty when no files). */
+export const remoteClipboardFiles = () => invoke<{ files: ClipboardFile[] }>("remote_clipboard_files");
+/** The remote computer copied files (or stopped having files on its clipboard). */
+export const onRemoteClipboardFiles = (handler: (payload: { files: ClipboardFile[] }) => void) => on("remote_clipboard_files", handler);
+/** Copy the remote clipboard's files into `dir` here (Downloads when empty)
+ * and put them on this computer's clipboard. Resolves to the saved paths. */
+export const pasteFromRemote = (dir: string) => invoke<string[]>("paste_from_remote", { dir });
+/** Send the files on this computer's clipboard into the remote folder `dir`
+ * (its Downloads when empty); the remote puts them on its clipboard. Resolves to the count. */
+export const pasteToRemote = (dir: string) => invoke<number>("paste_to_remote", { dir });
+export const makeRemoteDir =(path: string, name: string) => invoke<void>("make_remote_dir", { path, name });
 export const deleteRemote = (path: string) => invoke<void>("delete_remote", { path });
 export const renameRemote = (path: string, name: string) => invoke<void>("rename_remote", { path, name });
 /** Something the host user should know, e.g. that the viewer added a display. */

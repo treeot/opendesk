@@ -31,6 +31,7 @@ const { listeners, mocks } = vi.hoisted(() => {
     setDecoderCodecs: vi.fn(() => Promise.resolve()),
     setTextReadability: vi.fn(() => Promise.resolve()),
     onCursorShape: on("cursor_shape"), onCursorHidden: on("cursor_hidden"),
+    onRemoteClipboardFiles: on("remote_clipboard_files"), remoteClipboardFiles: () => Promise.resolve({ files: [] }),
     listRecordings: () => Promise.resolve([]), deleteRecording: vi.fn(() => Promise.resolve()),
     isDevBrowser: false,
   };

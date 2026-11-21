@@ -8,7 +8,7 @@ const { onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respon
   browseLocal: vi.fn(() => Promise.resolve({ path: "/home", entries: [] })), browseRemote: vi.fn(() => Promise.resolve()), onRemoteListing: vi.fn(() => Promise.resolve(() => {})), pullRemote: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("../lib/api", () => ({ onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respondFile, sendFile, pickFile, pickFolder, cancelTransfer, browseLocal, browseRemote, onRemoteListing, pullRemote }));
+vi.mock("../lib/api", () => ({ onFileOffer, onFileProgress, onFileDone, onFileError, onFileDrop, respondFile, sendFile, pickFile, pickFolder, cancelTransfer, browseLocal, browseRemote, onRemoteListing, pullRemote, onRemoteClipboardFiles: vi.fn(() => Promise.resolve(() => {})), remoteClipboardFiles: vi.fn(() => Promise.resolve({ files: [] })) }));
 
 import FileTransfer from "./FileTransfer";
 
