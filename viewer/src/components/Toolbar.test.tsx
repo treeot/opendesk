@@ -55,6 +55,18 @@ describe("monitor picker", () => {
     expect(onRemoveDisplay).toHaveBeenCalledWith(5);
   });
 
+  it("offers keyboard modes only when the host supports them", () => {
+    const onKeyboardModeChange = vi.fn();
+    const { rerender } = render(<Toolbar remoteId="1" onDisconnect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.queryByRole("menuitem", { name: /Keyboard/ })).toBeNull();
+    rerender(<Toolbar remoteId="1" onDisconnect={vi.fn()} canKeyboardModes keyboardMode="translate" onKeyboardModeChange={onKeyboardModeChange} />);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Keyboard/ }));
+    expect(screen.getByRole("menuitem", { name: /Type characters/ }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Physical keys/ }));
+    expect(onKeyboardModeChange).toHaveBeenCalledWith("map");
+  });
+
   it("is hidden from the host side", () => {
     render(<Toolbar remoteId="1" role="host" onDisconnect={vi.fn()} monitors={monitors} selectedMonitor={5} canAddDisplay />);
     expect(screen.queryByRole("combobox", { name: "Monitor" })).toBeNull();

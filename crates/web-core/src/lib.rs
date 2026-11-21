@@ -75,7 +75,8 @@ pub enum Event {
     /// The host can do something optional, or tells the page something it
     /// must show; the name says what: "secure-attention" (Ctrl+Alt+Del) or
     /// "recorded" (the host records this session), or extended input from
-    /// `InputSupport` (see `input_features`).
+    /// `InputSupport` (see `input_features`), or "keyboard-modes" (the
+    /// `ScanKey` and `TypeChar` input events).
     Supports(&'static str),
     /// The host will end an unused session in this many seconds unless the
     /// viewer does something; [`ViewerSession::still_here`] keeps it.
@@ -431,6 +432,9 @@ impl ViewerSession {
                     }
                     Some(support @ Control::InputSupport { .. }) => {
                         input_features(&support).into_iter().map(Event::Supports).collect()
+                    }
+                    Some(Control::KeyboardModeSupport) => {
+                        vec![Event::Supports("keyboard-modes")]
                     }
                     _ => Vec::new(),
                 }
@@ -1249,6 +1253,11 @@ mod tests {
                 Event::Supports("pen-touch"),
                 Event::Supports("gamepad")
             ]
+        );
+        let keyboard = host.control(&Control::KeyboardModeSupport);
+        assert_eq!(
+            viewer.receive(&keyboard, 1_065.0),
+            vec![Event::Supports("keyboard-modes")]
         );
         let sas = viewer.secure_attention().unwrap();
         assert_eq!(host.open_control(&sas), Some(Control::RequestSecureAttention));

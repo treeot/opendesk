@@ -59,6 +59,7 @@ pub struct EnigoInjector {
     display: Option<u32>,
     pen: pen::PenInjector,
     gamepads: gamepad::Gamepads,
+    held_keys: crate::keyboard::HeldKeys,
 }
 
 impl EnigoInjector {
@@ -70,7 +71,7 @@ impl EnigoInjector {
         let settings = Settings { open_prompt_to_get_permissions: false, ..Settings::default() };
         Enigo::new(&settings)
             .ok()
-            .map(|enigo| Self { enigo, display: None, pen: pen::PenInjector::default(), gamepads: gamepad::Gamepads::default() })
+            .map(|enigo| Self { enigo, display: None, pen: pen::PenInjector::default(), gamepads: gamepad::Gamepads::default(), held_keys: Default::default() })
     }
 }
 
@@ -145,11 +146,22 @@ impl InputInjector for EnigoInjector {
                 }
             }
             InputEvent::Gamepad(state) => self.gamepads.apply(&state),
+            InputEvent::ScanKey { usage, down, modifiers } => {
+                crate::keyboard::scan_key(&mut self.enigo, &mut self.held_keys, usage, down, modifiers);
+            }
+            InputEvent::TypeChar { ch } => crate::keyboard::type_char(&mut self.enigo, ch),
         }
     }
 
     fn select_display(&mut self, display: Option<u32>) {
         self.display = display;
+    }
+}
+
+impl Drop for EnigoInjector {
+    /// The session ended: release any physical key the viewer left down.
+    fn drop(&mut self) {
+        crate::keyboard::release_all(&mut self.enigo, &mut self.held_keys);
     }
 }
 

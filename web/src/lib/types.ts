@@ -101,4 +101,4 @@ export type BrowseSignal =
   | { t: "browse_error"; req: number; message: string };
 
 /** Optional host features the session learns about. */
-export type HostFeature = "secure-attention" | "recorded" | "relative-mouse" | "pen-touch" | "gamepad";
+export type HostFeature = "secure-attention" | "recorded" | "relative-mouse" | "pen-touch" | "gamepad" | "keyboard-modes";

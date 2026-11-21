@@ -141,8 +141,12 @@ async fn browser_viewer_streams_and_controls_a_real_host() {
     let key = InputEvent::Key { code: 65, down: true, modifiers: 0 }.to_bytes(1);
     let sealed = browser.session.input(&key).unwrap();
     browser.send(sealed).await;
+    // The keyboard-mode events reach the injector too.
+    let scan = InputEvent::ScanKey { usage: 0x0007_0004, down: true, modifiers: 0 }.to_bytes(2);
+    let sealed = browser.session.input(&scan).unwrap();
+    browser.send(sealed).await;
     timeout(Duration::from_secs(10), async {
-        while injected.load(Ordering::SeqCst) == 0 {
+        while injected.load(Ordering::SeqCst) < 2 {
             let _ = browser.next().await;
         }
     })

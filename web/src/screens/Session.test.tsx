@@ -88,6 +88,19 @@ describe("Session", () => {
     expect(controls.sendInput).toHaveBeenCalledTimes(2);
   });
 
+  it("offers keyboard modes only when the host supports them", () => {
+    renderSession();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Keyboard/ })).toBeNull();
+    cleanup();
+    localStorage.clear();
+    renderSession({ features: ["keyboard-modes"] });
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitemcheckbox", { name: /Keyboard: type characters/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Keyboard: physical keys/ }));
+    expect(localStorage.getItem("opendesk.keyboard.123456789")).toBe("map");
+  });
+
   it("closes a menu with Escape", () => {
     renderSession();
     fireEvent.click(screen.getByRole("button", { name: "More" }));

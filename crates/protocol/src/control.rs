@@ -210,6 +210,10 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gamepad_unavailable: Option<String>,
     },
+    /// Host to viewer: the host understands `InputEvent::ScanKey` and
+    /// `InputEvent::TypeChar`, so the viewer may use its map or translate
+    /// keyboard mode. Without it the viewer keeps the original key events.
+    KeyboardModeSupport,
 }
 
 /// `EndReason` code: nobody used the session for the host's idle timeout.
@@ -434,6 +438,13 @@ mod tests {
     fn text_readability_roundtrips() {
         let c = Control::TextReadability { enabled: true };
         assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"text_readability","enabled":true}"#);
+        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
+    }
+
+    #[test]
+    fn keyboard_mode_support_roundtrips() {
+        let c = Control::KeyboardModeSupport;
+        assert_eq!(String::from_utf8(c.to_bytes()).unwrap(), r#"{"t":"keyboard_mode_support"}"#);
         assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
     }
 

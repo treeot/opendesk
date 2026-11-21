@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { LinkStats, MonitorInfo, Status } from "../lib/api";
 import { SEND_KEYS, type SendKey } from "../lib/input";
 import { SCALE_MODES, type ScaleMode } from "../lib/scale";
+import { KEYBOARD_MODES, type KeyboardMode } from "../lib/keyboard";
 
 interface ToolbarProps {
   remoteId: string;
@@ -57,6 +58,11 @@ interface ToolbarProps {
   /** How the remote screen is drawn: fit, actual size, or stretched. */
   scaleMode?: ScaleMode;
   onScaleModeChange?: (mode: ScaleMode) => void;
+  /** The host understands the keyboard modes, so the choice is offered. */
+  canKeyboardModes?: boolean;
+  /** Physical keys (map) or characters (translate). */
+  keyboardMode?: KeyboardMode;
+  onKeyboardModeChange?: (mode: KeyboardMode) => void;
   /** The session stats overlay is showing. */
   statsOpen?: boolean;
   onStatsToggle?: () => void;
@@ -195,11 +201,12 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, scaleMode = "fit", onScaleModeChange = () => {}, statsOpen = false, onStatsToggle = () => {}, canRelativeMouse = false, relativeMouse = false, onRelativeMouseChange = () => {}, gamepadOffered = false, gamepadNote, gamepadOn = false, onGamepadChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, scaleMode = "fit", onScaleModeChange = () => {}, statsOpen = false, onStatsToggle = () => {}, canRelativeMouse = false, relativeMouse = false, onRelativeMouseChange = () => {}, gamepadOffered = false, gamepadNote, gamepadOn = false, onGamepadChange = () => {}, canKeyboardModes = false, keyboardMode = "translate", onKeyboardModeChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const [scaleOpen, setScaleOpen] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
 
   useEffect(() => {
     const startedAt = Date.now();
@@ -253,6 +260,8 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
                 <MoreItem icon={icons.eye} label="Text readability" on={textReadability} onClick={() => { onTextReadabilityChange(!textReadability); setMoreOpen(false); }} />
                 <MoreItem icon={icons.fullscreen} label="Scaling" expanded={scaleOpen} onClick={() => setScaleOpen((open) => !open)} />
                 {scaleOpen && SCALE_MODES.map(({ mode, label }) => <MoreItem key={mode} sub label={label} on={scaleMode === mode} onClick={() => { onScaleModeChange(mode); setMoreOpen(false); }} />)}
+                {canKeyboardModes && <MoreItem icon={icons.keyboard} label="Keyboard" expanded={keyboardOpen} onClick={() => setKeyboardOpen((open) => !open)} />}
+                {canKeyboardModes && keyboardOpen && KEYBOARD_MODES.map(({ mode, label, title }) => <MoreItem key={mode} sub label={label} title={title} on={keyboardMode === mode} onClick={() => { onKeyboardModeChange(mode); setMoreOpen(false); }} />)}
                 <MoreItem icon={icons.activity} label="Session stats" on={statsOpen} onClick={() => { onStatsToggle(); setMoreOpen(false); }} />
                 {canRelativeMouse && <MoreItem icon={icons.pointer} label="Relative mouse (games)" on={relativeMouse} title="Capture the mouse and send raw movement, for games and 3D apps. Ctrl+Alt+Shift or Esc releases it." onClick={() => { onRelativeMouseChange(!relativeMouse); setMoreOpen(false); }} />}
                 {gamepadOffered && <MoreItem icon={icons.gamepad} label="Gamepad" on={gamepadOn} title={gamepadNote ?? "Send your game controller to the remote computer as an Xbox 360 controller."} onClick={() => { onGamepadChange(!gamepadOn); setMoreOpen(false); }} />}

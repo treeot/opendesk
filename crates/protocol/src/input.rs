@@ -41,7 +41,29 @@ pub enum InputEvent {
     /// The full state of one of the viewer's gamepads. Only sent to hosts
     /// that report `gamepad` in `Control::InputSupport`.
     Gamepad(GamepadState),
+    /// A physical key, by position rather than by what it types: `usage` is
+    /// the USB HID usage (page in the high 16 bits, so `0x0007_0004` is the
+    /// key labelled A on a US keyboard). The host presses the key in the same
+    /// place on its own keyboard, and its layout decides the character.
+    /// `modifiers` are held around the press like `Key`'s; map mode sends 0
+    /// and forwards the modifier keys themselves. Only sent to hosts that
+    /// announced `Control::KeyboardModeSupport`: older hosts drop the tag.
+    ScanKey {
+        usage: u32,
+        down: bool,
+        modifiers: u8,
+    },
+    /// Type `ch` as text, whatever the host's keyboard layout. A single
+    /// action, so there is no release. Same capability rule as `ScanKey`.
+    TypeChar {
+        ch: char,
+    },
 }
+
+/// Wire tags of the keyboard-layout events. Kept well clear of the low tags
+/// so other new variants can take the next small numbers.
+const SCAN_KEY_TAG: u8 = 32;
+const TYPE_CHAR_TAG: u8 = 33;
 
 impl InputEvent {
     pub fn to_bytes(&self, timestamp_us: u64) -> Vec<u8> {
@@ -55,6 +77,8 @@ impl InputEvent {
             Self::RelativeMouseMove { .. } => TAG_RELATIVE_MOUSE_MOVE,
             Self::Pointer(_) => TAG_POINTER,
             Self::Gamepad(_) => TAG_GAMEPAD,
+            Self::ScanKey { .. } => SCAN_KEY_TAG,
+            Self::TypeChar { .. } => TYPE_CHAR_TAG,
         });
         bytes.extend_from_slice(&timestamp_us.to_be_bytes());
 
@@ -95,6 +119,18 @@ impl InputEvent {
             }
             Self::Pointer(contact) => contact.write(&mut bytes),
             Self::Gamepad(state) => state.write(&mut bytes),
+            Self::ScanKey {
+                usage,
+                down,
+                modifiers,
+            } => {
+                bytes.extend_from_slice(&usage.to_be_bytes());
+                bytes.push(u8::from(*down));
+                bytes.push(*modifiers);
+            }
+            Self::TypeChar { ch } => {
+                bytes.extend_from_slice(&(*ch as u32).to_be_bytes());
+            }
         }
 
         bytes
@@ -167,6 +203,27 @@ impl InputEvent {
             }
             TAG_GAMEPAD if bytes.len() == 9 + GamepadState::LEN => {
                 Some((Self::Gamepad(GamepadState::read(&bytes[9..])?), timestamp_us))
+            }
+            SCAN_KEY_TAG if bytes.len() == 15 => {
+                let usage = u32::from_be_bytes(bytes.get(9..13)?.try_into().ok()?);
+                let down = match bytes[13] {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                };
+                Some((
+                    Self::ScanKey {
+                        usage,
+                        down,
+                        modifiers: bytes[14],
+                    },
+                    timestamp_us,
+                ))
+            }
+            TYPE_CHAR_TAG if bytes.len() == 13 => {
+                let ch = char::from_u32(u32::from_be_bytes(bytes.get(9..13)?.try_into().ok()?))
+                    .filter(|ch| !ch.is_control())?;
+                Some((Self::TypeChar { ch }, timestamp_us))
             }
             _ => None,
         }
@@ -421,6 +478,54 @@ mod tests {
         bad[9] = 0;
         bad[10] = 2;
         assert!(InputEvent::from_bytes(&bad).is_none());
+    }
+
+    #[test]
+    fn keyboard_layout_events_roundtrip() {
+        for e in [
+            InputEvent::ScanKey {
+                usage: 0x0007_0004,
+                down: true,
+                modifiers: 0,
+            },
+            InputEvent::ScanKey {
+                usage: 0x0007_0052,
+                down: false,
+                modifiers: 0b0011,
+            },
+            InputEvent::TypeChar { ch: '@' },
+            InputEvent::TypeChar { ch: '\u{1F600}' },
+        ] {
+            let b = e.to_bytes(5);
+            assert_eq!(InputEvent::from_bytes(&b), Some((e, 5)));
+        }
+        let scan = InputEvent::ScanKey {
+            usage: 0x0007_0004,
+            down: true,
+            modifiers: 1,
+        }
+        .to_bytes(0);
+        assert_eq!((scan[0], scan.len()), (32, 15));
+        let typed = InputEvent::TypeChar { ch: 'a' }.to_bytes(0);
+        assert_eq!((typed[0], typed.len()), (33, 13));
+    }
+
+    #[test]
+    fn type_char_rejects_controls_and_bad_lengths() {
+        let mut b = InputEvent::TypeChar { ch: 'a' }.to_bytes(0);
+        b[12] = b'\n';
+        assert!(InputEvent::from_bytes(&b).is_none());
+        let mut long = InputEvent::TypeChar { ch: 'a' }.to_bytes(0);
+        long.push(0);
+        assert!(InputEvent::from_bytes(&long).is_none());
+        let mut scan = InputEvent::ScanKey {
+            usage: 4,
+            down: true,
+            modifiers: 0,
+        }
+        .to_bytes(0);
+        scan[13] = 2;
+        assert!(InputEvent::from_bytes(&scan).is_none());
     }
 
     #[test]

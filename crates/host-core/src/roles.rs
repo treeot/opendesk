@@ -862,6 +862,9 @@ where
     }
     // Old viewers ignore this; new ones only send extended input after it.
     reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &crate::inject::support::input_support())).await?;
+    // Old viewers ignore this; new ones only use their map and translate
+    // keyboard modes after it, since older hosts drop those key events.
+    reliable.sender().send_frame(Tag::Control, &seal_control(&control_sealer, &Control::KeyboardModeSupport)).await?;
     let path = transport.path();
     let (transport_tx, transport_rx) = transport.into_split();
     // Input, data-channel traffic (files, clipboard, chat) and "stay
@@ -2221,7 +2224,8 @@ async fn run_viewer_media_loop_with_control(
                         | Control::PrivacyModeSupport | Control::PrivacyModeChanged { .. } | Control::HostMac { .. }
                         | Control::IdleWarning { .. }
                         | Control::SessionRecording { .. }
-                        | Control::InputSupport { .. }) => {
+                        | Control::InputSupport { .. }
+                        | Control::KeyboardModeSupport) => {
                         if let Some(sink) = &monitor_sink { let _ = sink.send(plaintext).await; }
                     }
                     Some(Control::Pong { sent_us }) if relay_ping.is_some() => {
@@ -3734,7 +3738,7 @@ mod tests {
             };
             // The host also sends its MAC (Wake-on-LAN) when this machine has one,
             // and its input support; they ride the same sink, so skip them here.
-            let is_mac = |body: &[u8]| matches!(Control::from_bytes(body), Some(Control::HostMac { .. } | Control::InputSupport { .. }));
+            let is_mac = |body: &[u8]| matches!(Control::from_bytes(body), Some(Control::HostMac { .. } | Control::InputSupport { .. } | Control::KeyboardModeSupport));
             let first = timeout(Duration::from_secs(20), async {
                 loop { let body = monitor_lists.recv().await.unwrap(); if !is_mac(&body) { break body; } }
             }).await.unwrap();
@@ -3813,7 +3817,7 @@ mod tests {
                     // The host advertises its MAC (for Wake-on-LAN) whenever this
                     // machine has one, which is environment-dependent; it is not
                     // part of what these display tests check. Nor is input support.
-                    if matches!(control, Control::HostMac { .. } | Control::InputSupport { .. }) { continue; }
+                    if matches!(control, Control::HostMac { .. } | Control::InputSupport { .. } | Control::KeyboardModeSupport) { continue; }
                     return control;
                 }
             }

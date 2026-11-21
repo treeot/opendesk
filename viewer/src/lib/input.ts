@@ -1,6 +1,7 @@
 import { DeltaAccumulator } from "./pointerLock";
 import { isPenOrTouch, PHASE, pointerContact, writeContact, type PointerContact, type PointerPhase } from "./pen";
 import { writeGamepad, type GamepadState } from "./gamepad";
+import { KeyboardState, type KeyboardMode } from "./keyboard";
 
 export type InputEvent =
   | { kind: "mouseMove"; x: number; y: number }
@@ -10,7 +11,9 @@ export type InputEvent =
   | { kind: "char"; ch: string; down: boolean; modifiers: number }
   | { kind: "relativeMove"; dx: number; dy: number }
   | PointerContact
-  | GamepadState;
+  | GamepadState
+  | { kind: "scanKey"; usage: number; down: boolean; modifiers: number }
+  | { kind: "typeChar"; ch: string };
 
 /** Encode protocol::input::InputEvent using its big-endian wire layout. */
 export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
@@ -27,6 +30,7 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
       break;
     case "key":
     case "char":
+    case "scanKey":
       length = 15;
       break;
     case "relativeMove":
@@ -37,6 +41,9 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
       break;
     case "gamepad":
       length = 25;
+      break;
+    case "typeChar":
+      length = 13;
       break;
   }
 
@@ -85,6 +92,17 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
     case "gamepad":
       view.setUint8(0, 18);
       writeGamepad(view, ev);
+      break;
+    case "scanKey":
+      view.setUint8(0, 32);
+      view.setUint32(9, ev.usage, false);
+      view.setUint8(13, ev.down ? 1 : 0);
+      view.setUint8(14, ev.modifiers);
+      break;
+    case "typeChar":
+      if ([...ev.ch].length !== 1) throw new Error("character input must be one code point");
+      view.setUint8(0, 33);
+      view.setUint32(9, ev.ch.codePointAt(0)!, false);
       break;
   }
   return bytes;
@@ -235,7 +253,10 @@ function isModifierKey(key: string): boolean {
 export function attachInput(
   canvas: HTMLCanvasElement,
   send: (bytes: Uint8Array) => Promise<void>,
-  options: { contained?: () => boolean; relative?: () => boolean; penTouch?: () => boolean } = {},
+  options: { contained?: () => boolean; relative?: () => boolean; penTouch?: () => boolean;
+    /** Map or translate keyboard mode; null (or absent) keeps the original key events for older hosts. */
+    keyboardMode?: () => KeyboardMode | null;
+  } = {},
 ): () => void {
   if (canvas.tabIndex < 0) canvas.tabIndex = 0;
 
@@ -292,6 +313,7 @@ export function attachInput(
   // click elsewhere) never gets its release and stays stuck down on the host.
   const buttonsDown = new Set<number>();
   const keysDown = new Map<string, InputEvent>();
+  const keyboard = new KeyboardState();
 
   // Pen and touch, when the host takes them. Browsers follow these pointer
   // events with compatibility mouse events, which are ignored for a moment.
@@ -396,6 +418,11 @@ export function attachInput(
 
   const onKeyDown = (event: KeyboardEvent): void => {
     event.preventDefault();
+    const mode = options.keyboardMode?.() ?? null;
+    if (mode) {
+      for (const ev of keyboard.down(mode, event)) enqueue(ev);
+      return;
+    }
     const built = keyEvent(event, true);
     if (!built) return;
     const release = keyEvent(event, false);
@@ -405,8 +432,19 @@ export function attachInput(
 
   const onKeyUp = (event: KeyboardEvent): void => {
     event.preventDefault();
+    // A press tracked in map or translate mode releases the same way, even
+    // if the mode changed while the key was down.
+    const mode = options.keyboardMode?.() ?? null;
+    const released = keyboard.up(mode ?? "translate", event);
+    if (released) {
+      for (const ev of released) enqueue(ev);
+      return;
+    }
     const built = keyEvent(event, false);
     if (!built) return;
+    // In map or translate mode, only a press sent the original way has an
+    // original release to send.
+    if (mode && !keysDown.has(built.id)) return;
     keysDown.delete(built.id);
     enqueue(built.ev);
   };
@@ -428,6 +466,7 @@ export function attachInput(
     keysDown.clear();
     for (const contact of contactsDown.values()) enqueue({ ...contact, phase: PHASE.cancel, pressure: 0 });
     contactsDown.clear();
+    for (const release of keyboard.releaseAll()) enqueue(release);
   };
 
   canvas.addEventListener("mousemove", onMouseMove);
@@ -446,6 +485,8 @@ export function attachInput(
   window.addEventListener("blur", onBlur);
 
   return () => {
+    // Session over or input handed elsewhere: let go of anything held.
+    onBlur();
     canvas.removeEventListener("mousemove", onMouseMove);
     canvas.removeEventListener("mousedown", onMouseDown);
     canvas.removeEventListener("mouseup", onMouseUp);

@@ -14,7 +14,7 @@ const { listeners, mocks } = vi.hoisted(() => {
     onFileOffer: on("file_offer"), onFileProgress: on("file_progress"), onFileDone: on("file_done"), onFileError: on("file_error"),
     onChatMessage: on("chat_message"), sendChat: vi.fn(), onSecureAttentionSupport: on("secure_attention_support"), sendSecureAttention: vi.fn(),
     onMultiMonitorSupport: on("multi_monitor_support"), onMonitorStreamOpened: on("monitor_stream_opened"), onMonitorStreamClosed: on("monitor_stream_closed"), onMonitorStreamRefused: on("monitor_stream_refused"), setInputMonitor: vi.fn(),
-    onRestartSupport: on("restart_support"), onHostRestarting: on("host_restarting"), onViewerAuth: on("viewer_auth"), requestRemoteRestart: vi.fn(),
+    onRestartSupport: on("restart_support"), onKeyboardModeSupport: on("keyboard_mode_support"), onHostRestarting: on("host_restarting"), onViewerAuth: on("viewer_auth"), requestRemoteRestart: vi.fn(),
     onPrivacyModeSupport: on("privacy_mode_support"), onPrivacyModeChanged: on("privacy_mode_changed"), onSessionRecording: on("session_recording"), setPrivacyMode: vi.fn(), onInputSupport: on("input_support"),
     browseLocal: vi.fn(() => Promise.resolve({ path: "/home", entries: [] })), browseRemote: vi.fn(() => Promise.resolve()), onRemoteListing: on("remote_listing"), pullRemote: vi.fn(() => Promise.resolve()),
     onFileDrop: on("drop"), onPasswordRotated: on("password_rotated"), onIdentityChanged: on("identity_changed"),

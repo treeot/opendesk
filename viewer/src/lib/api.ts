@@ -300,6 +300,8 @@ export const onMonitorStreamClosed = (handler: (payload: { id: number }) => void
 export const onMonitorStreamRefused = (handler: (payload: { id: number; code: string }) => void) => on("monitor_stream_refused", handler);
 /** The host can restart its computer and come back hosting. */
 export const onRestartSupport = (handler: () => void) => on("restart_support", handler);
+/** The host understands the map and translate keyboard modes' key events. */
+export const onKeyboardModeSupport = (handler: () => void) => on("keyboard_mode_support", handler);
 /** The host is restarting; the viewer will auto-reconnect when it returns. */
 export const onHostRestarting = (handler: () => void) => on("host_restarting", handler);
 /** Which password the host took: its one-time session password does not survive a restart. */

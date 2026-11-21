@@ -14,6 +14,7 @@ import { formatWait, restartConfirmText, RESTART_NO_SHOW_MS } from "../lib/resta
 import { StreamMeter, type StreamStats } from "../lib/stats";
 import { parseFrame } from "../lib/video";
 import { actualSize, loadScaleMode, saveScaleMode, type ScaleMode } from "../lib/scale";
+import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "../lib/keyboard";
 import StatsPanel from "../components/StatsPanel";
 import IdleWarning from "../components/IdleWarning";
 import { createPointerLock, RELEASE_HINT, type PointerLockControl } from "../lib/pointerLock";
@@ -154,6 +155,14 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   scaleModeRef.current = scaleMode;
   useEffect(() => { setScaleMode(loadScaleMode(remoteId)); }, [remoteId]);
   const chooseScaleMode = (mode: ScaleMode) => { setScaleMode(mode); saveScaleMode(remoteId, mode); };
+  // Map (physical keys) or translate (characters); remembered per device and
+  // only used once the host says it understands those key events.
+  const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(() => loadKeyboardMode(remoteId));
+  const [canKeyboardModes, setCanKeyboardModes] = useState(false);
+  const keyboardModeRef = useRef<KeyboardMode | null>(null);
+  keyboardModeRef.current = canKeyboardModes ? keyboardMode : null;
+  useEffect(() => { setKeyboardMode(loadKeyboardMode(remoteId)); }, [remoteId]);
+  const chooseKeyboardMode = (mode: KeyboardMode) => { setKeyboardMode(mode); saveKeyboardMode(remoteId, mode); };
   // The stream's frame size, for actual-size mode.
   const [videoSize, setVideoSize] = useState<{ width: number; height: number }>();
   const videoSizeRef = useRef<{ width: number; height: number } | undefined>(undefined);
@@ -250,6 +259,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       api.onRestartSupport(() => setCanRestart(true)),
       api.onHostRestarting(beginRestartWait),
       api.onViewerAuth(({ session_password }) => setSessionPassword(session_password)),
+      api.onKeyboardModeSupport(() => setCanKeyboardModes(true)),
     ]);
     return () => { void listeners.then((stops) => stops.forEach((stop) => stop())); };
   }, [role]);
@@ -259,6 +269,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   useEffect(() => {
     if (status === "in_session") { setRestartSince(undefined); return; }
     setCanRestart(false);
+    setCanKeyboardModes(false);
     if (status === "reconnecting") restartDroppedRef.current = true;
     else if (status !== "connecting") setRestartSince(undefined);
   }, [status]);
@@ -698,7 +709,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       decoder.push(frame);
     };
     const stopVideo = api.startVideo(push);
-    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit", relative: () => relativeMouseRef.current, penTouch: () => penTouchRef.current });
+    const detachInput = attachInput(canvas, (bytes) => viewOnlyRef.current ? Promise.resolve() : api.sendInput(bytes), { contained: () => scaleModeRef.current === "fit", relative: () => relativeMouseRef.current, penTouch: () => penTouchRef.current, keyboardMode: () => keyboardModeRef.current });
 
     return () => {
       stopVideo();
@@ -761,7 +772,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} canRelativeMouse={inputSupport.relative_mouse === true} relativeMouse={relativeMouse} onRelativeMouseChange={toggleRelativeMouse} gamepadOffered={inputSupport.gamepad === true || inputSupport.gamepad_unavailable !== undefined} gamepadNote={inputSupport.gamepad ? undefined : gamepadUnavailableText(inputSupport.gamepad_unavailable)} gamepadOn={gamepadOn && inputSupport.gamepad === true} onGamepadChange={toggleGamepad} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} canRelativeMouse={inputSupport.relative_mouse === true} relativeMouse={relativeMouse} onRelativeMouseChange={toggleRelativeMouse} gamepadOffered={inputSupport.gamepad === true || inputSupport.gamepad_unavailable !== undefined} gamepadNote={inputSupport.gamepad ? undefined : gamepadUnavailableText(inputSupport.gamepad_unavailable)} gamepadOn={gamepadOn && inputSupport.gamepad === true} onGamepadChange={toggleGamepad} canKeyboardModes={canKeyboardModes} keyboardMode={keyboardMode} onKeyboardModeChange={chooseKeyboardMode} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}

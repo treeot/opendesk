@@ -291,6 +291,12 @@ fn input_event_parser_is_crash_free() {
             axes: [1, -2, 3, -4],
             triggers: [5, 6],
         }),
+        InputEvent::ScanKey {
+            usage: 0x0007_0004,
+            down: true,
+            modifiers: 0,
+        },
+        InputEvent::TypeChar { ch: 'é' },
     ]
     .iter()
     .map(|event| event.to_bytes(42))

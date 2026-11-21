@@ -4,6 +4,7 @@ import { makeAudioPlayer } from "../lib/audio";
 import { attachInput, encodeInputEvent } from "../../../viewer/src/lib/input";
 import { attachGamepads, type GamepadState } from "../../../viewer/src/lib/gamepad";
 import { createPointerLock, RELEASE_HINT, type PointerLockControl } from "../../../viewer/src/lib/pointerLock";
+import { KEYBOARD_MODES, loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "../../../viewer/src/lib/keyboard";
 import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import FilesPanel, { EMPTY_FOLDER, type FilesTab, type RemoteFolder } from "../components/FilesPanel";
 import ToolbarMenu from "../components/ToolbarMenu";
@@ -143,6 +144,12 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
   const [textReadability, setTextReadability] = useState(false);
   const [viewOnly, setViewOnly] = useState(false);
   const viewOnlyRef = useRef(false);
+  // Map or translate keyboard mode, remembered per device; used once the
+  // host says it understands those key events.
+  const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(() => loadKeyboardMode(remoteId));
+  const keyboardModes = features.includes("keyboard-modes");
+  const keyboardModeRef = useRef<KeyboardMode | null>(null);
+  keyboardModeRef.current = keyboardModes ? keyboardMode : null;
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesTab, setFilesTab] = useState<FilesTab>("transfers");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -189,7 +196,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     const decoder = makeDecoder(canvas, { requestKeyframe: () => controls.requestKeyframe() });
     controls.setVideoSink(decoder.push);
     // View only keeps watching but sends no input, like the desktop viewer.
-    const detachInput = attachInput(canvas, async (bytes) => { if (!viewOnlyRef.current) controls.sendInput(bytes); }, { relative: () => relativeMouseRef.current, penTouch: () => penTouchRef.current });
+    const detachInput = attachInput(canvas, async (bytes) => { if (!viewOnlyRef.current) controls.sendInput(bytes); }, { relative: () => relativeMouseRef.current, penTouch: () => penTouchRef.current, keyboardMode: () => keyboardModeRef.current });
     // Right clicks go to the remote computer, not the browser menu.
     const noMenu = (event: Event) => event.preventDefault();
     canvas.addEventListener("contextmenu", noMenu);
@@ -532,6 +539,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     ...(features.includes("relative-mouse") ? [{ id: "relative-mouse", label: "Relative mouse (games)", on: relativeMouse, onSelect: toggleRelativeMouse }] : []),
     ...(features.includes("gamepad") ? [{ id: "gamepad", label: "Gamepad", on: gamepadOn, onSelect: () => setGamepadOn((on) => !on) }] : []),
     { id: "view-only", label: "View only", on: viewOnly, onSelect: () => setViewOnly((on) => !on) },
+    ...(keyboardModes ? KEYBOARD_MODES.map(({ mode, label }) => ({ id: `keyboard-${mode}`, label: `Keyboard: ${label.toLowerCase()}`, on: keyboardMode === mode, onSelect: () => { setKeyboardMode(mode); saveKeyboardMode(remoteId, mode); } })) : []),
     ...(canRecord ? [{ id: "record", label: recording ? "Stop recording" : "Record the screen", danger: true, onSelect: () => (recording ? stopRecording() : startRecording()) }] : []),
   ];
 
