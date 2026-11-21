@@ -32,6 +32,36 @@ pub enum FileMsg {
         id: u64,
         offset: u64,
     },
+    /// Sender -> receiver: a whole folder, offered once. The receiver answers
+    /// at once with `Ack { id, offset: 0 }` (seen, asking the user), then
+    /// `Accept` or `Reject`. An older peer that does not know this message
+    /// never acks, so the sender gives up quickly instead of hanging.
+    FolderOffer {
+        id: u64,
+        name: String,
+        files: u32,
+        total: u64,
+    },
+    /// A directory inside folder `folder`, as a '/'-separated relative path.
+    /// The receiver confirms every 32nd with `Ack { id: folder, offset: count }`.
+    FolderDir {
+        folder: u64,
+        path: String,
+    },
+    /// One file of folder `folder`: an `Offer` with a '/'-separated relative
+    /// path. Its chunks and replies use the file's own `id` as usual.
+    FolderFile {
+        folder: u64,
+        id: u64,
+        path: String,
+        size: u64,
+        hash: [u8; 32],
+    },
+    /// Every file of the folder has been sent. The receiver confirms with an
+    /// `Ack` on the folder id.
+    FolderDone {
+        id: u64,
+    },
 }
 
 impl FileMsg {
@@ -79,6 +109,41 @@ impl FileMsg {
                 put_u64(&mut bytes, *id);
                 put_u64(&mut bytes, *offset);
             }
+            Self::FolderOffer {
+                id,
+                name,
+                files,
+                total,
+            } => {
+                bytes.push(8);
+                put_u64(&mut bytes, *id);
+                put_bytes(&mut bytes, name.as_bytes());
+                bytes.extend_from_slice(&files.to_be_bytes());
+                put_u64(&mut bytes, *total);
+            }
+            Self::FolderDir { folder, path } => {
+                bytes.push(9);
+                put_u64(&mut bytes, *folder);
+                put_bytes(&mut bytes, path.as_bytes());
+            }
+            Self::FolderFile {
+                folder,
+                id,
+                path,
+                size,
+                hash,
+            } => {
+                bytes.push(10);
+                put_u64(&mut bytes, *folder);
+                put_u64(&mut bytes, *id);
+                put_bytes(&mut bytes, path.as_bytes());
+                put_u64(&mut bytes, *size);
+                bytes.extend_from_slice(hash);
+            }
+            Self::FolderDone { id } => {
+                bytes.push(11);
+                put_u64(&mut bytes, *id);
+            }
         }
         bytes
     }
@@ -121,6 +186,26 @@ impl FileMsg {
             7 => Self::Ack {
                 id: reader.take_u64()?,
                 offset: reader.take_u64()?,
+            },
+            8 => Self::FolderOffer {
+                id: reader.take_u64()?,
+                name: reader.take_string()?,
+                files: reader.take_u32()?,
+                total: reader.take_u64()?,
+            },
+            9 => Self::FolderDir {
+                folder: reader.take_u64()?,
+                path: reader.take_string()?,
+            },
+            10 => Self::FolderFile {
+                folder: reader.take_u64()?,
+                id: reader.take_u64()?,
+                path: reader.take_string()?,
+                size: reader.take_u64()?,
+                hash: reader.take_array::<32>()?,
+            },
+            11 => Self::FolderDone {
+                id: reader.take_u64()?,
             },
             _ => return None,
         };
@@ -246,6 +331,28 @@ mod tests {
             id: 13,
             offset: 2 * 1024 * 1024,
         });
+    }
+
+    #[test]
+    fn folder_messages_roundtrip() {
+        round_trip(FileMsg::FolderOffer {
+            id: 14,
+            name: "Photos 2024".into(),
+            files: 120,
+            total: 9_000_000,
+        });
+        round_trip(FileMsg::FolderDir {
+            folder: 14,
+            path: "trip/day 1".into(),
+        });
+        round_trip(FileMsg::FolderFile {
+            folder: 14,
+            id: 15,
+            path: "trip/day 1/beach.jpg".into(),
+            size: 4_096,
+            hash: [0x5A; 32],
+        });
+        round_trip(FileMsg::FolderDone { id: 14 });
     }
 
     #[test]

@@ -164,6 +164,24 @@ fn data_message_parsers_are_crash_free() {
             data: vec![1, 2, 3],
         },
         FileMsg::Done { id: 1 },
+        FileMsg::FolderOffer {
+            id: 2,
+            name: "docs".into(),
+            files: 3,
+            total: 30,
+        },
+        FileMsg::FolderDir {
+            folder: 2,
+            path: "a/b".into(),
+        },
+        FileMsg::FolderFile {
+            folder: 2,
+            id: 3,
+            path: "a/b/c.txt".into(),
+            size: 10,
+            hash: [9u8; 32],
+        },
+        FileMsg::FolderDone { id: 2 },
     ]
     .iter()
     .map(FileMsg::to_bytes)

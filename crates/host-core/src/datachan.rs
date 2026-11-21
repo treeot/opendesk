@@ -29,9 +29,14 @@ impl FileSource for TransferSource {
 
 /// A new incoming transfer. Its source yields the Offer first, then the
 /// sender's chunks, Done or Error.
+///
+/// For a folder (`folder` is true) the source yields the FolderOffer first,
+/// then every message of the whole folder in order: FolderDir, and for each
+/// file its FolderFile, chunks and Done, and finally FolderDone (or an Error).
 pub struct IncomingTransfer {
     pub id: u64,
     pub source: TransferSource,
+    pub folder: bool,
 }
 
 /// A reply channel for an outgoing transfer: register the sender half with
@@ -77,7 +82,11 @@ impl FileRouter {
             FileMsg::Accept { id } | FileMsg::Reject { id, .. } | FileMsg::Ack { id, .. } => {
                 self.reply(id, message);
             }
-            FileMsg::Offer { id, .. } => self.offer(id, message).await,
+            FileMsg::Offer { id, .. } => self.offer(id, message, false).await,
+            FileMsg::FolderOffer { id, .. } => self.offer(id, message, true).await,
+            FileMsg::FolderDir { folder, .. } => self.feed(folder, message, false).await,
+            FileMsg::FolderFile { folder, id, .. } => self.folder_file(folder, id, message).await,
+            FileMsg::FolderDone { id } => self.feed(id, message, true).await,
             FileMsg::Chunk { id, .. } => self.feed(id, message, false).await,
             FileMsg::Done { id } => self.feed(id, message, true).await,
             // Error travels both ways: the receiver failing our transfer, or
@@ -105,7 +114,30 @@ impl FileRouter {
         }
     }
 
-    async fn offer(&self, id: u64, offer: FileMsg) {
+    /// A file of folder `folder`: its messages join the folder's stream, so
+    /// the folder's receiver sees the whole tree in order.
+    async fn folder_file(&self, folder: u64, id: u64, message: FileMsg) {
+        let transfer = {
+            let mut incoming = locked(&self.incoming);
+            let Some(transfer) = incoming.get(&folder).cloned() else {
+                log::debug!("dropping a file of unknown folder {folder}");
+                return;
+            };
+            if incoming.contains_key(&id) {
+                log::warn!("dropping folder file {id}: duplicate transfer id");
+                return;
+            }
+            incoming.insert(id, transfer.clone());
+            transfer
+        };
+        if transfer.send(message).await.is_err() {
+            let mut incoming = locked(&self.incoming);
+            incoming.remove(&id);
+            incoming.remove(&folder);
+        }
+    }
+
+    async fn offer(&self, id: u64, offer: FileMsg, folder: bool) {
         let (tx, rx) = mpsc::channel(TRANSFER_QUEUE);
         {
             let mut incoming = locked(&self.incoming);
@@ -117,7 +149,7 @@ impl FileRouter {
             if tx.try_send(offer).is_err() { return; }
             incoming.insert(id, tx);
         }
-        if self.offers.send(IncomingTransfer { id, source: TransferSource(rx) }).await.is_err() {
+        if self.offers.send(IncomingTransfer { id, source: TransferSource(rx), folder }).await.is_err() {
             locked(&self.incoming).remove(&id);
         }
     }
@@ -308,6 +340,74 @@ mod tests {
         });
         let result = timeout(Duration::from_secs(5), send_file(&a, &path)).await.unwrap();
         assert!(matches!(result, Err(crate::filexfer::FileError::Rejected)), "{result:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A folder sink: every offer (the folder's and each file's) routes its
+    /// replies to the one reply channel, as the app's sink does.
+    struct FolderWire {
+        wire: Wire,
+        router: Arc<FileRouter>,
+        replies: mpsc::Sender<FileMsg>,
+    }
+
+    #[async_trait]
+    impl FileSink for FolderWire {
+        async fn send(&mut self, message: FileMsg) {
+            if let FileMsg::FolderOffer { id, .. } | FileMsg::FolderFile { id, .. } = &message {
+                self.router.register_outgoing(*id, self.replies.clone());
+            }
+            self.wire.send(message).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn folder_and_a_single_file_share_the_router() {
+        use crate::folder::{scan_folder, FolderReceiver, FolderSender, FolderTimeouts};
+        let dir = temp_dir("folder");
+        let root = dir.join("tree");
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("top.txt"), b"top").unwrap();
+        fs::write(root.join("a/b/deep.bin"), (0..400_000u32).map(|n| n as u8).collect::<Vec<_>>()).unwrap();
+        let single = dir.join("single.txt");
+        fs::write(&single, b"alone").unwrap();
+        let downloads = dir.join("downloads");
+        let (a, mut b, _raw) = peers();
+
+        let b_out = b.out.clone();
+        let receive_dir = downloads.clone();
+        let receiver = tokio::spawn(async move {
+            let mut done = Vec::new();
+            while let Some(IncomingTransfer { mut source, folder, .. }) = b.offers.recv().await {
+                let mut sink = Wire(b_out.clone());
+                if folder {
+                    let received = FolderReceiver::receive(&mut source, &mut sink, &receive_dir, |_| async { ConsentDecision::Accept }, |_| {}, &crate::filexfer::TransferGate::open())
+                        .await
+                        .unwrap();
+                    done.push(received.root);
+                } else {
+                    done.push(FileReceiver::receive(&mut source, &mut sink, &receive_dir, |_| ConsentDecision::Accept, |_, _| {}).await.unwrap());
+                }
+                if done.len() == 2 { break; }
+            }
+            done
+        });
+        let plan = scan_folder(&root).unwrap();
+        let (reply_tx, mut replies) = reply_channel();
+        let mut sink = FolderWire { wire: Wire(a.out.clone()), router: Arc::clone(&a.router), replies: reply_tx };
+        let sent = timeout(
+            Duration::from_secs(10),
+            FolderSender::send(&plan, &mut sink, &mut replies, |_| {}, |_| {}, FolderTimeouts::default(), &crate::filexfer::TransferGate::open()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(sent.files, 2);
+        timeout(Duration::from_secs(5), send_file(&a, &single)).await.unwrap().unwrap();
+        let done = timeout(Duration::from_secs(5), receiver).await.unwrap().unwrap();
+        assert_eq!(fs::read(done[0].join("a/b/deep.bin")).unwrap(), fs::read(root.join("a/b/deep.bin")).unwrap());
+        assert_eq!(fs::read(done[0].join("top.txt")).unwrap(), b"top");
+        assert_eq!(fs::read(&done[1]).unwrap(), b"alone");
         fs::remove_dir_all(dir).unwrap();
     }
 }

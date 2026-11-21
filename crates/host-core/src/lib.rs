@@ -7,6 +7,7 @@ pub mod cursor;
 pub mod datachan;
 pub mod encode;
 pub mod filexfer;
+pub mod folder;
 pub mod inject;
 pub mod relay_client;
 pub mod privacy;

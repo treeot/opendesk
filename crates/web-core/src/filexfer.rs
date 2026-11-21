@@ -104,6 +104,13 @@ impl Transfers {
             FileMsg::Chunk { id, offset, data } => self.on_chunk(id, offset, data),
             FileMsg::Done { id } => self.on_done(id),
             FileMsg::Error { id, message } => self.on_error(id, message),
+            // The browser viewer does not take folders. Refusing the offer at
+            // once lets the desktop sender stop cleanly; nothing else of the
+            // folder follows a refused offer.
+            FileMsg::FolderOffer { id, .. } => {
+                (vec![FileMsg::Reject { id, reason: "This viewer cannot receive folders.".into() }], Vec::new())
+            }
+            FileMsg::FolderDir { .. } | FileMsg::FolderFile { .. } | FileMsg::FolderDone { .. } => (Vec::new(), Vec::new()),
         }
     }
 
@@ -365,5 +372,15 @@ mod tests {
         let (sends, events) = host.on_message(reject);
         assert!(sends.is_empty());
         assert!(matches!(events.as_slice(), [FileEvent::Failed { id: 3, .. }]));
+    }
+
+    #[test]
+    fn folder_offers_are_refused_at_once() {
+        let mut viewer = Transfers::default();
+        let (sends, events) = viewer.on_message(FileMsg::FolderOffer { id: 4, name: "docs".into(), files: 2, total: 10 });
+        assert!(matches!(sends.as_slice(), [FileMsg::Reject { id: 4, .. }]));
+        assert!(events.is_empty());
+        let (sends, events) = viewer.on_message(FileMsg::FolderDone { id: 4 });
+        assert!(sends.is_empty() && events.is_empty());
     }
 }

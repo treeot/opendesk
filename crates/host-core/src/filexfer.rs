@@ -64,6 +64,8 @@ pub fn next_transfer_id() -> u64 {
 
 /// What the peer is told when a host-side permission stops a transfer.
 pub const REVOKED_MESSAGE: &str = "The other computer turned off file access.";
+/// What the peer is told when the local user cancels a transfer.
+pub const CANCELLED_MESSAGE: &str = "The transfer was cancelled.";
 /// How often a gated transfer re-checks its permission while it waits.
 const GATE_POLL: Duration = Duration::from_millis(100);
 
@@ -71,41 +73,67 @@ const GATE_POLL: Duration = Duration::from_millis(100);
 /// only when it is offered. Turning the flag off stops an in-flight transfer
 /// within one chunk (or [`GATE_POLL`] while it waits), tells the peer with a
 /// `FileMsg::Error` (or `Reject`), and discards a partially received file.
+///
+/// A gate can also carry a cancel flag the local user sets to stop the
+/// transfer; that ends it the same way with [`FileError::Cancelled`].
 #[derive(Clone, Default)]
-pub struct TransferGate(Option<Arc<AtomicBool>>);
+pub struct TransferGate {
+    permission: Option<Arc<AtomicBool>>,
+    cancelled: Option<Arc<AtomicBool>>,
+}
 
 impl TransferGate {
     /// No permission applies; the transfer is never stopped by a gate.
     pub fn open() -> Self {
-        Self(None)
+        Self::default()
     }
 
     /// Gate the transfer on `flag`, which may be flipped at any time.
     pub fn new(flag: Arc<AtomicBool>) -> Self {
-        Self(Some(flag))
+        Self { permission: Some(flag), cancelled: None }
+    }
+
+    /// Also stop the transfer once `cancelled` becomes true.
+    pub fn with_cancel(mut self, cancelled: Arc<AtomicBool>) -> Self {
+        self.cancelled = Some(cancelled);
+        self
     }
 
     pub fn allowed(&self) -> bool {
-        self.0.as_ref().is_none_or(|flag| flag.load(Ordering::Relaxed))
+        self.permission.as_ref().is_none_or(|flag| flag.load(Ordering::Relaxed))
     }
 
-    fn check(&self) -> Result<(), FileError> {
-        if self.allowed() { Ok(()) } else { Err(FileError::Revoked) }
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
 
-    /// Run `future` unless the permission is turned off first.
-    async fn guard<F: Future>(&self, future: F) -> Result<F::Output, FileError> {
-        if self.0.is_none() {
+    pub(crate) fn check(&self) -> Result<(), FileError> {
+        if self.is_cancelled() {
+            Err(FileError::Cancelled)
+        } else if self.allowed() {
+            Ok(())
+        } else {
+            Err(FileError::Revoked)
+        }
+    }
+
+    /// Run `future` unless the permission is turned off (or the transfer is
+    /// cancelled) first.
+    pub(crate) async fn guard<F: Future>(&self, future: F) -> Result<F::Output, FileError> {
+        if self.permission.is_none() && self.cancelled.is_none() {
             return Ok(future.await);
         }
-        let revoked = async {
-            while self.allowed() {
+        let stopped = async {
+            loop {
+                if let Err(error) = self.check() {
+                    return error;
+                }
                 tokio::time::sleep(GATE_POLL).await;
             }
         };
         tokio::select! {
             biased;
-            () = revoked => Err(FileError::Revoked),
+            error = stopped => Err(error),
             output = future => Ok(output),
         }
     }
@@ -140,6 +168,13 @@ pub enum FileError {
     Peer(String),
     /// The host turned off the permission this transfer depends on.
     Revoked,
+    /// The local user cancelled the transfer.
+    Cancelled,
+    /// The peer runs an older OpenDesk that does not know this kind of
+    /// transfer: it never acknowledged the offer.
+    Unsupported(String),
+    /// A folder is too big or too deep to send, or exceeded what was offered.
+    Limit(String),
 }
 
 impl Display for FileError {
@@ -153,6 +188,8 @@ impl Display for FileError {
             Self::TimedOut(message) => write!(f, "file transfer cancelled: {message}"),
             Self::Peer(message) => write!(f, "file transfer failed on the other side: {message}"),
             Self::Revoked => f.write_str("file transfer stopped: file access was turned off"),
+            Self::Cancelled => f.write_str("file transfer cancelled"),
+            Self::Unsupported(message) | Self::Limit(message) => f.write_str(message),
         }
     }
 }
@@ -347,79 +384,95 @@ impl FileSender {
             .and_then(|name| name.to_str())
             .and_then(sanitize_filename)
             .ok_or(FileError::BadName)?;
-
-        let mut file = tokio::fs::File::open(path).await?;
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; CHUNK_SIZE];
-        let mut size = 0u64;
-        loop {
-            gate.check()?;
-            let read = file.read(&mut buffer).await?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-            size = size
-                .checked_add(read as u64)
-                .ok_or_else(|| FileError::Protocol("file is too large".into()))?;
-        }
-        let hash: [u8; 32] = hasher.finalize().into();
-        let id = next_transfer_id();
-        sink.send(FileMsg::Offer {
-            id,
-            name,
-            size,
-            hash,
-        })
-        .await;
-
-        let answer = match gate.guard(tokio::time::timeout(timeouts.accept, next_reply(replies, id))).await {
-            Ok(answer) => answer,
-            Err(error) => return Err(revoke(sink, id, error).await),
-        };
-        match answer {
-            Err(_) => return Err(cancel(sink, id, "the receiver did not accept the file in time").await),
-            Ok(Reply::Accepted) => {}
-            Ok(Reply::Acked(_)) => return Err(FileError::Protocol("acknowledgement before acceptance".into())),
-            Ok(Reply::Rejected) => return Err(FileError::Rejected),
-            Ok(Reply::Failed(message)) => return Err(FileError::Peer(message)),
-            Ok(Reply::Closed) => return Err(FileError::Protocol("session closed before the receiver answered".into())),
-        }
-
-        let mut file = tokio::fs::File::open(path).await?;
-        let mut offset = 0u64;
-        let mut acked = 0u64;
-        progress(0, size);
-        loop {
-            if let Err(error) = gate.check() {
-                return Err(revoke(sink, id, error).await);
-            }
-            let read = file.read(&mut buffer).await?;
-            if read == 0 {
-                break;
-            }
-            while offset + read as u64 - acked > SEND_WINDOW_BYTES {
-                acked = acked.max(await_ack(sink, replies, id, timeouts.ack, gate).await?);
-            }
-            sink.send(FileMsg::Chunk {
-                id,
-                offset,
-                data: buffer[..read].to_vec(),
-            })
-            .await;
-            offset += read as u64;
-            progress(offset, size);
-        }
-        sink.send(FileMsg::Done { id }).await;
-        // Intermediate acks stay below `size`; the full-size ack comes only
-        // after the receiver verified the hash and stored the file. Every
-        // byte is already out, so the gate no longer applies.
-        while await_ack(sink, replies, id, timeouts.ack, &TransferGate::open()).await? < size {}
-        Ok(())
+        let offer = move |id, size, hash| FileMsg::Offer { id, name, size, hash };
+        send_offered(path, offer, None, sink, replies, &mut progress, timeouts, gate).await
     }
 }
 
-enum Reply {
+/// Hash `path`, send the offer `make_offer(id, size, hash)` builds, and stream
+/// the file once the receiver accepts it. Shared by single files and the
+/// files of a folder, which differ only in their offer. A folder's file
+/// passes the folder id so a folder-wide failure also ends the file.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_offered<S, R>(
+    path: &Path,
+    make_offer: impl FnOnce(u64, u64, [u8; 32]) -> FileMsg,
+    folder: Option<u64>,
+    sink: &mut S,
+    replies: &mut R,
+    progress: &mut impl FnMut(u64, u64),
+    timeouts: FlowTimeouts,
+    gate: &TransferGate,
+) -> Result<(), FileError>
+where
+    S: FileSink + Send,
+    R: FileSource + Send,
+{
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; CHUNK_SIZE];
+    let mut size = 0u64;
+    loop {
+        gate.check()?;
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size = size
+            .checked_add(read as u64)
+            .ok_or_else(|| FileError::Protocol("file is too large".into()))?;
+    }
+    let hash: [u8; 32] = hasher.finalize().into();
+    let id = next_transfer_id();
+    sink.send(make_offer(id, size, hash)).await;
+
+    let answer = match gate.guard(tokio::time::timeout(timeouts.accept, next_reply_in(replies, id, folder))).await {
+        Ok(answer) => answer,
+        Err(error) => return Err(revoke(sink, id, error).await),
+    };
+    match answer {
+        Err(_) => return Err(cancel(sink, id, "the receiver did not accept the file in time").await),
+        Ok(Reply::Accepted) => {}
+        Ok(Reply::Acked(_)) => return Err(FileError::Protocol("acknowledgement before acceptance".into())),
+        Ok(Reply::Rejected) => return Err(FileError::Rejected),
+        Ok(Reply::Failed(message)) => return Err(FileError::Peer(message)),
+        Ok(Reply::Closed) => return Err(FileError::Protocol("session closed before the receiver answered".into())),
+    }
+
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut offset = 0u64;
+    let mut acked = 0u64;
+    progress(0, size);
+    loop {
+        if let Err(error) = gate.check() {
+            return Err(revoke(sink, id, error).await);
+        }
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        while offset + read as u64 - acked > SEND_WINDOW_BYTES {
+            acked = acked.max(await_ack(sink, replies, (id, folder), timeouts.ack, gate).await?);
+        }
+        sink.send(FileMsg::Chunk {
+            id,
+            offset,
+            data: buffer[..read].to_vec(),
+        })
+        .await;
+        offset += read as u64;
+        progress(offset, size);
+    }
+    sink.send(FileMsg::Done { id }).await;
+    // Intermediate acks stay below `size`; the full-size ack comes only
+    // after the receiver verified the hash and stored the file. Every
+    // byte is already out, so the gate no longer applies.
+    while await_ack(sink, replies, (id, folder), timeouts.ack, &TransferGate::open()).await? < size {}
+    Ok(())
+}
+
+pub(crate) enum Reply {
     Accepted,
     Acked(u64),
     Rejected,
@@ -428,23 +481,30 @@ enum Reply {
 }
 
 /// The receiver's next answer for transfer `id`; anything else is skipped.
-async fn next_reply<R: FileSource + Send>(replies: &mut R, id: u64) -> Reply {
+pub(crate) async fn next_reply<R: FileSource + Send>(replies: &mut R, id: u64) -> Reply {
+    next_reply_in(replies, id, None).await
+}
+
+/// Like [`next_reply`] for a file of folder `folder`: the receiver failing or
+/// refusing the whole folder also ends the file.
+async fn next_reply_in<R: FileSource + Send>(replies: &mut R, id: u64, folder: Option<u64>) -> Reply {
+    let ours = |reply_id: u64| reply_id == id || Some(reply_id) == folder;
     loop {
         match replies.recv().await {
             None => return Reply::Closed,
             Some(FileMsg::Accept { id: reply_id }) if reply_id == id => return Reply::Accepted,
             Some(FileMsg::Ack { id: reply_id, offset }) if reply_id == id => return Reply::Acked(offset),
-            Some(FileMsg::Reject { id: reply_id, .. }) if reply_id == id => return Reply::Rejected,
-            Some(FileMsg::Error { id: reply_id, message }) if reply_id == id => return Reply::Failed(message),
+            Some(FileMsg::Reject { id: reply_id, .. }) if ours(reply_id) => return Reply::Rejected,
+            Some(FileMsg::Error { id: reply_id, message }) if ours(reply_id) => return Reply::Failed(message),
             Some(_) => continue,
         }
     }
 }
 
-async fn await_ack<S, R>(
+pub(crate) async fn await_ack<S, R>(
     sink: &mut S,
     replies: &mut R,
-    id: u64,
+    (id, folder): (u64, Option<u64>),
     ack_timeout: Duration,
     gate: &TransferGate,
 ) -> Result<u64, FileError>
@@ -452,7 +512,7 @@ where
     S: FileSink + Send,
     R: FileSource + Send,
 {
-    let answer = match gate.guard(tokio::time::timeout(ack_timeout, next_reply(replies, id))).await {
+    let answer = match gate.guard(tokio::time::timeout(ack_timeout, next_reply_in(replies, id, folder))).await {
         Ok(answer) => answer,
         Err(error) => return Err(revoke(sink, id, error).await),
     };
@@ -467,15 +527,23 @@ where
 }
 
 /// Tell the receiver the transfer is abandoned and build the local error.
-async fn cancel<S: FileSink + Send>(sink: &mut S, id: u64, reason: &str) -> FileError {
+pub(crate) async fn cancel<S: FileSink + Send>(sink: &mut S, id: u64, reason: &str) -> FileError {
     sink.send(FileMsg::Error { id, message: reason.to_owned() }).await;
     FileError::TimedOut(reason.to_owned())
 }
 
-/// Tell the receiver the host withdrew permission and pass `error` through.
-async fn revoke<S: FileSink + Send>(sink: &mut S, id: u64, error: FileError) -> FileError {
-    sink.send(FileMsg::Error { id, message: REVOKED_MESSAGE.to_owned() }).await;
+/// Tell the peer the gate stopped the transfer and pass `error` through.
+pub(crate) async fn revoke<S: FileSink + Send>(sink: &mut S, id: u64, error: FileError) -> FileError {
+    sink.send(FileMsg::Error { id, message: gate_message(&error).to_owned() }).await;
     error
+}
+
+/// What the peer is told when a gate stops a transfer with `error`.
+pub(crate) fn gate_message(error: &FileError) -> &'static str {
+    match error {
+        FileError::Cancelled => CANCELLED_MESSAGE,
+        _ => REVOKED_MESSAGE,
+    }
 }
 
 pub struct FileReceiver;
@@ -557,14 +625,37 @@ impl FileReceiver {
         }
         // The permission may have been turned off while the user decided.
         if let Err(error) = gate.check() {
-            sink.send(FileMsg::Reject { id, reason: REVOKED_MESSAGE.into() }).await;
+            sink.send(FileMsg::Reject { id, reason: gate_message(&error).into() }).await;
             return Err(error);
         }
+        Self::accept_and_store(source, sink, downloads_dir, &name, id, size, expected_hash, &mut progress, gate).await
+    }
+
+    /// Accept offer `id` and store it as `name` in `dir`, then confirm it
+    /// with a full-size `Ack` (or tell the sender why it failed).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn accept_and_store<S, K>(
+        source: &mut S,
+        sink: &mut K,
+        dir: &Path,
+        name: &str,
+        id: u64,
+        size: u64,
+        expected_hash: [u8; 32],
+        progress: impl FnMut(u64, u64),
+        gate: &TransferGate,
+    ) -> Result<PathBuf, FileError>
+    where
+        S: FileSource + Send,
+        K: FileSink + Send,
+    {
         sink.send(FileMsg::Accept { id }).await;
-        let result = Self::store(source, sink, downloads_dir, &name, id, size, expected_hash, &mut progress, gate).await;
+        let result = Self::store(source, sink, dir, name, id, size, expected_hash, progress, gate).await;
         match &result {
             Ok(_) => sink.send(FileMsg::Ack { id, offset: size }).await,
-            Err(FileError::Revoked) => sink.send(FileMsg::Error { id, message: REVOKED_MESSAGE.into() }).await,
+            Err(error @ (FileError::Revoked | FileError::Cancelled)) => {
+                sink.send(FileMsg::Error { id, message: gate_message(error).into() }).await
+            }
             Err(error) => sink.send(FileMsg::Error { id, message: error.to_string() }).await,
         }
         result
