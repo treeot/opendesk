@@ -159,6 +159,15 @@ async fn browser_viewer_streams_and_controls_a_real_host() {
     .await
     .expect("a keyframe after the request");
 
+    // The host answers a ping, so the page can show the round trip.
+    let ping = browser.session.ping(browser.now()).unwrap();
+    browser.send(ping).await;
+    timeout(Duration::from_secs(10), async {
+        while !matches!(browser.next().await, Event::RoundTrip(_)) {}
+    })
+    .await
+    .expect("a round trip from the host's pong");
+
     // Disconnect: the host ends its session cleanly.
     let bye = browser.session.bye().unwrap();
     browser.send(bye).await;

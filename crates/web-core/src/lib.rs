@@ -17,6 +17,8 @@ mod wasm;
 use filexfer::{FileEvent, Transfers};
 use protocol::{
     audio::AudioFrame,
+    browse::BrowseMsg,
+    chat::{ChatMsg, MAX_CHAT},
     clipboard::{ClipboardContent, ClipboardMsg, MAX_CLIPBOARD, MAX_CLIPBOARD_IMAGE},
     control::Control,
     crypto::{Opener, Sealer},
@@ -42,6 +44,8 @@ pub const KEEPALIVE_INTERVAL_MS: f64 = 15_000.0;
 pub const DEAD_PEER_TIMEOUT_MS: f64 = 45_000.0;
 /// How long to wait for a requested keyframe before asking again.
 const KEYFRAME_RETRY_MS: f64 = 500.0;
+/// A `Pong` answering a ping older than this is ignored.
+const MAX_ROUND_TRIP_MS: f64 = 60_000.0;
 /// Bytes of video header before the access unit (see `encode::video_header`).
 pub const VIDEO_HEADER_LEN: usize = 18;
 
@@ -61,6 +65,16 @@ pub enum Event {
     Clipboard(ClipboardContent),
     /// A file-transfer update for the page (offers, progress, results).
     File(FileEvent),
+    /// A remote file-manager answer from the host: a `DirListing` or a
+    /// `BrowseError`. Request kinds from the host are dropped.
+    Browse(BrowseMsg),
+    /// A chat message from the person at the host.
+    Chat(String),
+    /// A measured relay round trip in whole milliseconds, from a `Pong`.
+    RoundTrip(u32),
+    /// The host can do something optional; the name says what. Only
+    /// "secure-attention" (Ctrl+Alt+Del) is surfaced so far.
+    Supports(&'static str),
     /// The session is over. The text matches the desktop viewer's errors,
     /// so [`reconnect::after_failure`] can decide what to do next.
     Ended(String),
@@ -145,6 +159,7 @@ struct Live {
     data_sealer: Sealer,
     data_opener: Opener,
     clip_seq: u64,
+    browse_req: u64,
     transfers: Transfers,
     gate: VideoGate,
     next_keepalive: f64,
@@ -186,6 +201,20 @@ enum Phase {
     KexAwaitRetry,
     Session(Box<Live>),
     Ended,
+}
+
+/// A remote file-manager request from the page. See `protocol::browse`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowseRequest {
+    /// List a folder; empty means the host's starting places.
+    List { path: String },
+    /// Ask the host to send this file as an ordinary incoming offer.
+    Pull { path: String },
+    /// Put the next uploaded file in `dir` (empty means Downloads).
+    UploadDir { dir: String },
+    MakeDir { path: String, name: String },
+    Delete { path: String },
+    Rename { path: String, name: String },
 }
 
 pub struct ViewerSession {
@@ -321,6 +350,7 @@ impl ViewerSession {
             data_sealer: Sealer::new(data_send_key),
             data_opener: Opener::strict(data_recv_key),
             clip_seq: 0,
+            browse_req: 0,
             transfers: Transfers::default(),
             gate: VideoGate::new(),
             next_keepalive: now_ms + KEEPALIVE_INTERVAL_MS,
@@ -351,6 +381,19 @@ impl ViewerSession {
                         vec![Event::Monitors(
                             serde_json::to_string(&monitors).unwrap_or_else(|_| "[]".into()),
                         )]
+                    }
+                    Some(Control::Pong { sent_us }) => {
+                        // Our own send time echoed back; drop anything from
+                        // the future or implausibly old.
+                        let rtt = now_ms - sent_us as f64 / 1000.0;
+                        if (0.0..=MAX_ROUND_TRIP_MS).contains(&rtt) {
+                            vec![Event::RoundTrip(rtt.round() as u32)]
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    Some(Control::SecureAttentionSupport) => {
+                        vec![Event::Supports("secure-attention")]
                     }
                     _ => Vec::new(),
                 }
@@ -387,7 +430,12 @@ impl ViewerSession {
                         events.extend(file_events.into_iter().map(Event::File));
                         events
                     }
-                    // Chat is not surfaced in the browser viewer.
+                    Some(DataMsg::Chat(chat)) => vec![Event::Chat(chat.text)],
+                    // Only answers go to a viewer, as in the desktop app: a
+                    // host must not drive the request half of the protocol.
+                    Some(DataMsg::Browse(
+                        message @ (BrowseMsg::DirListing { .. } | BrowseMsg::BrowseError { .. }),
+                    )) => vec![Event::Browse(message)],
                     _ => Vec::new(),
                 }
             }
@@ -517,6 +565,55 @@ impl ViewerSession {
         let live = self.live()?;
         let reject = live.transfers.reject(id)?;
         Some(live.file(reject))
+    }
+
+    /// Seal a chat message for the host. `None` when empty, over the chat
+    /// limit, or not yet live.
+    pub fn chat(&mut self, text: &str) -> Option<Vec<u8>> {
+        if text.is_empty() || text.len() > MAX_CHAT {
+            return None;
+        }
+        let live = self.live()?;
+        Some(live.data(&DataMsg::Chat(ChatMsg { text: text.to_owned() })))
+    }
+
+    /// Seal a remote file-manager request. Only the viewer-to-host kinds are
+    /// allowed; a request id is filled in here. `None` otherwise.
+    pub fn browse(&mut self, request: BrowseRequest) -> Option<Vec<u8>> {
+        let live = self.live()?;
+        live.browse_req += 1;
+        let req = live.browse_req;
+        let message = match request {
+            BrowseRequest::List { path } => BrowseMsg::ListDir { req, path },
+            BrowseRequest::Pull { path } => BrowseMsg::Pull { req, path },
+            BrowseRequest::UploadDir { dir } => BrowseMsg::SetUploadDir { dir },
+            BrowseRequest::MakeDir { path, name } => BrowseMsg::MakeDir { req, path, name },
+            BrowseRequest::Delete { path } => BrowseMsg::Delete { req, path },
+            BrowseRequest::Rename { path, name } => BrowseMsg::Rename { req, path, name },
+        };
+        Some(live.data(&DataMsg::Browse(message)))
+    }
+
+    /// A sealed `Ping` stamped with `now_ms`; the host's `Pong` becomes a
+    /// [`Event::RoundTrip`]. Hosts that predate it never answer.
+    pub fn ping(&mut self, now_ms: f64) -> Option<Vec<u8>> {
+        let sent_us = (now_ms.max(0.0) * 1000.0) as u64;
+        Some(self.live()?.control(&Control::Ping { sent_us }))
+    }
+
+    /// Ask the host to send Ctrl+Alt+Del (after `Supports("secure-attention")`).
+    pub fn secure_attention(&mut self) -> Option<Vec<u8>> {
+        Some(self.live()?.control(&Control::RequestSecureAttention))
+    }
+
+    /// Cap the stream bitrate; 0 means automatic.
+    pub fn set_max_bitrate(&mut self, bps: u32) -> Option<Vec<u8>> {
+        Some(self.live()?.control(&Control::SetMaxBitrate { bps }))
+    }
+
+    /// Turn the host's text readability mode on or off.
+    pub fn text_readability(&mut self, enabled: bool) -> Option<Vec<u8>> {
+        Some(self.live()?.control(&Control::TextReadability { enabled }))
     }
 
     /// Ask the host for a keyframe, e.g. after a decoder error.
@@ -985,6 +1082,84 @@ mod tests {
             host.open_data(&accept),
             Some(DataMsg::FileTransfer(FileMsg::Accept { id: 9 }))
         );
+    }
+
+    #[test]
+    fn chat_goes_both_ways() {
+        let mut viewer = ViewerSession::new("pw", "");
+        assert!(viewer.chat("hi").is_none());
+        let mut host = authenticate(&mut viewer, "pw").unwrap();
+        let inbound = host.data(&DataMsg::Chat(ChatMsg { text: "hello".into() }));
+        assert_eq!(viewer.receive(&inbound, 3.0), vec![Event::Chat("hello".into())]);
+        let sealed = viewer.chat("hi there").unwrap();
+        assert_eq!(
+            host.open_data(&sealed),
+            Some(DataMsg::Chat(ChatMsg { text: "hi there".into() }))
+        );
+        assert!(viewer.chat("").is_none());
+        assert!(viewer.chat(&"x".repeat(MAX_CHAT + 1)).is_none());
+    }
+
+    #[test]
+    fn browse_requests_seal_and_only_answers_surface() {
+        use protocol::browse::DirEntry;
+        let mut viewer = ViewerSession::new("pw", "");
+        let mut host = authenticate(&mut viewer, "pw").unwrap();
+        let list = viewer.browse(BrowseRequest::List { path: String::new() }).unwrap();
+        assert_eq!(
+            host.open_data(&list),
+            Some(DataMsg::Browse(BrowseMsg::ListDir { req: 1, path: String::new() }))
+        );
+        let rename = viewer
+            .browse(BrowseRequest::Rename { path: "/a/b".into(), name: "c".into() })
+            .unwrap();
+        assert_eq!(
+            host.open_data(&rename),
+            Some(DataMsg::Browse(BrowseMsg::Rename { req: 2, path: "/a/b".into(), name: "c".into() }))
+        );
+        let upload = viewer.browse(BrowseRequest::UploadDir { dir: "/a".into() }).unwrap();
+        assert_eq!(
+            host.open_data(&upload),
+            Some(DataMsg::Browse(BrowseMsg::SetUploadDir { dir: "/a".into() }))
+        );
+        let listing = BrowseMsg::DirListing {
+            req: 1,
+            path: "/home/me".into(),
+            entries: vec![DirEntry { name: "docs".into(), is_dir: true, size: 0, modified: 0 }],
+        };
+        let sealed = host.data(&DataMsg::Browse(listing.clone()));
+        assert_eq!(viewer.receive(&sealed, 3.0), vec![Event::Browse(listing)]);
+        // A host cannot make the viewer act on a request kind.
+        let pull = host.data(&DataMsg::Browse(BrowseMsg::Pull { req: 9, path: "/etc/passwd".into() }));
+        assert!(viewer.receive(&pull, 4.0).is_empty());
+    }
+
+    #[test]
+    fn ping_measures_the_round_trip_and_controls_seal() {
+        let mut viewer = ViewerSession::new("pw", "");
+        assert!(viewer.ping(0.0).is_none());
+        let mut host = authenticate(&mut viewer, "pw").unwrap();
+        let ping = viewer.ping(1_000.0).unwrap();
+        let Some(Control::Ping { sent_us }) = host.open_control(&ping) else {
+            panic!("expected a ping")
+        };
+        assert_eq!(sent_us, 1_000_000);
+        let pong = host.control(&Control::Pong { sent_us });
+        assert_eq!(viewer.receive(&pong, 1_042.0), vec![Event::RoundTrip(42)]);
+        // A pong from the future is ignored.
+        let future = host.control(&Control::Pong { sent_us: 5_000_000 });
+        assert!(viewer.receive(&future, 1_050.0).is_empty());
+        let support = host.control(&Control::SecureAttentionSupport);
+        assert_eq!(
+            viewer.receive(&support, 1_060.0),
+            vec![Event::Supports("secure-attention")]
+        );
+        let sas = viewer.secure_attention().unwrap();
+        assert_eq!(host.open_control(&sas), Some(Control::RequestSecureAttention));
+        let cap = viewer.set_max_bitrate(3_000_000).unwrap();
+        assert_eq!(host.open_control(&cap), Some(Control::SetMaxBitrate { bps: 3_000_000 }));
+        let text = viewer.text_readability(true).unwrap();
+        assert_eq!(host.open_control(&text), Some(Control::TextReadability { enabled: true }));
     }
 
     #[test]

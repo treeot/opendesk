@@ -1,7 +1,7 @@
 //! JavaScript bindings. Calls return nothing; events queue up and the page
 //! drains them with `nextEvent`.
 
-use crate::{filexfer::FileEvent, reconnect, Event, ViewerSession};
+use crate::{filexfer::FileEvent, reconnect, BrowseRequest, Event, ViewerSession};
 use protocol::clipboard::ClipboardContent;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -13,8 +13,10 @@ pub struct Viewer {
     events: VecDeque<Event>,
 }
 
-/// One queued event. `kind` is "send", "authenticated", "video", "monitors"
-/// or "ended"; `bytes` is set for send and video, `text` for monitors and ended.
+/// One queued event. `kind` is "send", "authenticated", "video", "audio",
+/// "monitors", "clipboard-text", "clipboard-image", a "file-" kind, "browse",
+/// "chat", "rtt", "supports" or "ended". `bytes` carries binary payloads and
+/// `text` everything else (JSON for monitors, files and browse answers).
 #[wasm_bindgen]
 pub struct ViewerEvent {
     kind: &'static str,
@@ -55,6 +57,16 @@ impl From<Event> for ViewerEvent {
                 ("clipboard-image", png, format!("{width}x{height}"))
             }
             Event::File(file) => return file.into(),
+            // The message's own JSON: `{"t":"dir_listing",...}` or
+            // `{"t":"browse_error",...}`.
+            Event::Browse(message) => (
+                "browse",
+                Vec::new(),
+                serde_json::to_string(&message).unwrap_or_default(),
+            ),
+            Event::Chat(text) => ("chat", Vec::new(), text),
+            Event::RoundTrip(ms) => ("rtt", Vec::new(), ms.to_string()),
+            Event::Supports(feature) => ("supports", Vec::new(), feature.to_owned()),
             Event::Ended(message) => ("ended", Vec::new(), message),
         };
         Self { kind, bytes, text }
@@ -151,6 +163,66 @@ impl Viewer {
     #[wasm_bindgen(js_name = rejectFile)]
     pub fn reject_file(&mut self, id: f64) -> Option<Vec<u8>> {
         self.session.reject_file(id as u64)
+    }
+
+    /// Send a chat message. `None` if empty, too long or not yet live.
+    pub fn chat(&mut self, text: &str) -> Option<Vec<u8>> {
+        self.session.chat(text)
+    }
+
+    /// List a host folder; an empty path lists the starting places.
+    #[wasm_bindgen(js_name = listDir)]
+    pub fn list_dir(&mut self, path: String) -> Option<Vec<u8>> {
+        self.session.browse(BrowseRequest::List { path })
+    }
+
+    /// Ask the host to send the file at `path` as a normal incoming offer.
+    #[wasm_bindgen(js_name = pullFile)]
+    pub fn pull_file(&mut self, path: String) -> Option<Vec<u8>> {
+        self.session.browse(BrowseRequest::Pull { path })
+    }
+
+    /// Put the next file we send into host folder `dir` (empty: Downloads).
+    #[wasm_bindgen(js_name = setUploadDir)]
+    pub fn set_upload_dir(&mut self, dir: String) -> Option<Vec<u8>> {
+        self.session.browse(BrowseRequest::UploadDir { dir })
+    }
+
+    #[wasm_bindgen(js_name = makeDir)]
+    pub fn make_dir(&mut self, path: String, name: String) -> Option<Vec<u8>> {
+        self.session.browse(BrowseRequest::MakeDir { path, name })
+    }
+
+    #[wasm_bindgen(js_name = deletePath)]
+    pub fn delete_path(&mut self, path: String) -> Option<Vec<u8>> {
+        self.session.browse(BrowseRequest::Delete { path })
+    }
+
+    #[wasm_bindgen(js_name = renamePath)]
+    pub fn rename_path(&mut self, path: String, name: String) -> Option<Vec<u8>> {
+        self.session.browse(BrowseRequest::Rename { path, name })
+    }
+
+    /// A round-trip probe; the answer arrives as an "rtt" event.
+    pub fn ping(&mut self, now_ms: f64) -> Option<Vec<u8>> {
+        self.session.ping(now_ms)
+    }
+
+    /// Ctrl+Alt+Del, once the host has sent "supports" "secure-attention".
+    #[wasm_bindgen(js_name = secureAttention)]
+    pub fn secure_attention(&mut self) -> Option<Vec<u8>> {
+        self.session.secure_attention()
+    }
+
+    /// Cap the stream bitrate in bits per second; 0 means automatic.
+    #[wasm_bindgen(js_name = setMaxBitrate)]
+    pub fn set_max_bitrate(&mut self, bps: u32) -> Option<Vec<u8>> {
+        self.session.set_max_bitrate(bps)
+    }
+
+    #[wasm_bindgen(js_name = textReadability)]
+    pub fn text_readability(&mut self, enabled: bool) -> Option<Vec<u8>> {
+        self.session.text_readability(enabled)
     }
 
     #[wasm_bindgen(js_name = requestKeyframe)]
