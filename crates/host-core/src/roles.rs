@@ -374,13 +374,16 @@ async fn host_kex(
             // dropped connection and retries instead of reporting the wrong
             // password.
             drain_before_close(sender).await;
-            return Err(Box::new(SessionError("key confirmation failed")));
+            return Err(Box::new(SessionError(KEY_CONFIRMATION_FAILED)));
         }
         // Mismatch, but another password is left: ask the viewer to redo it.
         sender.send_frame(Tag::Kex, &kex_body(KEX_RETRY, &[])).await?;
     }
-    Err(Box::new(SessionError("key confirmation failed")))
+    Err(Box::new(SessionError(KEY_CONFIRMATION_FAILED)))
 }
+
+/// The host's error when no accepted password matched the viewer's.
+const KEY_CONFIRMATION_FAILED: &str = "key confirmation failed";
 
 /// Viewer side of the authenticated key exchange. Runs the exchange with the
 /// one password the user supplied; if the host asks to retry (it accepts more
@@ -540,12 +543,20 @@ pub struct SessionGates {
     /// Send host system audio to the viewer. When off, captured audio frames
     /// are dropped before they are sealed and sent.
     pub audio: Arc<AtomicBool>,
+    /// Receives security-relevant session events (failed logins, Ctrl+Alt+Del,
+    /// restart, privacy mode) for the host's audit log. Never given secrets.
+    pub audit: Option<crate::audit::AuditSink>,
 }
 
 impl Default for SessionGates {
     fn default() -> Self {
-        Self { control: Arc::new(AtomicBool::new(true)), audio: Arc::new(AtomicBool::new(true)) }
+        Self { control: Arc::new(AtomicBool::new(true)), audio: Arc::new(AtomicBool::new(true)), audit: None }
     }
+}
+
+/// Report one session event with a short, secret-free `detail`.
+fn audit(sink: Option<&crate::audit::AuditSink>, event: &str, detail: impl Into<String>) {
+    crate::audit::report(sink, crate::audit::AuditEvent::new(event, None).with_detail(detail));
 }
 
 /// Run a host session after relay pairing.
@@ -671,7 +682,16 @@ where
     // Accept the primary password and, when the host offers one, a second
     // (the rotating session password alongside the unattended one).
     let candidates: Vec<&str> = std::iter::once(password).chain(alt_password).collect();
-    let shared = host_kex(&sender, &mut control_rx, &candidates, kex_deadline).await?;
+    let audit_sink = gates.audit.clone();
+    let shared = match host_kex(&sender, &mut control_rx, &candidates, kex_deadline).await {
+        Ok(shared) => shared,
+        Err(error) => {
+            if error.downcast_ref::<SessionError>().is_some_and(|error| error.0 == KEY_CONFIRMATION_FAILED) {
+                audit(audit_sink.as_ref(), crate::audit::kind::AUTH_FAILED, "wrong password");
+            }
+            return Err(error);
+        }
+    };
     let (control_send_key, control_recv_key) = protocol::kex::derive_control_keys(&shared, true);
     let control_sealer: SharedSealer = Arc::new(Mutex::new(Sealer::new(control_send_key)));
     let mut control_opener = Opener::strict(control_recv_key);
@@ -700,8 +720,12 @@ where
     } else {
         match await_approval(approve(), &mut control_rx, &mut early_control, timings).await {
             Approval::Allowed => None,
-            Approval::Denied => Some(reject_code::DENIED),
+            Approval::Denied => {
+                audit(audit_sink.as_ref(), crate::audit::kind::CONNECTION_DENIED, "declined by host user");
+                Some(reject_code::DENIED)
+            }
             Approval::Expired => {
+                audit(audit_sink.as_ref(), crate::audit::kind::CONNECTION_DENIED, "no answer");
                 send_rejection(&sender, &control_sealer, reject_code::NO_ANSWER).await;
                 return Err(Box::new(SessionError("nobody answered the connection request")));
             }
@@ -712,6 +736,12 @@ where
         }
     };
     if let Some(code) = rejection {
+        // The code itself is never logged, only whether one came.
+        if code == reject_code::TWOFA_INVALID {
+            audit(audit_sink.as_ref(), crate::audit::kind::TWOFA_FAILED, "invalid code");
+        } else if code == reject_code::TWOFA_REQUIRED {
+            audit(audit_sink.as_ref(), crate::audit::kind::TWOFA_FAILED, "no code");
+        }
         // Tell the viewer explicitly why, so it stops retrying instead of
         // reading the close as a transient drop.
         send_rejection(&sender, &control_sealer, code).await;
@@ -954,30 +984,43 @@ where
                     }
                     Some(Control::TextReadability { enabled }) => video.send(VideoCommand::TextReadability(enabled)),
                     Some(Control::RequestSecureAttention) => {
+                        use crate::audit::kind::SECURE_ATTENTION;
                         if !control_gate.load(Ordering::Relaxed) {
                             log::debug!("ignoring secure attention request: control is off");
+                            audit(audit_sink.as_ref(), SECURE_ATTENTION, "blocked: control is off");
                         } else if let Err(error) = crate::secure_attention::deliver() {
                             log::debug!("ignoring secure attention request: {error}");
+                            audit(audit_sink.as_ref(), SECURE_ATTENTION, format!("failed: {error}"));
+                        } else {
+                            audit(audit_sink.as_ref(), SECURE_ATTENTION, "sent");
                         }
                     }
                     // Turning privacy on is a control action (it can lock the host
                     // user out), so view-only blocks it; turning it off is always
                     // allowed so the host can be recovered.
                     Some(Control::SetPrivacyMode { on }) => {
+                        use crate::audit::kind::PRIVACY_MODE;
                         if on {
                             if control_gate.load(Ordering::Relaxed) {
                                 if privacy_guard.is_none() {
                                     match crate::privacy::enable() {
-                                        Ok(guard) => privacy_guard = Some(guard),
-                                        Err(error) => log::warn!("privacy mode could not start: {error}"),
+                                        Ok(guard) => {
+                                            privacy_guard = Some(guard);
+                                            audit(audit_sink.as_ref(), PRIVACY_MODE, "on");
+                                        }
+                                        Err(error) => {
+                                            log::warn!("privacy mode could not start: {error}");
+                                            audit(audit_sink.as_ref(), PRIVACY_MODE, format!("failed: {error}"));
+                                        }
                                     }
                                 }
                             } else {
                                 log::debug!("ignoring privacy-on request: control is off");
+                                audit(audit_sink.as_ref(), PRIVACY_MODE, "blocked: control is off");
                             }
-                        } else {
+                        } else if privacy_guard.take().is_some() {
                             // Dropping the guard restores local input and the screen.
-                            privacy_guard = None;
+                            audit(audit_sink.as_ref(), PRIVACY_MODE, "off");
                         }
                         let now_on = privacy_guard.is_some();
                         let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &Control::PrivacyModeChanged { on: now_on })).await;
@@ -986,16 +1029,22 @@ where
                         // Only honor it on the same terms it was advertised, so a
                         // viewer can't reboot a host that won't come back, and not
                         // while the host user has revoked control.
+                        use crate::audit::kind::RESTART_REQUEST;
                         if !control_gate.load(Ordering::Relaxed) {
                             log::debug!("ignoring restart request: control is off");
+                            audit(audit_sink.as_ref(), RESTART_REQUEST, "blocked: control is off");
                         } else if unattended_enabled && crate::restart::available() {
+                            // Logged first: a successful restart may end this process.
+                            audit(audit_sink.as_ref(), RESTART_REQUEST, "restarting");
                             // Tell the viewer to expect a long gap before we return.
                             let _ = sender.send_frame(Tag::Control, &seal_control(&control_sealer, &Control::Restarting)).await;
                             if let Err(error) = crate::restart::restart() {
                                 log::warn!("host restart request failed: {error}");
+                                audit(audit_sink.as_ref(), RESTART_REQUEST, format!("failed: {error}"));
                             }
                         } else {
                             log::debug!("ignoring restart request: unattended off or unsupported platform");
+                            audit(audit_sink.as_ref(), RESTART_REQUEST, "refused: not available on this host");
                         }
                     }
                     Some(Control::OpenMonitorStream { id }) => {
@@ -2839,6 +2888,38 @@ mod tests {
             }
         }
         assert!(confirmed, "the viewer must get the host's confirmation, not a bare close");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_reported_to_the_audit_sink_without_secrets() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::{protocol::Role, Message};
+        let (viewer_ws, host_ws) = tokio::io::duplex(64 * 1024);
+        let mut viewer_ws = WebSocketStream::from_raw_socket(viewer_ws, Role::Client, None).await;
+        let host_ws = WebSocketStream::from_raw_socket(host_ws, Role::Server, None).await;
+        let (_, msg) = protocol::pake::start(b"wrong-guess", false);
+        for body in [kex_body(KEX_MSG, &msg), kex_body(KEX_CONFIRM, &[0u8; 32])] {
+            viewer_ws.send(Message::Binary(protocol::frame::wrap(Tag::Kex, &body).into())).await.unwrap();
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink: crate::audit::AuditSink = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |event| seen.lock().unwrap().push(event))
+        };
+        let gates = SessionGates { audit: Some(sink), ..SessionGates::default() };
+        let host = run_host_session_with_data_and_accept_and_2fa_with_factory(
+            host_ws, "right-password", None, "s", || Some(crate::capture::FakeCapturer::new(32, 32)),
+            |width, height, _codec| crate::encode::H264Encoder::new(width, height, 15, 1_000_000),
+            || Box::new(crate::inject::NoopInjector::default()) as Box<dyn InputInjector>,
+            false, false, None, || async { true }, None, SessionTimings::default(), HostDisplays::default(), gates,
+        ).await;
+        assert!(host.is_err());
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].event, crate::audit::kind::AUTH_FAILED);
+        assert_eq!(seen[0].detail.as_deref(), Some("wrong password"));
+        let json = serde_json::to_string(&seen[0]).unwrap();
+        assert!(!json.contains("right-password") && !json.contains("wrong-guess"), "{json}");
     }
 
     #[tokio::test]

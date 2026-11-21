@@ -357,7 +357,6 @@ pub(crate) async fn run_paired_host_session(
     stop_rx: &mut oneshot::Receiver<()>,
 ) -> HostSessionEnd {
     let host_core::relay_client::Pairing { session: ice_session, peer_id } = pairing;
-    let audit_path = app.path().app_data_dir().ok().map(|p| p.join("logs").join("audit.jsonl"));
     let started_at = std::time::Instant::now();
     // Set once the viewer has passed the password (and 2FA) checks, which is
     // when host-core asks for approval.
@@ -373,9 +372,20 @@ pub(crate) async fn run_paired_host_session(
         // Drop any one-shot upload destination from a previous session, so a
         // stale viewer-chosen path can never redirect the next session's file.
         *lock_unpoisoned(&state.upload_dir) = None;
+        // Session events (failed logins, Ctrl+Alt+Del, restart, privacy mode)
+        // are audited under this viewer's ID and pairing session.
+        let audit_app = app.clone();
+        let audit_peer = peer_id.clone();
+        let audit_session = ice_session.clone();
+        let audit: host_core::audit::AuditSink = Arc::new(move |mut event: AuditEvent| {
+            event.peer_id.get_or_insert_with(|| audit_peer.clone());
+            event.address.get_or_insert_with(|| audit_session.clone());
+            write_audit(&audit_app, &event);
+        });
         let gates = host_core::roles::SessionGates {
             control: state.viewer_permissions.control.clone(),
             audio: state.viewer_permissions.audio.clone(),
+            audit: Some(audit),
         };
         let (disconnect_tx, disconnect_rx) = oneshot::channel::<()>();
         state.disconnect_viewer = Some(disconnect_tx);
@@ -392,20 +402,16 @@ pub(crate) async fn run_paired_host_session(
     // plus optional TOTP) is the only path without a prompt.
     let known = app.state::<AppState>().lock().config.is_allowed(&peer_id);
     let remote_id = peer_id.clone();
-    let audit_start_path = audit_path.clone();
+    let audit_app = app.clone();
     let audit_peer = peer_id.clone();
     let audit_address = ice_session.clone();
     let approve_app = app.clone();
     let (data_ready_tx, data_ready_rx) = oneshot::channel();
     let approve = move || async move {
         authenticated_flag.store(true, Ordering::Relaxed);
-        if let Some(path) = &audit_start_path {
-            let mut event = host_core::audit::AuditEvent::new("session_start", Some(audit_peer));
-            event.address = Some(audit_address);
-            if let Err(error) = host_core::audit::append(path, &event) {
-                log::warn!("could not write audit event: {error}");
-            }
-        }
+        let mut event = AuditEvent::new(audit_kind::SESSION_START, Some(audit_peer));
+        event.address = Some(audit_address);
+        write_audit(&audit_app, &event);
         if unattended_enabled {
             emit_host_status(&approve_app, "in_session");
             emit(&approve_app, "session_started", SessionStarted { role: "host", remote_id: peer_id.clone() });
@@ -490,14 +496,10 @@ pub(crate) async fn run_paired_host_session(
     emit_activity(app, "session", if disconnected { format!("{remote_id} disconnected by host") } else { "viewer disconnected".to_owned() });
     clear_data_channel(app);
     let dropped = streamed && matches!(result, Some(Err(_)));
-    if let Some(path) = &audit_path {
-        let mut event = host_core::audit::AuditEvent::new("session_end", Some(remote_id));
-        event.duration_seconds = Some(started_at.elapsed().as_secs());
-        event.detail = Some(if authenticated.load(Ordering::Relaxed) { "authenticated" } else { "authentication failed" }.into());
-        if let Err(error) = host_core::audit::append(path, &event) {
-            log::warn!("could not write audit event: {error}");
-        }
-    }
+    let mut event = AuditEvent::new(audit_kind::SESSION_END, Some(remote_id));
+    event.duration_seconds = Some(started_at.elapsed().as_secs());
+    event.detail = Some(if authenticated.load(Ordering::Relaxed) { "authenticated" } else { "authentication failed" }.into());
+    write_audit(app, &event);
     // A host-initiated disconnect keeps hosting: the loop re-registers.
     HostSessionEnd { stopped: should_stop_hosting(result.is_none(), disconnected), authenticated: authenticated.load(Ordering::Relaxed), dropped }
 }

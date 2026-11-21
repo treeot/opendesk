@@ -99,6 +99,7 @@ pub(crate) fn spawn_file_receiver(
     app: AppHandle,
     mut offers: mpsc::Receiver<IncomingTransfer>,
     from: String,
+    is_host: bool,
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(IncomingTransfer { id, source }) = offers.recv().await {
@@ -108,7 +109,7 @@ pub(crate) fn spawn_file_receiver(
                 (state.file_outgoing.clone(), state.file_sealer.clone())
             };
             let (Some(outgoing), Some(sealer)) = (outgoing, sealer) else { break };
-            tauri::async_runtime::spawn(receive_offer(app.clone(), source, id, from.clone(), outgoing, sealer));
+            tauri::async_runtime::spawn(receive_offer(app.clone(), source, id, from.clone(), outgoing, sealer, is_host));
         }
     });
 }
@@ -123,6 +124,7 @@ async fn receive_offer(
     from: String,
     outgoing: ReliableSender,
     sealer: Arc<Mutex<Sealer>>,
+    is_host: bool,
 ) {
     let mut answers = ReliableFileSink {
         outgoing,
@@ -133,9 +135,9 @@ async fn receive_offer(
     };
     let pending_app = app.clone();
     let progress_app = app.clone();
-    // The accepted file's name, captured at consent time so completion can name
-    // it in the activity log.
-    let received_name = Arc::new(Mutex::new(String::new()));
+    // The accepted file's name and size, captured at consent time so completion
+    // can name it in the activity and audit logs.
+    let received_name = Arc::new(Mutex::new((String::new(), 0u64)));
     let name_slot = received_name.clone();
     // A viewer uploading into a browsed folder sets a one-shot destination;
     // consume it here, else fall back to Downloads. An invalid or non-directory
@@ -153,6 +155,16 @@ async fn receive_offer(
     // Checked per chunk too, so turning file access off stops an accepted
     // upload mid-way and deletes the partial file.
     let gate = TransferGate::new(app.state::<AppState>().lock().viewer_permissions.files.clone());
+    // Uploads into this host are audited; files a viewer receives are not.
+    let audit_dir = dest_display.clone();
+    let audit_upload = move |app: &AppHandle, kind: &str, name: &str, size: Option<u64>, detail: Option<String>| {
+        if !is_host { return; }
+        let mut event = AuditEvent::new(kind, None).with_path(audit_dir.clone());
+        if !name.is_empty() { event = event.with_file(name, size); }
+        event.detail = detail;
+        audit_hosted(app, event);
+    };
+    let consent_audit = audit_upload.clone();
     let result = FileReceiver::receive_gated(
         &mut source,
         &mut answers,
@@ -165,9 +177,11 @@ async fn receive_offer(
             // user when the viewer's file transfer is blocked.
             if !pending_app.state::<AppState>().lock().viewer_permissions.files.load(Ordering::Relaxed) {
                 emit_activity(&pending_app, "file", format!("blocked file \"{name}\""));
+                consent_audit(&pending_app, audit_kind::FILE_UPLOAD_REJECTED, &name, Some(size), Some("file access off".into()));
                 return ConsentDecision::Reject;
             }
-            *lock_unpoisoned(&name_slot) = name.clone();
+            *lock_unpoisoned(&name_slot) = (name.clone(), size);
+            let audit_name = name.clone();
             let (decision_tx, decision_rx) = oneshot::channel();
             pending_app
                 .state::<AppState>()
@@ -189,8 +203,14 @@ async fn receive_offer(
             );
 
             match decision_rx.await.unwrap_or(false) {
-                true => ConsentDecision::Accept,
-                false => ConsentDecision::Reject,
+                true => {
+                    consent_audit(&pending_app, audit_kind::FILE_UPLOAD_ACCEPTED, &audit_name, Some(size), None);
+                    ConsentDecision::Accept
+                }
+                false => {
+                    consent_audit(&pending_app, audit_kind::FILE_UPLOAD_REJECTED, &audit_name, Some(size), Some("declined by host user".into()));
+                    ConsentDecision::Reject
+                }
             }
         },
         move |transferred, total| {
@@ -210,18 +230,30 @@ async fn receive_offer(
     .await;
     match result {
         Ok(path) => {
-            let name = lock_unpoisoned(&received_name).clone();
+            let (name, size) = lock_unpoisoned(&received_name).clone();
             if !name.is_empty() { emit_activity(&app, "file", format!("received \"{name}\"")); }
+            // The saved name can differ from the offered one when a file of
+            // that name already exists.
+            let saved = path.file_name().map_or(name, |saved| saved.to_string_lossy().into_owned());
+            audit_upload(&app, audit_kind::FILE_UPLOAD_COMPLETED, &saved, Some(size), None);
             emit(&app, "file_done", FileDone { id, path: Some(path.display().to_string()) });
         }
-        Err(error) => emit(
-            &app,
-            "file_error",
-            FileError {
-                id,
-                message: error.to_string(),
-            },
-        ),
+        Err(error) => {
+            // A refusal was already audited when it was decided.
+            if !matches!(error, host_core::filexfer::FileError::Rejected) {
+                let (name, size) = lock_unpoisoned(&received_name).clone();
+                let size = (!name.is_empty()).then_some(size);
+                audit_upload(&app, audit_kind::FILE_UPLOAD_FAILED, &name, size, Some(error.to_string()));
+            }
+            emit(
+                &app,
+                "file_error",
+                FileError {
+                    id,
+                    message: error.to_string(),
+                },
+            )
+        }
     }
 }
 
@@ -242,7 +274,9 @@ pub(crate) async fn send_file(
     let outgoing = outgoing.ok_or_else(|| "no active reliable file channel".to_owned())?;
     let sealer = sealer.ok_or_else(|| "file session keys are not ready".to_owned())?;
     let router = router.ok_or_else(|| "no active reliable file channel".to_owned())?;
-    let offer_rx = spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open());
+    // A host pushing a file to its viewer is audited like a pull.
+    let audit = state.lock().hosted_peer.is_some().then_some("sent by host user");
+    let offer_rx = spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open(), audit);
     // FileSender allocates the id when it emits Offer. Returning after that
     // first sealed frame lets the UI track a transfer while it waits for the
     // receiver's answer and streams.
@@ -254,7 +288,8 @@ pub(crate) async fn send_file(
 /// Spawn a task that sends `path` over the data channel as a file transfer.
 /// Shared by the viewer's "Send file" and by answering a remote pull. Resolves
 /// to the transfer id once the offer is on the wire. A remote pull passes the
-/// host's file permission as `gate` so revoking it stops the transfer.
+/// host's file permission as `gate` so revoking it stops the transfer. With
+/// `audit` (why the file left this host) the outcome goes to the host audit log.
 pub(crate) fn spawn_outgoing_file(
     app: AppHandle,
     path: String,
@@ -262,6 +297,7 @@ pub(crate) fn spawn_outgoing_file(
     sealer: Arc<Mutex<Sealer>>,
     router: Arc<FileRouter>,
     gate: TransferGate,
+    audit: Option<&'static str>,
 ) -> oneshot::Receiver<Result<u64, String>> {
     let (offer_tx, offer_rx) = oneshot::channel();
     let task_app = app.clone();
@@ -296,6 +332,17 @@ pub(crate) fn spawn_outgoing_file(
         let id = *lock_unpoisoned(&transfer_id);
         if let Some(id) = id {
             router.finish_outgoing(id);
+        }
+        if let Some(reason) = audit {
+            let source = Path::new(&path);
+            let name = source.file_name().map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+            let size = std::fs::metadata(source).ok().map(|meta| meta.len());
+            let (kind, detail) = match &result {
+                Ok(()) => (audit_kind::FILE_DOWNLOAD_COMPLETED, reason.to_owned()),
+                Err(host_core::filexfer::FileError::Rejected) => (audit_kind::FILE_DOWNLOAD_REJECTED, "declined by viewer".to_owned()),
+                Err(error) => (audit_kind::FILE_DOWNLOAD_FAILED, format!("{reason}: {error}")),
+            };
+            audit_hosted(&task_app, AuditEvent::new(kind, None).with_file(name, size).with_path(path.clone()).with_detail(detail));
         }
         if let Err(error) = result {
             sink.fail_before_offer(&error.to_string());
@@ -362,7 +409,7 @@ pub(crate) async fn upload_to_remote(state: tauri::State<'_, AppState>, app: App
     let message = protocol::datamsg::DataMsg::Browse(protocol::browse::BrowseMsg::SetUploadDir { dir });
     let sealed = lock_unpoisoned(&sealer).seal(&[Tag::Data as u8], &message.to_bytes());
     outgoing.send_frame(Tag::Data, &sealed).await.map_err(|error| error.to_string())?;
-    spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open())
+    spawn_outgoing_file(app, path, outgoing, sealer, router, TransferGate::open(), None)
         .await
         .map_err(|_| "file transfer stopped before sending its offer".to_owned())?
 }

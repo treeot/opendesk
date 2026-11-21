@@ -20,6 +20,7 @@ mod viewer;
 use config::ConfigStore;
 use contacts::{Contact, ContactStore};
 use futures_util::StreamExt;
+use host_core::audit::{kind as audit_kind, AuditEvent};
 use host_core::{clipboard::{ArboardBackend, ClipboardSync}, datachan::{FileRouter, IncomingTransfer}, filexfer::{ConsentDecision, FileReceiver, FileSink, FileSource, FileSender, FlowTimeouts, TransferGate}, roles::DataHandle, transport::reliable::ReliableSender};
 use protocol::{chat::ChatMsg, clipboard::ClipboardContent, control::{Control, MonitorInfo}, crypto::{Opener, Sealer}, datamsg::DataMsg, filexfer::FileMsg, frame, Tag};
 use serde::Serialize;
@@ -67,6 +68,9 @@ struct RuntimeState {
     /// Ends the current host session (without stopping hosting) when fired; see
     /// `disconnect_viewer`. Present only while a session is active.
     disconnect_viewer: Option<oneshot::Sender<()>>,
+    /// The viewer connected to this host, while its data channel is up. Audit
+    /// events about file access and permissions name it.
+    hosted_peer: Option<String>,
 }
 
 /// The four host-enforced capabilities a connected viewer may use. Each is a
@@ -315,7 +319,10 @@ fn handle_browse(
         BrowseMsg::Pull { path, .. } => {
             // Host side: the viewer asked for this file; send it if file access
             // is on. It reaches the viewer as a normal incoming transfer.
-            if !files_allowed.load(std::sync::atomic::Ordering::Relaxed) { return; }
+            if !files_allowed.load(std::sync::atomic::Ordering::Relaxed) {
+                audit_hosted(app, host_core::audit::AuditEvent::new(host_core::audit::kind::FILE_DOWNLOAD_REJECTED, None).with_path(path).with_detail("file access off"));
+                return;
+            }
             // Logged so the host can see which files the viewer pulled.
             emit_activity(app, "files", format!("sent \"{path}\""));
             let (outgoing, sealer, router) = {
@@ -325,7 +332,7 @@ fn handle_browse(
             };
             if let (Some(outgoing), Some(sealer), Some(router)) = (outgoing, sealer, router) {
                 // The send runs in its own task; we don't need the offer-id future.
-                drop(files::spawn_outgoing_file(app.clone(), path, outgoing, sealer, router, TransferGate::new(files_allowed.clone())));
+                drop(files::spawn_outgoing_file(app.clone(), path, outgoing, sealer, router, TransferGate::new(files_allowed.clone()), Some("requested by viewer")));
             }
         }
         BrowseMsg::SetUploadDir { dir } => {
@@ -337,26 +344,47 @@ fn handle_browse(
             let slot = { app.state::<AppState>().lock().upload_dir.clone() };
             *lock_unpoisoned(&slot) = if dir.is_empty() { None } else { Some(dir) };
         }
-        BrowseMsg::MakeDir { req, path, name } => mutate_remote(sender, sealer, files_allowed, req, move || host_core::browse::make_dir(&path, &name)),
-        BrowseMsg::Delete { req, path } => mutate_remote(sender, sealer, files_allowed, req, move || host_core::browse::delete(&path)),
-        BrowseMsg::Rename { req, path, name } => mutate_remote(sender, sealer, files_allowed, req, move || host_core::browse::rename(&path, &name)),
+        BrowseMsg::MakeDir { req, path, name } => {
+            let event = AuditEvent::new(audit_kind::FILE_MKDIR, None).with_path(path.clone()).with_file(name.clone(), None);
+            mutate_remote(app, sender, sealer, files_allowed, req, event, move || host_core::browse::make_dir(&path, &name))
+        }
+        BrowseMsg::Delete { req, path } => {
+            let event = AuditEvent::new(audit_kind::FILE_DELETE, None).with_path(path.clone());
+            mutate_remote(app, sender, sealer, files_allowed, req, event, move || host_core::browse::delete(&path))
+        }
+        BrowseMsg::Rename { req, path, name } => {
+            let event = AuditEvent::new(audit_kind::FILE_RENAME, None).with_path(path.clone()).with_file(name.clone(), None);
+            mutate_remote(app, sender, sealer, files_allowed, req, event, move || host_core::browse::rename(&path, &name))
+        }
     }
 }
 
+/// Run one file manager change on this host and reply only on failure. The
+/// attempt is audited either way: `event` names the target, and its detail
+/// says whether it went through.
 fn mutate_remote(
+    app: &AppHandle,
     sender: &ReliableSender,
     sealer: &Arc<Mutex<Sealer>>,
     files_allowed: &Arc<std::sync::atomic::AtomicBool>,
     req: u64,
+    event: AuditEvent,
     operation: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) {
     let allowed = files_allowed.load(std::sync::atomic::Ordering::Relaxed);
     let sender = sender.clone();
     let sealer = sealer.clone();
+    let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = if allowed {
             tauri::async_runtime::spawn_blocking(operation).await.unwrap_or_else(|_| Err("could not update that item".into()))
         } else { Err("The other computer turned off file access.".into()) };
+        let detail = match (&result, allowed) {
+            (Ok(()), _) => "done".to_owned(),
+            (Err(_), false) => "blocked: file access off".to_owned(),
+            (Err(message), true) => format!("failed: {message}"),
+        };
+        audit_hosted(&app, event.with_detail(detail));
         let reply = match result {
             Ok(()) => return,
             Err(message) => protocol::browse::BrowseMsg::BrowseError { req, message },
@@ -388,8 +416,32 @@ fn activate_data_channel(app: &AppHandle, handle: DataHandle, from: String, is_h
     state.control_sealer = Some(control_sealer);
     state.file_router = Some(file_router);
     state.clipboard_thread = clipboard_thread.map(|(command_tx, join)| ClipboardThread { command_tx, join });
+    state.hosted_peer = is_host.then(|| from.clone());
     drop(state);
-    spawn_file_receiver(app.clone(), offers, from);
+    spawn_file_receiver(app.clone(), offers, from, is_host);
+}
+
+/// The host audit log, under the app's data folder.
+fn audit_log_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|dir| dir.join("logs").join("audit.jsonl"))
+}
+
+/// Append one event to the host audit log. A write failure is logged, never
+/// surfaced: auditing must not break the session.
+fn write_audit(app: &AppHandle, event: &AuditEvent) {
+    let Some(path) = audit_log_path(app) else { return };
+    if let Err(error) = host_core::audit::append(path, event) {
+        log::warn!("could not write audit event: {error}");
+    }
+}
+
+/// Audit something the connected viewer did on this host, naming that viewer.
+/// Does nothing unless this app is hosting a session, so the same file code
+/// can run on a viewer without writing host audit entries.
+fn audit_hosted(app: &AppHandle, mut event: AuditEvent) {
+    let Some(peer) = app.state::<AppState>().lock().hosted_peer.clone() else { return };
+    event.peer_id.get_or_insert(peer);
+    write_audit(app, &event);
 }
 
 fn clear_data_channel(app: &AppHandle) {
@@ -408,6 +460,7 @@ fn clear_data_channel(app: &AppHandle) {
         state.control_sender = None;
         state.control_sealer = None;
         state.file_router = None;
+        state.hosted_peer = None;
         // Back to the user's saved preference for the next session.
         let saved = state.config.config.clipboard_sync;
         state.clipboard_enabled.store(saved, Ordering::Relaxed);
@@ -563,8 +616,8 @@ fn get_unattended_status(state: tauri::State<'_, AppState>) -> UnattendedStatus 
 
 #[tauri::command]
 fn get_audit_events(app: AppHandle) -> Result<Vec<host_core::audit::AuditEvent>, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    host_core::audit::recent(dir.join("logs").join("audit.jsonl"), 200).map_err(|e| e.to_string())
+    let path = audit_log_path(&app).ok_or("could not find the app data folder")?;
+    host_core::audit::recent(path, 200).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -819,7 +872,10 @@ fn set_viewer_permission(
         state.viewer_permissions.snapshot()
     };
     emit(&app, "viewer_permissions", snapshot);
-    emit_activity(&app, "permission", format!("{capability} {}", if allowed { "allowed" } else { "blocked" }));
+    let change = format!("{capability} {}", if allowed { "allowed" } else { "blocked" });
+    let peer = state.lock().hosted_peer.clone();
+    write_audit(&app, &AuditEvent::new(audit_kind::PERMISSION_CHANGED, peer).with_detail(change.clone()));
+    emit_activity(&app, "permission", change);
     Ok(())
 }
 
@@ -976,6 +1032,7 @@ pub fn run() {
                 identity_conflicts: Vec::new(),
                 viewer_permissions: ViewerPermissions::new(),
                 disconnect_viewer: None,
+                hosted_peer: None,
             })));
             #[cfg(windows)]
             if windows_service::is_service_host_process() {
@@ -1398,6 +1455,7 @@ mod tests {
             identity_conflicts: Vec::new(),
             viewer_permissions: ViewerPermissions::new(),
             disconnect_viewer: None,
+            hosted_peer: None,
         }));
 
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

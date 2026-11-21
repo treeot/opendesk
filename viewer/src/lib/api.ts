@@ -47,7 +47,7 @@ export interface ViewerPermissions { control: boolean; files: boolean; clipboard
 export type Capability = keyof ViewerPermissions;
 /** One line in the host's session activity log; `at` is Unix milliseconds. */
 export interface Activity { at: number; kind: string; detail: string }
-export interface AuditEvent { at: number; event: string; peer_id: string | null; address: string | null; detail: string | null; duration_seconds: number | null; filename: string | null; size_bytes: number | null }
+export interface AuditEvent { at: number; event: string; peer_id: string | null; address: string | null; detail: string | null; duration_seconds: number | null; filename: string | null; size_bytes: number | null; path?: string | null }
 export const getAuditEvents = () => invoke<AuditEvent[]>("get_audit_events");
 
 export const getIdentity = () => invoke<Identity>("get_identity");

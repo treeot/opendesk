@@ -5,6 +5,7 @@ import QrCode from "../components/QrCode";
 import { CHECK_NOW_EVENT } from "../components/UpdateBanner";
 import Recordings from "../components/Recordings";
 import { buildInviteLink, parseInvite } from "../lib/invite";
+import { auditDetails, auditLabel } from "../lib/audit";
 
 interface HomeProps {
   status: api.Status;
@@ -378,7 +379,7 @@ export default function Home({ status, onConnect, onOpenPermissions, initialTarg
     { id: "audit", label: "Session log" },
     { id: "about", label: "About" },
   ];
-  const auditCard = <section className="card"><span className="eyebrow">SECURITY ACTIVITY</span><h2>Recent sessions</h2><button className="quiet-button" type="button" onClick={() => void api.getAuditEvents().then(setAuditEvents).catch((error: unknown) => setMessage(friendlyError(error)))}>Refresh</button>{auditEvents.length === 0 ? <p className="caption">No audit entries yet.</p> : <ol>{auditEvents.slice().reverse().map((entry, index) => <li key={`${entry.at}-${index}`}><time>{new Date(entry.at * 1000).toLocaleString()}</time> · {entry.event.replace(/_/g, " ")} · {entry.peer_id ?? "Unknown peer"}{entry.duration_seconds != null && ` · ${entry.duration_seconds}s`}</li>)}</ol>}</section>;
+  const auditCard = <section className="card"><span className="eyebrow">SECURITY ACTIVITY</span><h2>Recent activity</h2><button className="quiet-button" type="button" onClick={() => void api.getAuditEvents().then(setAuditEvents).catch((error: unknown) => setMessage(friendlyError(error)))}>Refresh</button>{auditEvents.length === 0 ? <p className="caption">No audit entries yet.</p> : <ol>{auditEvents.slice().reverse().map((entry, index) => <li key={`${entry.at}-${index}`}><time>{new Date(entry.at * 1000).toLocaleString()}</time> · {auditLabel(entry.event)} · {entry.peer_id ?? "Unknown peer"}{auditDetails(entry).map((part) => ` · ${part}`).join("")}</li>)}</ol>}</section>;
 
   return <main className="app-shell">
     <header className="topbar"><div className="brand"><svg className="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><g fill="none" strokeWidth="6"><circle cx="19" cy="29" r="13" stroke="#22d3ee" /><circle cx="29" cy="19" r="13" stroke="#f5b921" /></g><circle cx="29" cy="19" r="5" fill="#22d3ee" /></svg> OpenDesk</div><div className="topbar-actions"><div className="status" data-status={status}><span className="status-dot" aria-hidden="true" /><span>{statusLabels[status]}</span></div>{status === "offline" && <button className="quiet-button" type="button" onClick={startHosting}>Start hosting</button>}{view === "connect"
