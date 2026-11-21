@@ -6,13 +6,14 @@
 export interface ViewerEvent {
   /**
    * "send", "authenticated", "video", "audio", "monitors", "clipboard",
-   * "file-offer", "file-progress", "file-received", "file-sent", "file-error"
-   * or "ended".
+   * "file-offer", "file-progress", "file-received", "file-sent", "file-error",
+   * "browse", "chat", "rtt", "supports" or "ended".
    */
   readonly kind: string;
   /**
    * Monitors JSON, clipboard text, the audio channel count, a file-transfer
-   * JSON record or the end message.
+   * or browse JSON record, chat text, a round trip in ms, a feature name or
+   * the end message.
    */
   readonly text: string;
   takeBytes(): Uint8Array;
@@ -30,6 +31,17 @@ export interface Viewer {
   sendFile(id: number, name: string, data: Uint8Array): Uint8Array | undefined;
   acceptFile(id: number): Uint8Array | undefined;
   rejectFile(id: number): Uint8Array | undefined;
+  chat(text: string): Uint8Array | undefined;
+  listDir(path: string): Uint8Array | undefined;
+  pullFile(path: string): Uint8Array | undefined;
+  setUploadDir(dir: string): Uint8Array | undefined;
+  makeDir(path: string, name: string): Uint8Array | undefined;
+  deletePath(path: string): Uint8Array | undefined;
+  renamePath(path: string, name: string): Uint8Array | undefined;
+  ping(nowMs: number): Uint8Array | undefined;
+  secureAttention(): Uint8Array | undefined;
+  setMaxBitrate(bps: number): Uint8Array | undefined;
+  textReadability(enabled: boolean): Uint8Array | undefined;
   requestKeyframe(): Uint8Array | undefined;
   selectMonitor(id: number): Uint8Array | undefined;
   bye(): Uint8Array | undefined;
@@ -72,3 +84,20 @@ export interface MonitorInfo {
   height: number;
   is_primary: boolean;
 }
+
+/** One entry of a host folder listing (protocol::browse::DirEntry). */
+export interface DirEntry {
+  name: string;
+  is_dir: boolean;
+  size: number;
+  /** Unix seconds; 0 when unknown. */
+  modified: number;
+}
+
+/** A remote file-manager answer from the host (protocol::browse::BrowseMsg). */
+export type BrowseSignal =
+  | { t: "dir_listing"; req: number; path: string; entries: DirEntry[] }
+  | { t: "browse_error"; req: number; message: string };
+
+/** Optional host features the session learns about. */
+export type HostFeature = "secure-attention";

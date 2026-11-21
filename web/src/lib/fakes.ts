@@ -13,6 +13,8 @@ export class FakeViewer implements Viewer {
   onReceive: (message: Uint8Array) => Queued[] = () => [];
   /** What `tick` queues, given the time. */
   onTick: (now: number) => Queued[] = () => [];
+  /** Whether the fake session is live; before that, pings return nothing. */
+  live = false;
 
   constructor(readonly password: string, readonly authCode: string) {}
 
@@ -36,6 +38,19 @@ export class FakeViewer implements Viewer {
   sendFile(id: number, _name: string, _data: Uint8Array) { return new Uint8Array([0x13, 0x01, id & 0xff]); }
   acceptFile(id: number) { return new Uint8Array([0x13, 0x02, id & 0xff]); }
   rejectFile(id: number) { return new Uint8Array([0x13, 0x03, id & 0xff]); }
+  chat(text: string) { return text ? new Uint8Array([0x15, ...new TextEncoder().encode(text)]) : undefined; }
+  /** Browse requests encode as [0x16, op, ...UTF-8 of the arguments joined by "|"]. */
+  private browse(op: number, ...args: string[]) { return new Uint8Array([0x16, op, ...new TextEncoder().encode(args.join("|"))]); }
+  listDir(path: string) { return this.browse(1, path); }
+  pullFile(path: string) { return this.browse(2, path); }
+  setUploadDir(dir: string) { return this.browse(3, dir); }
+  makeDir(path: string, name: string) { return this.browse(4, path, name); }
+  deletePath(path: string) { return this.browse(5, path); }
+  renamePath(path: string, name: string) { return this.browse(6, path, name); }
+  ping(now: number) { return this.live ? new Uint8Array([0x01, 0x50, now & 0xff]) : undefined; }
+  secureAttention() { return new Uint8Array([0x01, 0x5a]); }
+  setMaxBitrate(bps: number) { return new Uint8Array([0x01, 0x5b, bps >>> 20]); }
+  textReadability(enabled: boolean) { return new Uint8Array([0x01, 0x5c, enabled ? 1 : 0]); }
   requestKeyframe() { return new Uint8Array([0x01, 0xaa]); }
   selectMonitor(id: number) { return new Uint8Array([0x01, id]); }
   bye() { return new Uint8Array([0x01, 0xbb]); }

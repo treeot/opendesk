@@ -3,7 +3,7 @@
  * and the desktop viewer's reconnect loop. Decisions (crypto, retry rules,
  * error wording) come from web-core; this file only moves bytes and time.
  */
-import type { Core, FileSignal, MonitorInfo, Viewer } from "./types";
+import type { BrowseSignal, Core, FileSignal, HostFeature, MonitorInfo, Viewer } from "./types";
 
 export type ConnectionStatus =
   /** Pairing and key exchange. */
@@ -32,6 +32,14 @@ export interface ConnectionHandlers {
   clipboard(content: { type: "text"; text: string } | { type: "image"; width: number; height: number; png: Uint8Array }): void;
   /** A file-transfer update (offer, progress, result). */
   file(signal: FileSignal): void;
+  /** A folder listing or browse error from the host. */
+  browse?(signal: BrowseSignal): void;
+  /** A chat message from the person at the host. */
+  chat?(text: string): void;
+  /** The latest relay round trip in milliseconds. */
+  roundTrip?(ms: number): void;
+  /** The host offers an optional feature. */
+  supports?(feature: HostFeature): void;
   /** The connection is over: `error` is null after the user disconnected. */
   ended(error: string | null): void;
   /** The host wants a 2FA code: "required" (none sent) or "invalid" (rejected). */
@@ -63,6 +71,8 @@ const OPEN = 1;
  * dead-peer limit, so every incoming message also runs them.
  */
 const TICK_MS = 1000;
+/** How often to measure the relay round trip once the session is live. */
+export const PING_MS = 2000;
 
 export class Connection {
   private viewer: Viewer | null = null;
@@ -74,6 +84,7 @@ export class Connection {
   private mediaReceived = false;
   private attempt = 0;
   private outageStart: number | null = null;
+  private lastPing = -Infinity;
   private readonly openSocket: (url: string) => Socket;
   private readonly now: () => number;
 
@@ -134,10 +145,20 @@ export class Connection {
       viewer.closed();
       this.drain();
     };
+    this.lastPing = -Infinity;
     this.ticker = setInterval(() => {
       if (this.viewer !== viewer) return;
-      viewer.tick(this.now());
+      const now = this.now();
+      viewer.tick(now);
       this.drain();
+      // Nothing is sent before the session is authenticated.
+      if (this.viewer === viewer && now - this.lastPing >= PING_MS) {
+        const ping = viewer.ping(now);
+        if (ping) {
+          this.lastPing = now;
+          this.send(ping);
+        }
+      }
     }, TICK_MS);
   }
 
@@ -170,6 +191,10 @@ export class Connection {
           if (kind === "file-received") signal.data = event.takeBytes();
           this.handlers.file(signal);
         }
+        else if (kind === "browse") this.handlers.browse?.(JSON.parse(event.text) as BrowseSignal);
+        else if (kind === "chat") this.handlers.chat?.(event.text);
+        else if (kind === "rtt") this.handlers.roundTrip?.(Number(event.text));
+        else if (kind === "supports") this.handlers.supports?.(event.text as HostFeature);
         else if (kind === "ended") {
           const message = event.text;
           event.free();
@@ -273,5 +298,56 @@ export class Connection {
 
   rejectFile(id: number) {
     this.send(this.viewer?.rejectFile(id));
+  }
+
+  /**
+   * Send a file into host folder `dir`. The destination goes first on the
+   * same ordered channel; the host applies it to the next offer.
+   */
+  sendFileTo(dir: string, id: number, name: string, data: Uint8Array) {
+    const viewer = this.viewer;
+    if (!viewer) return;
+    this.send(viewer.setUploadDir(dir));
+    this.send(viewer.sendFile(id, name, data));
+  }
+
+  /** Send a chat message; false if it could not be sent. */
+  sendChat(text: string): boolean {
+    const sealed = this.viewer?.chat(text);
+    if (!sealed || this.socket?.readyState !== OPEN) return false;
+    this.send(sealed);
+    return true;
+  }
+
+  listDir(path: string) {
+    this.send(this.viewer?.listDir(path));
+  }
+
+  pullFile(path: string) {
+    this.send(this.viewer?.pullFile(path));
+  }
+
+  makeDir(path: string, name: string) {
+    this.send(this.viewer?.makeDir(path, name));
+  }
+
+  deletePath(path: string) {
+    this.send(this.viewer?.deletePath(path));
+  }
+
+  renamePath(path: string, name: string) {
+    this.send(this.viewer?.renamePath(path, name));
+  }
+
+  secureAttention() {
+    this.send(this.viewer?.secureAttention());
+  }
+
+  setMaxBitrate(bps: number) {
+    this.send(this.viewer?.setMaxBitrate(bps));
+  }
+
+  setTextReadability(enabled: boolean) {
+    this.send(this.viewer?.textReadability(enabled));
   }
 }

@@ -121,6 +121,69 @@ describe("Connection", () => {
     expect(ended).toEqual([null]);
   });
 
+  it("routes chat, browse, round-trip and feature events", () => {
+    const core = new FakeCore();
+    const seen: unknown[] = [];
+    core.setup = (viewer) => {
+      viewer.onReceive = () => [
+        { kind: "chat", text: "hello" },
+        { kind: "browse", text: '{"t":"dir_listing","req":1,"path":"/home","entries":[]}' },
+        { kind: "rtt", text: "37" },
+        { kind: "supports", text: "secure-attention" },
+      ];
+    };
+    const connection = new Connection(
+      target,
+      {
+        status: () => {}, video: () => {}, audio: () => {}, monitors: () => {}, clipboard: () => {}, file: () => {}, ended: () => {},
+        chat: (text) => seen.push(["chat", text]),
+        browse: (signal) => seen.push(["browse", signal]),
+        roundTrip: (ms) => seen.push(["rtt", ms]),
+        supports: (feature) => seen.push(["supports", feature]),
+      },
+      { core, openSocket: (url) => new FakeSocket(url), now: () => 0 },
+    );
+    connection.start();
+    FakeSocket.all[0].open();
+    FakeSocket.all[0].message([1]);
+    expect(seen).toEqual([
+      ["chat", "hello"],
+      ["browse", { t: "dir_listing", req: 1, path: "/home", entries: [] }],
+      ["rtt", 37],
+      ["supports", "secure-attention"],
+    ]);
+  });
+
+  it("pings on the timer once the session is live", () => {
+    const { core, connection, advance } = setup();
+    connection.start();
+    const socket = FakeSocket.all[0];
+    socket.open();
+    const pings = () => socket.sent.filter((bytes) => bytes[0] === 0x01 && bytes[1] === 0x50).length;
+    const second = () => { advance(1000); vi.advanceTimersByTime(1000); };
+    second();
+    expect(pings()).toBe(0);
+    core.viewers[0].live = true;
+    second();
+    expect(pings()).toBe(1);
+    second();
+    expect(pings()).toBe(1);
+    second();
+    expect(pings()).toBe(2);
+  });
+
+  it("names the upload folder right before the file and sends chat", () => {
+    const { connection } = setup();
+    connection.start();
+    const socket = FakeSocket.all[0];
+    socket.open();
+    connection.sendFileTo("/home/me/docs", 7, "a.txt", new Uint8Array([1]));
+    expect(socket.sent.slice(-2)).toEqual([[0x16, 3, ...new TextEncoder().encode("/home/me/docs")], [0x13, 0x01, 7]]);
+    expect(connection.sendChat("hi")).toBe(true);
+    expect(socket.sent.at(-1)).toEqual([0x15, ...new TextEncoder().encode("hi")]);
+    expect(connection.sendChat("")).toBe(false);
+  });
+
   it("rejects a bad ID before opening a socket", () => {
     const { connection, ended } = setup(new FakeCore(), { target: "12" });
     connection.start();

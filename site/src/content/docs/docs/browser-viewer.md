@@ -27,9 +27,17 @@ same relay the host uses, and it must start with `wss://`.
 - The remote screen, mouse and keyboard.
 - The host's **sound**.
 - **File transfer**, both ways, with a prompt before anything is accepted.
+  Drop files anywhere on the screen to send them.
+- **Remote files**: browse the host's folders, download a file, upload into
+  the folder you're viewing, and create, rename or delete items.
+- **Chat** with the person at the host.
+- **Special keys** your browser keeps for itself, like Ctrl+Alt+Del,
+  Alt+Tab and the Windows or Command key, from the **Keys** menu.
 - **Clipboard** text sync, when you turn it on.
+- **Quality**, **text readability** and **view only**, as in the app.
 - **Recording** the remote screen to a `.webm` file.
 - **Fullscreen** and choosing a monitor when the host has more than one.
+- The relay round trip, next to the device ID.
 - Reconnecting after a short network drop.
 
 ## What doesn't, yet
@@ -39,6 +47,8 @@ same relay the host uses, and it must start with `wss://`.
   usually slower than the app's direct connection.
 - **It can't host.** You can control a computer from the browser, not share
   the browser's own screen.
+- **Smaller uploads.** A browser holds each file in memory to send it, so
+  one pick or drop is limited to 512 MB, and folders can't be sent.
 
 It needs a browser with WebCodecs: a recent Chrome, Edge, Firefox or Safari.
 In a browser without it, the page says so and the **Connect** button stays

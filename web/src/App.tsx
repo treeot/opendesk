@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Connection, type ConnectionStatus, type Socket } from "./lib/connection";
 import { friendlyError, unsupportedReason } from "./lib/errors";
 import { DEFAULT_RELAY, saveRelay, savedRelay, viewerId } from "./lib/settings";
-import type { Core, FileSignal, MonitorInfo } from "./lib/types";
+import type { BrowseSignal, Core, FileSignal, HostFeature, MonitorInfo } from "./lib/types";
 import ConnectForm, { type ConnectRequest } from "./screens/ConnectForm";
 import Session, { type SessionControls } from "./screens/Session";
 import TwofaPrompt from "./screens/TwofaPrompt";
@@ -22,6 +22,8 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
   const [ownId] = useState(viewerId);
   const [active, setActive] = useState<Active | null>(null);
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [roundTrip, setRoundTrip] = useState<number | null>(null);
+  const [features, setFeatures] = useState<HostFeature[]>([]);
   const [message, setMessage] = useState<string>();
   const [lastTarget, setLastTarget] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,6 +34,8 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
   const audioSink = useRef<((payload: Uint8Array, channels: number) => void) | null>(null);
   const clipboardSink = useRef<((content: { type: "text"; text: string } | { type: "image"; width: number; height: number; png: Uint8Array }) => void) | null>(null);
   const fileSink = useRef<((signal: FileSignal) => void) | null>(null);
+  const browseSink = useRef<((signal: BrowseSignal) => void) | null>(null);
+  const chatSink = useRef<((text: string) => void) | null>(null);
 
   const controls = useMemo<SessionControls>(() => ({
     sendInput: (event) => connection.current?.sendInput(event),
@@ -42,10 +46,24 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
     sendClipboard: (text) => connection.current?.sendClipboard(text),
     sendClipboardImage: (width, height, png) => connection.current?.sendClipboardImage(width, height, png),
     setClipboardSink: (sink) => { clipboardSink.current = sink; },
-    sendFile: (id, name, data) => connection.current?.sendFile(id, name, data),
+    sendFile: (id, name, data, dir) => {
+      if (dir === undefined) connection.current?.sendFile(id, name, data);
+      else connection.current?.sendFileTo(dir, id, name, data);
+    },
     acceptFile: (id) => connection.current?.acceptFile(id),
     rejectFile: (id) => connection.current?.rejectFile(id),
     setFileSink: (sink) => { fileSink.current = sink; },
+    listDir: (path) => connection.current?.listDir(path),
+    pullFile: (path) => connection.current?.pullFile(path),
+    makeDir: (path, name) => connection.current?.makeDir(path, name),
+    deletePath: (path) => connection.current?.deletePath(path),
+    renamePath: (path, name) => connection.current?.renamePath(path, name),
+    setBrowseSink: (sink) => { browseSink.current = sink; },
+    sendChat: (text) => connection.current?.sendChat(text) ?? false,
+    setChatSink: (sink) => { chatSink.current = sink; },
+    secureAttention: () => connection.current?.secureAttention(),
+    setMaxBitrate: (bps) => connection.current?.setMaxBitrate(bps),
+    setTextReadability: (enabled) => connection.current?.setTextReadability(enabled),
   }), []);
 
   // Leaving the page ends the session on the host right away.
@@ -71,6 +89,8 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
     saveRelay(request.relay);
     setLastTarget(request.target);
     setMonitors([]);
+    setRoundTrip(null);
+    setFeatures([]);
     const conn = new Connection(
       { relay: request.relay, target: request.target, viewerId: ownId, password: request.password, authCode: request.authCode },
       {
@@ -80,6 +100,10 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
         monitors: setMonitors,
         clipboard: (content) => clipboardSink.current?.(content),
         file: (signal) => fileSink.current?.(signal),
+        browse: (signal) => browseSink.current?.(signal),
+        chat: (text) => chatSink.current?.(text),
+        roundTrip: setRoundTrip,
+        supports: (feature) => setFeatures((current) => (current.includes(feature) ? current : [...current, feature])),
         ended: (error) => {
           if (connection.current === conn) connection.current = null;
           setActive(null);
@@ -108,7 +132,7 @@ export default function App({ loadCore, openSocket, unsupported = unsupportedRea
 
   if (active) {
     return <>
-      <Session remoteId={active.remoteId} status={active.status} monitors={monitors} controls={controls} onDisconnect={() => connection.current?.disconnect()} />
+      <Session remoteId={active.remoteId} status={active.status} monitors={monitors} controls={controls} roundTrip={roundTrip} features={features} onDisconnect={() => connection.current?.disconnect()} />
       {prompt}
     </>;
   }
