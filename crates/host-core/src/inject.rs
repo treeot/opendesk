@@ -1,6 +1,7 @@
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use protocol::input::InputEvent;
 
+pub mod gamepad;
 pub mod pen;
 pub mod support;
 
@@ -57,6 +58,7 @@ pub struct EnigoInjector {
     enigo: Enigo,
     display: Option<u32>,
     pen: pen::PenInjector,
+    gamepads: gamepad::Gamepads,
 }
 
 impl EnigoInjector {
@@ -68,7 +70,7 @@ impl EnigoInjector {
         let settings = Settings { open_prompt_to_get_permissions: false, ..Settings::default() };
         Enigo::new(&settings)
             .ok()
-            .map(|enigo| Self { enigo, display: None, pen: pen::PenInjector::default() })
+            .map(|enigo| Self { enigo, display: None, pen: pen::PenInjector::default(), gamepads: gamepad::Gamepads::default() })
     }
 }
 
@@ -142,6 +144,7 @@ impl InputInjector for EnigoInjector {
                     self.inject(&event, screen_w, screen_h);
                 }
             }
+            InputEvent::Gamepad(state) => self.gamepads.apply(&state),
         }
     }
 

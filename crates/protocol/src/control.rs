@@ -202,6 +202,13 @@ pub enum Control {
         /// Touch contacts arrive as real multi-touch.
         #[serde(default)]
         native_touch: bool,
+        /// `InputEvent::Gamepad`: the host plugs in a virtual controller.
+        #[serde(default)]
+        gamepad: bool,
+        /// Why `gamepad` is off: one of the `GAMEPAD_*` codes, or a newer
+        /// one. Absent when it is on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gamepad_unavailable: Option<String>,
     },
 }
 
@@ -215,6 +222,17 @@ pub const MAX_PRESENCE_IDS: usize = 50;
 pub const MONITOR_STREAM_LIMIT: &str = "limit";
 pub const MONITOR_STREAM_UNKNOWN: &str = "unknown_display";
 pub const MONITOR_STREAM_FAILED: &str = "failed";
+
+/// `InputSupport::gamepad_unavailable` codes.
+/// Windows host without the ViGEmBus driver.
+pub const GAMEPAD_VIGEMBUS_MISSING: &str = "vigembus_missing";
+/// Linux host without /dev/uinput (the uinput module isn't loaded).
+pub const GAMEPAD_UINPUT_MISSING: &str = "uinput_missing";
+/// Linux host whose user can't write /dev/uinput.
+pub const GAMEPAD_NO_PERMISSION: &str = "no_permission";
+/// macOS: no public API for a virtual gamepad.
+pub const GAMEPAD_UNSUPPORTED_OS: &str = "unsupported_os";
+pub const GAMEPAD_FAILED: &str = "failed";
 
 /// `VirtualDisplayRefused` codes.
 pub const VIRTUAL_DISPLAY_LIMIT: &str = "limit";
@@ -252,9 +270,12 @@ mod tests {
 
     #[test]
     fn input_support_roundtrips_and_defaults_missing_fields() {
-        let c = Control::InputSupport { relative_mouse: true, pen_touch: true, native_pen: false, native_touch: true };
-        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c));
-        let none = Control::InputSupport { relative_mouse: false, pen_touch: false, native_pen: false, native_touch: false };
+        let c = Control::InputSupport { relative_mouse: true, pen_touch: true, native_pen: false, native_touch: true, gamepad: true, gamepad_unavailable: None };
+        assert_eq!(Control::from_bytes(&c.to_bytes()), Some(c.clone()));
+        assert!(!String::from_utf8(c.to_bytes()).unwrap().contains("gamepad_unavailable"));
+        let refused = Control::InputSupport { relative_mouse: true, pen_touch: true, native_pen: false, native_touch: false, gamepad: false, gamepad_unavailable: Some(GAMEPAD_UNSUPPORTED_OS.into()) };
+        assert_eq!(Control::from_bytes(&refused.to_bytes()), Some(refused));
+        let none = Control::InputSupport { relative_mouse: false, pen_touch: false, native_pen: false, native_touch: false, gamepad: false, gamepad_unavailable: None };
         assert_eq!(Control::from_bytes(br#"{"t":"input_support"}"#), Some(none));
     }
 

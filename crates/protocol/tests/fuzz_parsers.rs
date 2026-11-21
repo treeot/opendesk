@@ -14,7 +14,7 @@ use protocol::clipboard::{ClipboardContent, ClipboardFile, ClipboardMsg};
 use protocol::control::Control;
 use protocol::datamsg::DataMsg;
 use protocol::filexfer::FileMsg;
-use protocol::input::{InputEvent, PointerContact, PointerKind, PointerPhase};
+use protocol::input::{GamepadState, InputEvent, PointerContact, PointerKind, PointerPhase};
 
 /// A tiny deterministic PRNG (splitmix64); no dev-dependency needed.
 struct Rng(u64);
@@ -283,6 +283,13 @@ fn input_event_parser_is_crash_free() {
             tilt_x: 0,
             tilt_y: 0,
             buttons: 0,
+        }),
+        InputEvent::Gamepad(GamepadState {
+            index: 0,
+            connected: true,
+            buttons: 3,
+            axes: [1, -2, 3, -4],
+            triggers: [5, 6],
         }),
     ]
     .iter()

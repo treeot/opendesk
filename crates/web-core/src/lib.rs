@@ -86,15 +86,18 @@ pub enum Event {
 }
 
 /// The page-facing names of the extended input a host's `InputSupport`
-/// offers: "relative-mouse" and "pen-touch".
+/// offers: "relative-mouse", "pen-touch" and "gamepad".
 fn input_features(support: &Control) -> Vec<&'static str> {
     let mut features = Vec::new();
-    if let Control::InputSupport { relative_mouse, pen_touch, .. } = support {
+    if let Control::InputSupport { relative_mouse, pen_touch, gamepad, .. } = support {
         if *relative_mouse {
             features.push("relative-mouse");
         }
         if *pen_touch {
             features.push("pen-touch");
+        }
+        if *gamepad {
+            features.push("gamepad");
         }
     }
     features
@@ -1236,12 +1239,15 @@ mod tests {
             pen_touch: true,
             native_pen: false,
             native_touch: false,
+            gamepad: true,
+            gamepad_unavailable: None,
         });
         assert_eq!(
             viewer.receive(&input, 1_061.0),
             vec![
                 Event::Supports("relative-mouse"),
-                Event::Supports("pen-touch")
+                Event::Supports("pen-touch"),
+                Event::Supports("gamepad")
             ]
         );
         let sas = viewer.secure_attention().unwrap();

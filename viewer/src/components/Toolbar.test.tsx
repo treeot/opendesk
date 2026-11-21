@@ -96,6 +96,22 @@ describe("Toolbar", () => {
     expect(onRecordingToggle).toHaveBeenCalledTimes(2);
   });
 
+  it("offers relative mouse and gamepad only when the host reports them", () => {
+    const onRelativeMouseChange = vi.fn();
+    const onGamepadChange = vi.fn();
+    const { rerender } = render(<Toolbar remoteId="123" onDisconnect={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.queryByRole("menuitem", { name: /Relative mouse/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Gamepad/ })).toBeNull();
+    rerender(<Toolbar remoteId="123" onDisconnect={vi.fn()} canRelativeMouse onRelativeMouseChange={onRelativeMouseChange} gamepadOffered gamepadNote="Needs ViGEmBus" onGamepadChange={onGamepadChange} />);
+    expect(screen.getByRole("menuitem", { name: /Gamepad/ }).title).toBe("Needs ViGEmBus");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Relative mouse/ }));
+    expect(onRelativeMouseChange).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Gamepad/ }));
+    expect(onGamepadChange).toHaveBeenCalledWith(true);
+  });
+
   it("exposes toggle state: audio in the bar, clipboard in the overflow menu", () => {
     const { rerender } = render(<Toolbar remoteId="123" onDisconnect={vi.fn()} clipboardSync audioMuted={false} />);
     const audio = screen.getByRole("button", { name: "Mute audio" });

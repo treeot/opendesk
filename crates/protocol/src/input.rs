@@ -2,6 +2,7 @@
 /// original 1..=5, so other additions can take the low numbers.
 const TAG_RELATIVE_MOUSE_MOVE: u8 = 16;
 const TAG_POINTER: u8 = 17;
+const TAG_GAMEPAD: u8 = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
@@ -37,6 +38,9 @@ pub enum InputEvent {
     /// A pen or touch contact. Only sent to hosts that report `pen_touch` in
     /// `Control::InputSupport`.
     Pointer(PointerContact),
+    /// The full state of one of the viewer's gamepads. Only sent to hosts
+    /// that report `gamepad` in `Control::InputSupport`.
+    Gamepad(GamepadState),
 }
 
 impl InputEvent {
@@ -50,6 +54,7 @@ impl InputEvent {
             Self::Char { .. } => 5,
             Self::RelativeMouseMove { .. } => TAG_RELATIVE_MOUSE_MOVE,
             Self::Pointer(_) => TAG_POINTER,
+            Self::Gamepad(_) => TAG_GAMEPAD,
         });
         bytes.extend_from_slice(&timestamp_us.to_be_bytes());
 
@@ -89,6 +94,7 @@ impl InputEvent {
                 bytes.extend_from_slice(&dy.to_be_bytes());
             }
             Self::Pointer(contact) => contact.write(&mut bytes),
+            Self::Gamepad(state) => state.write(&mut bytes),
         }
 
         bytes
@@ -158,6 +164,9 @@ impl InputEvent {
             }
             TAG_POINTER if bytes.len() == 9 + PointerContact::LEN => {
                 Some((Self::Pointer(PointerContact::read(&bytes[9..])?), timestamp_us))
+            }
+            TAG_GAMEPAD if bytes.len() == 9 + GamepadState::LEN => {
+                Some((Self::Gamepad(GamepadState::read(&bytes[9..])?), timestamp_us))
             }
             _ => None,
         }
@@ -256,6 +265,62 @@ impl PointerContact {
     }
 }
 
+/// Most gamepads one viewer forwards (XInput's limit too).
+pub const MAX_GAMEPADS: u8 = 4;
+
+/// One gamepad, laid out like the W3C "standard" gamepad mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GamepadState {
+    /// Which of the viewer's pads, below [`MAX_GAMEPADS`].
+    pub index: u8,
+    /// False once the pad is unplugged or forwarding stops; the host then
+    /// removes its virtual controller.
+    pub connected: bool,
+    /// Bit `i` is standard-mapping button `i`: 0 A, 1 B, 2 X, 3 Y, 4 LB,
+    /// 5 RB, 6 LT, 7 RT, 8 Back, 9 Start, 10 left stick, 11 right stick,
+    /// 12 up, 13 down, 14 left, 15 right, 16 Guide.
+    pub buttons: u32,
+    /// Left X, left Y, right X, right Y; positive is right and down.
+    pub axes: [i16; 4],
+    /// Left and right trigger, 0 released to 255 fully pressed.
+    pub triggers: [u8; 2],
+}
+
+impl GamepadState {
+    /// Encoded size after the event header.
+    const LEN: usize = 16;
+
+    fn write(&self, bytes: &mut Vec<u8>) {
+        bytes.push(self.index);
+        bytes.push(u8::from(self.connected));
+        bytes.extend_from_slice(&self.buttons.to_be_bytes());
+        for axis in self.axes {
+            bytes.extend_from_slice(&axis.to_be_bytes());
+        }
+        bytes.extend_from_slice(&self.triggers);
+    }
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        let index = *bytes.first()?;
+        if index >= MAX_GAMEPADS {
+            return None;
+        }
+        let connected = match bytes.get(1)? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let axis = |at: usize| Some(i16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+        Some(Self {
+            index,
+            connected,
+            buttons: u32::from_be_bytes(bytes.get(2..6)?.try_into().ok()?),
+            axes: [axis(6)?, axis(8)?, axis(10)?, axis(12)?],
+            triggers: [*bytes.get(14)?, *bytes.get(15)?],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +401,26 @@ mod tests {
         bad[10] = 6;
         assert!(InputEvent::from_bytes(&bad).is_none());
         assert!(InputEvent::from_bytes(&bytes[..27]).is_none());
+    }
+
+    #[test]
+    fn gamepad_state_roundtrips_and_rejects_bad_indexes() {
+        let e = InputEvent::Gamepad(GamepadState {
+            index: 1,
+            connected: true,
+            buttons: 1 | 1 << 16,
+            axes: [-32_768, 32_767, 0, -1],
+            triggers: [0, 255],
+        });
+        let bytes = e.to_bytes(3);
+        assert_eq!((bytes[0], bytes.len()), (18, 25));
+        assert_eq!(InputEvent::from_bytes(&bytes), Some((e, 3)));
+        let mut bad = bytes.clone();
+        bad[9] = MAX_GAMEPADS;
+        assert!(InputEvent::from_bytes(&bad).is_none());
+        bad[9] = 0;
+        bad[10] = 2;
+        assert!(InputEvent::from_bytes(&bad).is_none());
     }
 
     #[test]

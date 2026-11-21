@@ -64,6 +64,11 @@ interface ToolbarProps {
   canRelativeMouse?: boolean;
   relativeMouse?: boolean;
   onRelativeMouseChange?: (on: boolean) => void;
+  /** The host reported gamepad support, or why it has none (`gamepadNote`). */
+  gamepadOffered?: boolean;
+  gamepadNote?: string;
+  gamepadOn?: boolean;
+  onGamepadChange?: (on: boolean) => void;
   /** Slide the bar out of view until the pointer reaches the top edge. */
   hidden?: boolean;
   onBarEnter?: () => void;
@@ -107,6 +112,7 @@ const icons = {
   eye: <Icon><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></Icon>,
   keyboard: <Icon><rect width="20" height="16" x="2" y="4" rx="2" /><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M18 12h.01M8 16h8" /></Icon>,
   forward: <Icon><path d="M4 17V9a2 2 0 0 1 2-2h12" /><path d="m15 4 3 3-3 3" /><path d="M20 7v8a2 2 0 0 1-2 2H6" /><path d="m9 20-3-3 3-3" /></Icon>,
+  gamepad: <Icon><line x1="6" x2="10" y1="11" y2="11" /><line x1="8" x2="8" y1="9" y2="13" /><line x1="15" x2="15.01" y1="12" y2="12" /><line x1="18" x2="18.01" y1="10" y2="10" /><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z" /></Icon>,
   pointer: <Icon><path d="M12.586 12.586 19 19" /><path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z" /></Icon>,
   activity: <Icon><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></Icon>,
   more: <Icon><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></Icon>,
@@ -189,7 +195,7 @@ export function LinkBadge({ link }: { link: LinkStats }) {
 
 const connectionLabels: Record<Status, string> = { in_session: "Connected", connecting: "Connecting", reconnecting: "Reconnecting", online: "Connected", offline: "Disconnected" };
 
-export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, scaleMode = "fit", onScaleModeChange = () => {}, statsOpen = false, onStatsToggle = () => {}, canRelativeMouse = false, relativeMouse = false, onRelativeMouseChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
+export default function Toolbar({ remoteId, role = "viewer", status = "in_session", link, clipboardSync = true, onClipboardSyncChange = () => {}, onDisconnect, monitors = [], selectedMonitor, onMonitorChange = () => {}, canAddDisplay = false, onAddDisplay = () => {}, onRemoveDisplay = () => {}, canOpenMonitorWindow = false, onOpenMonitorWindow = () => {}, audioMuted = false, onAudioMutedChange = () => {}, recordingActive = false, recordingElapsed = 0, onRecordingToggle = () => {}, filesOpen = false, onFilesToggle = () => {}, chatOpen = false, onChatToggle = () => {}, chatUnread = 0, forwardOpen = false, onForwardToggle = () => {}, viewOnly = false, onViewOnlyChange = () => {}, canSecureAttention = false, onSecureAttention = () => {}, onSendKey = () => {}, canCaptureShortcuts = false, captureShortcuts = false, onCaptureShortcutsChange = () => {}, canRestart = false, onRestart = () => {}, canPrivacy = false, privacyOn = false, onPrivacyChange = () => {}, quality = 0, onQualityChange = () => {}, textReadability = false, onTextReadabilityChange = () => {}, scaleMode = "fit", onScaleModeChange = () => {}, statsOpen = false, onStatsToggle = () => {}, canRelativeMouse = false, relativeMouse = false, onRelativeMouseChange = () => {}, gamepadOffered = false, gamepadNote, gamepadOn = false, onGamepadChange = () => {}, hidden = false, onBarEnter = () => {}, onBarLeave = () => {} }: ToolbarProps) {
   const [elapsed, setElapsed] = useState(0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
@@ -249,6 +255,7 @@ export default function Toolbar({ remoteId, role = "viewer", status = "in_sessio
                 {scaleOpen && SCALE_MODES.map(({ mode, label }) => <MoreItem key={mode} sub label={label} on={scaleMode === mode} onClick={() => { onScaleModeChange(mode); setMoreOpen(false); }} />)}
                 <MoreItem icon={icons.activity} label="Session stats" on={statsOpen} onClick={() => { onStatsToggle(); setMoreOpen(false); }} />
                 {canRelativeMouse && <MoreItem icon={icons.pointer} label="Relative mouse (games)" on={relativeMouse} title="Capture the mouse and send raw movement, for games and 3D apps. Ctrl+Alt+Shift or Esc releases it." onClick={() => { onRelativeMouseChange(!relativeMouse); setMoreOpen(false); }} />}
+                {gamepadOffered && <MoreItem icon={icons.gamepad} label="Gamepad" on={gamepadOn} title={gamepadNote ?? "Send your game controller to the remote computer as an Xbox 360 controller."} onClick={() => { onGamepadChange(!gamepadOn); setMoreOpen(false); }} />}
                 <MoreItem icon={icons.eye} label="View only" on={viewOnly} onClick={() => { onViewOnlyChange(!viewOnly); setMoreOpen(false); }} />
                 <MoreItem icon={icons.forward} label="Port forwarding" on={forwardOpen} onClick={() => { onForwardToggle(); setMoreOpen(false); }} />
                 {canOpenMonitorWindow && <MoreItem icon={icons.newWindow} label="Open monitor in a window" onClick={() => { onOpenMonitorWindow(selectedMonitor ?? monitors[0]?.id ?? 0); setMoreOpen(false); }} />}

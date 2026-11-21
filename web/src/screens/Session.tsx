@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { makeDecoder } from "../../../viewer/src/lib/decode";
 import { makeAudioPlayer } from "../lib/audio";
-import { attachInput } from "../../../viewer/src/lib/input";
+import { attachInput, encodeInputEvent } from "../../../viewer/src/lib/input";
+import { attachGamepads, type GamepadState } from "../../../viewer/src/lib/gamepad";
 import { createPointerLock, RELEASE_HINT, type PointerLockControl } from "../../../viewer/src/lib/pointerLock";
 import ChatPanel, { type ChatEntry } from "../components/ChatPanel";
 import FilesPanel, { EMPTY_FOLDER, type FilesTab, type RemoteFolder } from "../components/FilesPanel";
@@ -163,6 +164,8 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
   const relativeMouseRef = useRef(false);
   const pointerLockRef = useRef<PointerLockControl | null>(null);
   const penTouch = features.includes("pen-touch");
+  const [gamepadOn, setGamepadOn] = useState(false);
+  const forwardGamepads = gamepadOn && features.includes("gamepad") && !viewOnly && status === "streaming";
   const penTouchRef = useRef(false);
   penTouchRef.current = penTouch;
 
@@ -216,6 +219,13 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     const canvas = canvasRef.current;
     if (canvas) canvas.style.touchAction = penTouch ? "none" : "";
   }, [penTouch]);
+
+  // Forward gamepads while the page has focus; stopping unplugs the host's pads.
+  useEffect(() => {
+    if (!forwardGamepads) return;
+    const send = (state: GamepadState) => controls.sendInput(encodeInputEvent(state, Date.now() * 1000));
+    return attachGamepads(send, { active: () => document.hasFocus() && !viewOnlyRef.current });
+  }, [forwardGamepads, controls]);
 
   // Runs inside the menu click, which pointer lock needs as its user gesture.
   const toggleRelativeMouse = () => {
@@ -520,6 +530,7 @@ export default function Session({ remoteId, status, monitors, controls, roundTri
     { id: "clipboard", label: "Clipboard sync", on: clipboardOn, onSelect: () => setClipboardOn((on) => !on) },
     { id: "text", label: "Text readability", on: textReadability, onSelect: () => setTextReadability((on) => !on) },
     ...(features.includes("relative-mouse") ? [{ id: "relative-mouse", label: "Relative mouse (games)", on: relativeMouse, onSelect: toggleRelativeMouse }] : []),
+    ...(features.includes("gamepad") ? [{ id: "gamepad", label: "Gamepad", on: gamepadOn, onSelect: () => setGamepadOn((on) => !on) }] : []),
     { id: "view-only", label: "View only", on: viewOnly, onSelect: () => setViewOnly((on) => !on) },
     ...(canRecord ? [{ id: "record", label: recording ? "Stop recording" : "Record the screen", danger: true, onSelect: () => (recording ? stopRecording() : startRecording()) }] : []),
   ];

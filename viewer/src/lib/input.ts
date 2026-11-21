@@ -1,5 +1,6 @@
 import { DeltaAccumulator } from "./pointerLock";
 import { isPenOrTouch, PHASE, pointerContact, writeContact, type PointerContact, type PointerPhase } from "./pen";
+import { writeGamepad, type GamepadState } from "./gamepad";
 
 export type InputEvent =
   | { kind: "mouseMove"; x: number; y: number }
@@ -8,7 +9,8 @@ export type InputEvent =
   | { kind: "key"; code: number; down: boolean; modifiers: number }
   | { kind: "char"; ch: string; down: boolean; modifiers: number }
   | { kind: "relativeMove"; dx: number; dy: number }
-  | PointerContact;
+  | PointerContact
+  | GamepadState;
 
 /** Encode protocol::input::InputEvent using its big-endian wire layout. */
 export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
@@ -32,6 +34,9 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
       break;
     case "pointer":
       length = 28;
+      break;
+    case "gamepad":
+      length = 25;
       break;
   }
 
@@ -76,6 +81,10 @@ export function encodeInputEvent(ev: InputEvent, tsUs: number): Uint8Array {
     case "pointer":
       view.setUint8(0, 17);
       writeContact(view, ev);
+      break;
+    case "gamepad":
+      view.setUint8(0, 18);
+      writeGamepad(view, ev);
       break;
   }
   return bytes;

@@ -17,6 +17,7 @@ import { actualSize, loadScaleMode, saveScaleMode, type ScaleMode } from "../lib
 import StatsPanel from "../components/StatsPanel";
 import IdleWarning from "../components/IdleWarning";
 import { createPointerLock, RELEASE_HINT, type PointerLockControl } from "../lib/pointerLock";
+import { attachGamepads, gamepadUnavailableText } from "../lib/gamepad";
 
 /** Why the host didn't add or remove a virtual display. */
 export function virtualDisplayRefusal(code: string): string {
@@ -134,6 +135,8 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   const [relativeMouse, setRelativeMouse] = useState(false);
   const relativeMouseRef = useRef(false);
   const pointerLockRef = useRef<PointerLockControl | undefined>(undefined);
+  // Gamepad forwarding, offered once the host says it can plug in a pad.
+  const [gamepadOn, setGamepadOn] = useState(false);
   const audioRef = useRef<{ context: AudioContext; nextTime: number } | undefined>(undefined);
   const recorderRef = useRef<MediaRecorder | undefined>(undefined);
   const recordingStreamRef = useRef<MediaStream | undefined>(undefined);
@@ -299,7 +302,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
   }, [role]);
 
   // A dropped session or view only gives the pointer back.
-  useEffect(() => { if (status !== "in_session" && status !== "connecting") { setInputSupport({}); pointerLockRef.current?.release(); } }, [status]);
+  useEffect(() => { if (status !== "in_session" && status !== "connecting") { setInputSupport({}); setGamepadOn(false); pointerLockRef.current?.release(); } }, [status]);
   useEffect(() => { if (viewOnly) pointerLockRef.current?.release(); }, [viewOnly]);
 
   useEffect(() => {
@@ -314,6 +317,22 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
     const canvas = canvasRef.current;
     if (canvas) canvas.style.touchAction = inputSupport.pen_touch ? "none" : "";
   }, [inputSupport.pen_touch]);
+
+  // Forward gamepads while the window has focus. Stopping (toggled off, view
+  // only, session over) unplugs the host's virtual pads.
+  const forwardGamepads = gamepadOn && inputSupport.gamepad === true && !viewOnly;
+  useEffect(() => {
+    if (role !== "viewer" || !forwardGamepads) return;
+    const send = (state: Parameters<typeof encodeInputEvent>[0]) => void api.sendInput(encodeInputEvent(state, Date.now() * 1000)).catch(() => {});
+    return attachGamepads(send, { active: () => document.hasFocus() && !viewOnlyRef.current });
+  }, [role, forwardGamepads]);
+
+  const toggleGamepad = (on: boolean) => {
+    if (on && !inputSupport.gamepad) { notify(gamepadUnavailableText(inputSupport.gamepad_unavailable)); return; }
+    if (on && viewOnlyRef.current) { notify("View only is on. Turn it off to use a gamepad."); return; }
+    setGamepadOn(on);
+    if (on) notify("Gamepad on. Press a button on your controller so this computer can see it.");
+  };
 
   // Runs inside the menu click, which pointer lock needs as its user gesture.
   const toggleRelativeMouse = (on: boolean) => {
@@ -742,7 +761,7 @@ export default function Session({ remoteId, role, status = "in_session", onDisco
       )}
       {role === "host" && <div className="session-host-overlay"><span className="eyebrow">OPENDESK · SECURE SESSION</span><h1>You are being controlled by {remoteId}</h1><p>Your screen is shared for this session.</p></div>}
       {role === "host" && <HostControlPanel remoteId={remoteId} onDisconnect={() => void api.disconnectViewer().catch((error: unknown) => notify(friendlyError(error)))} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} />}
-      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} canRelativeMouse={inputSupport.relative_mouse === true} relativeMouse={relativeMouse} onRelativeMouseChange={toggleRelativeMouse} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
+      {role === "viewer" && <Toolbar remoteId={remoteId} role={role} status={status} link={link} monitors={monitors} selectedMonitor={selectedMonitor} onMonitorChange={chooseMonitor} canAddDisplay={canAddDisplay} onAddDisplay={addDisplay} onRemoveDisplay={removeDisplay} canOpenMonitorWindow={canOpenMonitorWindow} onOpenMonitorWindow={openMonitorWindow} clipboardSync={clipboardSync} onClipboardSyncChange={toggleClipboardSync} audioMuted={audioMuted} onAudioMutedChange={toggleAudioMuted} recordingActive={recordingActive} recordingElapsed={recordingElapsed} onRecordingToggle={() => void toggleRecording()} filesOpen={filesOpen} onFilesToggle={toggleFilesWindow} chatOpen={chatOpen} onChatToggle={toggleChat} chatUnread={chatUnread} forwardOpen={forwardOpen} onForwardToggle={() => setForwardOpen((open) => !open)} viewOnly={viewOnly} onViewOnlyChange={setViewOnly} canSecureAttention={canSecureAttention} onSecureAttention={sendSecureAttention} onSendKey={sendShortcut} canCaptureShortcuts={canCaptureShortcuts} captureShortcuts={captureShortcuts} onCaptureShortcutsChange={toggleCaptureShortcuts} canRestart={canRestart} onRestart={restartRemote} canPrivacy={canPrivacy} privacyOn={privacyOn} onPrivacyChange={togglePrivacy} quality={quality} onQualityChange={setQuality} textReadability={textReadability} onTextReadabilityChange={setTextReadability} scaleMode={scaleMode} onScaleModeChange={chooseScaleMode} statsOpen={statsOpen} onStatsToggle={() => setStatsOpen((open) => !open)} canRelativeMouse={inputSupport.relative_mouse === true} relativeMouse={relativeMouse} onRelativeMouseChange={toggleRelativeMouse} gamepadOffered={inputSupport.gamepad === true || inputSupport.gamepad_unavailable !== undefined} gamepadNote={inputSupport.gamepad ? undefined : gamepadUnavailableText(inputSupport.gamepad_unavailable)} gamepadOn={gamepadOn && inputSupport.gamepad === true} onGamepadChange={toggleGamepad} onDisconnect={onDisconnect} hidden={role === "viewer" && !barVisible} onBarEnter={onBarEnter} onBarLeave={onBarLeave} />}
       <ChatPanel open={chatOpen} messages={messages} onSend={sendChat} onClose={() => setChatOpen(false)} />
       {role === "viewer" && statsOpen && <StatsPanel stream={streamStats} link={link} onClose={() => setStatsOpen(false)} />}
       {role === "viewer" && <PortForward open={forwardOpen} onClose={() => setForwardOpen(false)} remoteId={remoteId} />}
