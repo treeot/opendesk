@@ -71,14 +71,6 @@ impl TrustedProxies {
         (Self { ranges }, invalid)
     }
 
-    /// Reads `RELAY_TRUSTED_PROXIES`, defaulting to [`DEFAULT_TRUSTED_PROXIES`].
-    pub fn from_env() -> Self {
-        let list = std::env::var("RELAY_TRUSTED_PROXIES").unwrap_or_else(|_| DEFAULT_TRUSTED_PROXIES.to_owned());
-        let (proxies, invalid) = Self::parse(&list);
-        for entry in invalid { log::warn!("ignoring invalid RELAY_TRUSTED_PROXIES entry {entry:?}"); }
-        proxies
-    }
-
     pub fn is_trusted(&self, ip: IpAddr) -> bool { self.ranges.iter().any(|range| range.contains(ip)) }
 
     /// The address used for per-IP limits and logs.

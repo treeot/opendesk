@@ -1,4 +1,5 @@
 mod client_ip;
+mod config;
 mod ratemap;
 mod registry;
 mod session;
@@ -10,9 +11,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use client_ip::TrustedProxies;
+pub use config::{ConfigError, Settings};
 use futures_util::{SinkExt, StreamExt};
 use ratemap::RateMap;
-use registry::{CloseOutbound, Outbound, Registry, RegistryConfig};
+use registry::{CloseOutbound, Outbound, Registry};
 use session::Bridge;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -23,8 +25,6 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
-const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 50;
 // Control frames after pairing (ICE candidates, auth, monitor selection) are
 // bursty during session setup, so they get a generous bucket; the byte cap
 // still bounds total traffic. Before pairing the relay reads only the first
@@ -104,49 +104,6 @@ impl Default for RelayConfig {
     }
 }
 
-impl RelayConfig {
-    fn from_env() -> Self {
-        Self {
-            session_control_burst: env_u64("RELAY_SESSION_CONTROL_BURST", DEFAULT_SESSION_CONTROL_BURST),
-            session_control_per_sec: env_u64("RELAY_SESSION_CONTROL_PER_SEC", DEFAULT_SESSION_CONTROL_PER_SEC),
-            bytes_per_sec: env_u64("RELAY_MAX_BYTES_PER_SEC", DEFAULT_BYTES_PER_SEC),
-            byte_burst: env_u64("RELAY_BYTE_BURST", DEFAULT_BYTE_BURST),
-            handshake_timeout: Duration::from_secs(env_u64("RELAY_HANDSHAKE_TIMEOUT_SECS", DEFAULT_HANDSHAKE_TIMEOUT_SECS)),
-            pair_timeout: Duration::from_secs(env_u64("RELAY_PAIR_TIMEOUT_SECS", DEFAULT_PAIR_TIMEOUT_SECS)),
-            idle_timeout: Duration::from_secs(env_u64("RELAY_IDLE_TIMEOUT_SECS", DEFAULT_IDLE_TIMEOUT_SECS)),
-            max_signal_message: env_usize("RELAY_MAX_SIGNAL_MESSAGE_BYTES", DEFAULT_MAX_SIGNAL_MESSAGE),
-            connection_attempt_burst: env_u64("RELAY_CONNECTION_ATTEMPT_BURST", DEFAULT_CONNECTION_ATTEMPT_BURST as u64) as u32,
-            connection_attempt_refill: Duration::from_secs(env_u64("RELAY_CONNECTION_ATTEMPT_REFILL_SECS", DEFAULT_CONNECTION_ATTEMPT_REFILL_SECS)),
-            sweep_interval: Duration::from_secs(env_u64("RELAY_SWEEP_SECS", DEFAULT_SWEEP_SECS)),
-        }
-    }
-}
-
-fn registry_config_from_env() -> RegistryConfig {
-    let default = RegistryConfig::default();
-    // RELAY_OWNERSHIP_GRACE_SECS is the older name for the lease.
-    let lease = env_u64("RELAY_ID_LEASE_SECS", env_u64("RELAY_OWNERSHIP_GRACE_SECS", default.lease.as_secs()));
-    RegistryConfig {
-        lease: Duration::from_secs(lease),
-        unpaired_lease: Duration::from_secs(env_u64("RELAY_UNPAIRED_ID_LEASE_SECS", default.unpaired_lease.as_secs())),
-        max_bindings: env_usize("RELAY_MAX_ID_BINDINGS", default.max_bindings),
-        max_rate_entries: env_usize("RELAY_MAX_RATE_ENTRIES", default.max_rate_entries),
-        connect_burst: env_u64("RELAY_CONNECT_BURST", default.connect_burst as u64) as u32,
-        connect_refill: Duration::from_secs(env_u64("RELAY_CONNECT_REFILL_SECS", default.connect_refill.as_secs())),
-        new_id_burst: env_u64("RELAY_NEW_ID_BURST", default.new_id_burst as u64) as u32,
-        new_id_refill: Duration::from_secs(env_u64("RELAY_NEW_ID_REFILL_SECS", default.new_id_refill.as_secs())),
-        takeover_limit: default.takeover_limit,
-        takeover_window: default.takeover_window,
-        state_file: std::env::var_os("RELAY_STATE_FILE").filter(|value| !value.is_empty()).map(Into::into),
-    }
-}
-
-fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).filter(|v| *v > 0).unwrap_or(default)
-}
-
-fn env_usize(name: &str, default: usize) -> usize { env_u64(name, default as u64) as usize }
-
 struct ConnectionLimits {
     max: usize,
     per_ip: usize,
@@ -161,14 +118,9 @@ impl ConnectionLimits {
         Self { max, per_ip, active: AtomicUsize::new(0), ips: Mutex::new(HashMap::new()), attempts: RateMap::new(attempt_burst, attempt_refill, max_rate_entries) }
     }
 
-    fn from_env(config: &RelayConfig, registry: &RegistryConfig) -> Self {
-        Self::new(
-            env_usize("RELAY_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS),
-            env_usize("RELAY_MAX_CONNECTIONS_PER_IP", DEFAULT_MAX_CONNECTIONS_PER_IP),
-            config.connection_attempt_burst,
-            config.connection_attempt_refill,
-            registry.max_rate_entries,
-        )
+    fn from_settings(settings: &Settings) -> Self {
+        let config = &settings.relay;
+        Self::new(settings.max_connections, settings.max_connections_per_ip, config.connection_attempt_burst, config.connection_attempt_refill, settings.registry.max_rate_entries)
     }
 
     fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionGuard> {
@@ -227,30 +179,41 @@ impl RelayHandle {
     pub fn persist(&self) -> std::io::Result<bool> { self.registry.persist_if_dirty() }
 }
 
+/// A relay with settings from the environment. Panics on invalid settings or
+/// an unreadable state file; [`relay`] reports those instead.
 pub fn app() -> Router {
     let (tx, rx) = watch::channel(false);
-    build(rx, Some(tx)).0
+    build(&env_settings(), rx, Some(tx)).expect("relay state").0
 }
 
-pub fn app_with_shutdown(shutdown: watch::Receiver<bool>) -> Router { build(shutdown, None).0 }
+pub fn app_with_shutdown(shutdown: watch::Receiver<bool>) -> Router { relay_with_shutdown(shutdown).0 }
 
 /// Like [`app_with_shutdown`], also returning a [`RelayHandle`].
-pub fn relay_with_shutdown(shutdown: watch::Receiver<bool>) -> (Router, RelayHandle) { build(shutdown, None) }
+pub fn relay_with_shutdown(shutdown: watch::Receiver<bool>) -> (Router, RelayHandle) {
+    build(&env_settings(), shutdown, None).expect("relay state")
+}
 
-fn build(shutdown: watch::Receiver<bool>, keepalive: Option<watch::Sender<bool>>) -> (Router, RelayHandle) {
-    let config = RelayConfig::from_env();
-    let registry_config = registry_config_from_env();
-    let limits = Arc::new(ConnectionLimits::from_env(&config, &registry_config));
-    let registry = Registry::new(registry_config);
+/// Builds the relay from validated `settings`, loading the state file if one
+/// is configured. A state file that exists but cannot be read is an error:
+/// starting empty would let the next save overwrite every saved ID.
+pub fn relay(settings: &Settings, shutdown: watch::Receiver<bool>) -> std::io::Result<(Router, RelayHandle)> {
+    build(settings, shutdown, None)
+}
+
+fn env_settings() -> Settings { Settings::from_env().unwrap_or_else(|error| panic!("{error}")) }
+
+fn build(settings: &Settings, shutdown: watch::Receiver<bool>, keepalive: Option<watch::Sender<bool>>) -> std::io::Result<(Router, RelayHandle)> {
+    let limits = Arc::new(ConnectionLimits::from_settings(settings));
+    let registry = Registry::new(settings.registry.clone());
     if let Some(path) = registry.state_file() {
-        match registry.load(path) {
-            Ok(count) => log::info!("loaded {count} id bindings from {}", path.display()),
-            Err(error) => log::warn!("could not load relay state from {}: {error}", path.display()),
-        }
+        let count = registry.load(path).map_err(|error| std::io::Error::new(error.kind(), format!(
+            "could not load relay state from {}: {error}. Fix or move the file aside to start with no saved IDs.", path.display(),
+        )))?;
+        log::info!("loaded {count} id bindings from {}", path.display());
     }
-    let state = RelayState { registry: registry.clone(), limits: Arc::clone(&limits), config, proxies: Arc::new(TrustedProxies::from_env()), shutdown, _shutdown_keepalive: keepalive };
+    let state = RelayState { registry: registry.clone(), limits: Arc::clone(&limits), config: settings.relay.clone(), proxies: Arc::new(settings.proxies.clone()), shutdown, _shutdown_keepalive: keepalive };
     spawn_maintenance(&state);
-    (app_with_state(state), RelayHandle { registry, limits })
+    Ok((app_with_state(state), RelayHandle { registry, limits }))
 }
 
 /// Every `sweep_interval`: drop expired bindings and idle rate buckets, save
@@ -496,7 +459,7 @@ pub async fn spawn_test_server_with_handle() -> (String, RelayHandle) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let (tx, rx) = watch::channel(false);
-    let (router, handle) = build(rx, Some(tx));
+    let (router, handle) = build(&Settings::default(), rx, Some(tx)).expect("relay state");
     tokio::spawn(async move { axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap() });
     (addr, handle)
 }

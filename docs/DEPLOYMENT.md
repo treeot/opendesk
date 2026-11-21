@@ -64,7 +64,12 @@ through unchanged.
 
 ## Configuration
 
-All settings are optional environment variables.
+All settings are optional environment variables. The relay checks them at
+startup: a value it can't use (not a whole number, zero, a malformed proxy
+range) stops it with a message that names the variable, rather than quietly
+falling back to the default. So does a state file that exists but can't be
+read, since starting empty would overwrite the saved IDs at the next save.
+Unknown `RELAY_*` variables are logged as a warning, which catches typos.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

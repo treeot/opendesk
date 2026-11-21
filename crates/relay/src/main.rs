@@ -12,11 +12,12 @@ async fn main() {
         std::process::exit(if healthcheck(&port) { 0 } else { 1 });
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let addr = format!("0.0.0.0:{port}");
-    let listener = TcpListener::bind(&addr).await.unwrap();
-    log::info!("relay listening on {}", listener.local_addr().unwrap());
+    let settings = relay::Settings::from_env().unwrap_or_else(|error| fail(error));
+    let addr = format!("0.0.0.0:{}", settings.port());
+    let listener = TcpListener::bind(&addr).await.unwrap_or_else(|error| fail(format!("could not listen on {addr}: {error}")));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (app, handle) = relay::relay_with_shutdown(shutdown_rx);
+    let (app, handle) = relay::relay(&settings, shutdown_rx).unwrap_or_else(|error| fail(error));
+    log::info!("relay listening on {addr}");
     // Nagle would delay small input and control frames behind video.
     let listener = listener.tap_io(|tcp| { let _ = tcp.set_nodelay(true); });
     axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
@@ -26,6 +27,12 @@ async fn main() {
     if let Err(error) = handle.persist() {
         log::warn!("could not save relay state on shutdown: {error}");
     }
+}
+
+/// Exits with a clear message on a startup problem, before anything is served.
+fn fail(message: impl std::fmt::Display) -> ! {
+    log::error!("{message}");
+    std::process::exit(2);
 }
 
 fn healthcheck(port: &str) -> bool {
