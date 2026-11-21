@@ -56,6 +56,8 @@ impl From<Event> for ViewerEvent {
             Event::Clipboard(ClipboardContent::Image { width, height, png }) => {
                 ("clipboard-image", png, format!("{width}x{height}"))
             }
+            // Never produced: the session drops copied-files announcements.
+            Event::Clipboard(ClipboardContent::Files(_)) => ("clipboard-files", Vec::new(), String::new()),
             Event::File(file) => return file.into(),
             // The message's own JSON: `{"t":"dir_listing",...}` or
             // `{"t":"browse_error",...}`.

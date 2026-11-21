@@ -50,6 +50,17 @@ pub enum BrowseMsg {
         path: String,
         name: String,
     },
+    /// Viewer → host: send entry `index` of the file list the host announced
+    /// on the clipboard as `seq`. The host resolves the path itself, so the
+    /// viewer never learns it, and refuses once its clipboard has moved on.
+    /// Hosts that predate it ignore it.
+    PullClipboard { req: u64, seq: u64, index: u32 },
+    /// Viewer → host: the next uploaded file is part of clipboard paste
+    /// `batch`. Once it arrives the host puts every file of that batch on its
+    /// clipboard, so a normal paste on the host drops them in place. Sent
+    /// right before the file, like SetUploadDir. Hosts that predate it ignore
+    /// it and keep the file in the upload folder.
+    PasteNext { batch: u64 },
 }
 
 impl BrowseMsg {
@@ -107,6 +118,12 @@ mod tests {
                 path: "/home/me/old".into(),
                 name: "new".into(),
             },
+            BrowseMsg::PullClipboard {
+                req: 7,
+                seq: 3,
+                index: 1,
+            },
+            BrowseMsg::PasteNext { batch: 8 },
         ] {
             let bytes = message.to_bytes();
             assert_eq!(BrowseMsg::from_bytes(&bytes), Some(message.clone()));

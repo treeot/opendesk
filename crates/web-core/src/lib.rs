@@ -420,6 +420,12 @@ impl ViewerSession {
                 };
                 live.peer_deadline = now_ms + DEAD_PEER_TIMEOUT_MS;
                 match DataMsg::from_bytes(&plaintext) {
+                    // The browser cannot paste files from the host, so a
+                    // copied-files announcement is dropped.
+                    Some(DataMsg::Clipboard(ClipboardMsg {
+                        content: ClipboardContent::Files(_),
+                        ..
+                    })) => Vec::new(),
                     Some(DataMsg::Clipboard(clip)) => vec![Event::Clipboard(clip.content)],
                     Some(DataMsg::FileTransfer(message)) => {
                         let (sends, file_events) = live.transfers.on_message(message);
@@ -1035,6 +1041,15 @@ mod tests {
             viewer.receive(&inbound, 4.0),
             vec![Event::Clipboard(image.clone())]
         );
+        let files = host.data(&DataMsg::Clipboard(ClipboardMsg {
+            seq: 3,
+            content: ClipboardContent::Files(vec![protocol::clipboard::ClipboardFile {
+                name: "a.txt".into(),
+                size: 1,
+                is_dir: false,
+            }]),
+        }));
+        assert!(viewer.receive(&files, 5.0).is_empty());
         let outbound = viewer.clipboard_image(1, 1, vec![137, 80, 78, 71]).unwrap();
         assert_eq!(
             host.open_data(&outbound),

@@ -10,7 +10,7 @@
 use protocol::audio::AudioFrame;
 use protocol::browse::BrowseMsg;
 use protocol::chat::ChatMsg;
-use protocol::clipboard::ClipboardMsg;
+use protocol::clipboard::{ClipboardContent, ClipboardFile, ClipboardMsg};
 use protocol::control::Control;
 use protocol::datamsg::DataMsg;
 use protocol::filexfer::FileMsg;
@@ -200,6 +200,11 @@ fn data_message_parsers_are_crash_free() {
             path: "/etc/hosts".into(),
         },
         BrowseMsg::SetUploadDir { dir: "/tmp".into() },
+        BrowseMsg::PullClipboard {
+            req: 3,
+            seq: 4,
+            index: 0,
+        },
     ]
     .iter()
     .map(BrowseMsg::to_bytes)
@@ -208,8 +213,18 @@ fn data_message_parsers_are_crash_free() {
         BrowseMsg::from_bytes(&m.to_bytes())
     });
 
-    let clip_seeds: Vec<Vec<u8>> = [ClipboardMsg::text(1, "x".into())]
-        .iter()
+    let clip_seeds: Vec<Vec<u8>> = [
+        ClipboardMsg::text(1, "x".into()),
+        ClipboardMsg {
+            seq: 2,
+            content: ClipboardContent::Files(vec![ClipboardFile {
+                name: "a.txt".into(),
+                size: 3,
+                is_dir: false,
+            }]),
+        },
+    ]
+    .iter()
         .map(ClipboardMsg::to_bytes)
         .collect();
     smoke("ClipboardMsg", &clip_seeds, ClipboardMsg::from_bytes, |m| {
