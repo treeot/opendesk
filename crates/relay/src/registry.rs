@@ -77,7 +77,7 @@ pub enum Registration {
     /// The right token, but it keeps displacing another live connection
     /// with the same token: two copies of one device are fighting over it.
     InUse,
-    /// The binding table is at its cap.
+    /// The binding table is at its cap and nothing in it could be evicted.
     Full,
     /// This source claimed too many new IDs recently.
     RateLimited,
@@ -177,7 +177,16 @@ impl RegistrationState {
 struct StateFile { version: u32, bindings: Vec<StoredBinding> }
 
 #[derive(Serialize, Deserialize)]
-struct StoredBinding { id: String, token_sha256: String, expires_unix: u64 }
+struct StoredBinding {
+    id: String,
+    token_sha256: String,
+    expires_unix: u64,
+    /// Files written before this field existed held only paired ids.
+    #[serde(default = "stored_paired_default")]
+    paired: bool,
+}
+
+fn stored_paired_default() -> bool { true }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SweepStats { pub bindings_removed: usize, pub buckets_removed: usize }
@@ -198,6 +207,16 @@ impl Registry {
     pub fn register(&self, peer_id: String, token: [u8; 32], source: IpAddr, tx: Outbound, close_tx: CloseOutbound, notify: PeerNotify) -> Registration {
         let now = Instant::now();
         let token_hash = hash_token(&token);
+        // A new id on a full table makes room first. That has to happen
+        // before `entry` below locks a shard, since eviction walks the whole
+        // map. The new-id token is spent here so a rate-limited source cannot
+        // make the relay scan the table.
+        let mut new_id_allowed = None;
+        if self.bindings.load(Ordering::Relaxed) >= self.config.max_bindings && !self.hosts.contains_key(&peer_id) {
+            if !self.new_id_limits.allow(rate_key(source)) { return Registration::RateLimited; }
+            new_id_allowed = Some(true);
+            self.evict_unpaired();
+        }
         // A fresh registration holds only the short unpaired lease; it extends
         // to the full lease once a viewer pairs (see `take`) or if this re-registers
         // an id that already paired.
@@ -228,7 +247,7 @@ impl Registry {
             Entry::Vacant(slot) => {
                 if self.bindings.load(Ordering::Relaxed) >= self.config.max_bindings {
                     Registration::Full
-                } else if !self.new_id_limits.allow(rate_key(source)) {
+                } else if !new_id_allowed.unwrap_or_else(|| self.new_id_limits.allow(rate_key(source))) {
                     Registration::RateLimited
                 } else {
                     slot.insert(state);
@@ -261,7 +280,9 @@ impl Registry {
             if parked_matches || active_matches {
                 entry.parked = None;
                 entry.active = None;
-                entry.owner_until = Instant::now() + self.config.lease;
+                // Going offline must not turn the short unpaired lease into the
+                // full one, or registering and disconnecting would squat an id.
+                entry.owner_until = Instant::now() + if entry.ever_paired { self.config.lease } else { self.config.unpaired_lease };
                 self.dirty.store(true, Ordering::Relaxed);
             }
         }
@@ -299,6 +320,34 @@ impl Registry {
         SweepStats { bindings_removed: removed, buckets_removed: self.connect_limits.sweep(now) + self.target_connect_limits.sweep(now) + self.new_id_limits.sweep(now) }
     }
 
+    /// Frees room in a full table by dropping the offline ids that never
+    /// paired, oldest lease first. Those are the cheapest to lose: no viewer
+    /// ever reached them and their owner is not connected. Paired and online
+    /// ids are never evicted. Removes a small batch so a burst of new hosts on
+    /// a full relay does not rescan the table for every registration.
+    fn evict_unpaired(&self) -> usize {
+        const BATCH: usize = 64;
+        let mut candidates: Vec<(Instant, String)> = self.hosts.iter()
+            .filter(|entry| !entry.online() && !entry.ever_paired)
+            .map(|entry| (entry.owner_until, entry.key().clone()))
+            .collect();
+        if candidates.len() > BATCH {
+            candidates.select_nth_unstable(BATCH - 1);
+            candidates.truncate(BATCH);
+        }
+        let mut removed = 0;
+        for (_, id) in candidates {
+            // Recheck: the host may have come back since the scan.
+            if self.hosts.remove_if(&id, |_, state| !state.online() && !state.ever_paired).is_some() { removed += 1; }
+        }
+        if removed > 0 {
+            self.bindings.fetch_sub(removed, Ordering::Relaxed);
+            self.dirty.store(true, Ordering::Relaxed);
+            log::info!("event=registry_evict evicted_bindings={removed}");
+        }
+        removed
+    }
+
     pub fn state_file(&self) -> Option<&Path> { self.config.state_file.as_deref() }
 
     /// Writes the bindings to the state file if they changed since the last
@@ -314,10 +363,10 @@ impl Registry {
     fn save(&self, path: &Path) -> std::io::Result<()> {
         let now = Instant::now();
         let now_unix = unix_now();
-        let online_until = now_unix + self.config.lease.as_secs();
         let bindings = self.hosts.iter().filter_map(|entry| {
-            let expires_unix = if entry.online() { online_until } else { now_unix + entry.owner_until.checked_duration_since(now)?.as_secs() };
-            Some(StoredBinding { id: entry.key().clone(), token_sha256: hex(&entry.token_hash), expires_unix })
+            let lease = if entry.ever_paired { self.config.lease } else { self.config.unpaired_lease };
+            let expires_unix = if entry.online() { now_unix + lease.as_secs() } else { now_unix + entry.owner_until.checked_duration_since(now)?.as_secs() };
+            Some(StoredBinding { id: entry.key().clone(), token_sha256: hex(&entry.token_hash), expires_unix, paired: entry.ever_paired })
         }).collect();
         let json = serde_json::to_vec(&StateFile { version: 1, bindings }).map_err(std::io::Error::other)?;
         write_atomic(path, &json)
@@ -340,10 +389,10 @@ impl Registry {
             if self.bindings.load(Ordering::Relaxed) >= self.config.max_bindings { break; }
             let Some(token_hash) = crate::session::decode_token(&binding.token_sha256) else { continue };
             if !crate::session::valid_peer_id(&binding.id) || binding.expires_unix <= now_unix { continue; }
-            let remaining = Duration::from_secs(binding.expires_unix - now_unix).min(self.config.lease);
+            let lease = if binding.paired { self.config.lease } else { self.config.unpaired_lease };
+            let remaining = Duration::from_secs(binding.expires_unix - now_unix).min(lease);
             if let Entry::Vacant(slot) = self.hosts.entry(binding.id) {
-                // A persisted binding already earned its lease, so treat it as established.
-                slot.insert(RegistrationState { token_hash, owner_until: now + remaining, parked: None, active: None, takeovers: Takeovers::default(), ever_paired: true });
+                slot.insert(RegistrationState { token_hash, owner_until: now + remaining, parked: None, active: None, takeovers: Takeovers::default(), ever_paired: binding.paired });
                 self.bindings.fetch_add(1, Ordering::Relaxed);
                 loaded += 1;
             }
@@ -554,9 +603,73 @@ mod tests {
     #[test]
     fn binding_cap_rejects_new_ids_but_not_owners() {
         let registry = Registry::new(RegistryConfig { max_bindings: 1, ..RegistryConfig::default() });
-        assert_eq!(registration(&registry, "111111111", "a").0, Registration::Accepted);
+        // Online, so not evictable.
+        let (result, _online) = registration(&registry, "111111111", "a");
+        assert_eq!(result, Registration::Accepted);
         assert_eq!(registration(&registry, "222222222", "b").0, Registration::Full);
         assert_eq!(registration(&registry, "111111111", "a").0, Registration::Accepted);
+    }
+
+    #[test]
+    fn full_registry_evicts_the_oldest_offline_unpaired_id() {
+        let registry = Registry::new(RegistryConfig { max_bindings: 3, ..RegistryConfig::default() });
+        // Offline and never paired, oldest first.
+        let (_, old) = registration(&registry, "111111111", "a");
+        registry.unregister("111111111", &old);
+        std::thread::sleep(Duration::from_millis(2));
+        // Offline but paired once: keeps its id.
+        let (_, paired) = registration(&registry, "222222222", "b");
+        assert!(registry.take("222222222").is_some());
+        registry.unregister("222222222", &paired);
+        // Online and never paired: keeps its id.
+        let (_, _online) = registration(&registry, "333333333", "c");
+        assert_eq!(registry.binding_count(), 3);
+
+        let (result, _new) = registration(&registry, "444444444", "d");
+        assert_eq!(result, Registration::Accepted);
+        assert_eq!(registry.binding_count(), 3);
+        // The evicted id is free for anyone, the others are still owned.
+        assert_eq!(registration(&registry, "222222222", "x").0, Registration::IdTaken);
+        assert_eq!(registration(&registry, "333333333", "x").0, Registration::IdTaken);
+        assert!(registry.is_online("333333333"));
+        assert!(!registry.hosts.contains_key("111111111"));
+
+        // Nothing evictable left: the next new id is refused.
+        assert_eq!(registration(&registry, "555555555", "e").0, Registration::Full);
+    }
+
+    #[test]
+    fn eviction_takes_a_batch_of_the_oldest_leases() {
+        let registry = Registry::new(RegistryConfig { new_id_burst: 100, ..RegistryConfig::default() });
+        for n in 0..70u32 {
+            let id = format!("{:09}", 100_000_000 + n);
+            let (_, tx) = registration(&registry, &id, "a");
+            registry.unregister(&id, &tx);
+        }
+        assert_eq!(registry.evict_unpaired(), 64);
+        // The six newest are left.
+        let mut left: Vec<String> = registry.hosts.iter().map(|entry| entry.key().clone()).collect();
+        left.sort();
+        assert_eq!(left, (64..70u32).map(|n| format!("{:09}", 100_000_000 + n)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn rate_limited_source_cannot_trigger_eviction() {
+        let registry = Registry::new(RegistryConfig { max_bindings: 1, new_id_burst: 1, ..RegistryConfig::default() });
+        let (_, old) = registration(&registry, "111111111", "a");
+        registry.unregister("111111111", &old);
+        // SOURCE spent its one new-id token above.
+        assert_eq!(registration(&registry, "222222222", "b").0, Registration::RateLimited);
+        assert!(registry.hosts.contains_key("111111111"));
+    }
+
+    #[test]
+    fn disconnecting_keeps_an_unpaired_id_on_the_short_lease() {
+        let registry = Registry::new(RegistryConfig { lease: Duration::from_secs(3600), unpaired_lease: Duration::from_millis(20), ..RegistryConfig::default() });
+        let (_, tx) = registration(&registry, "123456789", "a");
+        registry.unregister("123456789", &tx);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(registration(&registry, "123456789", "b").0, Registration::Accepted);
     }
 
     #[test]
@@ -647,6 +760,8 @@ mod tests {
         assert_eq!(restarted.load(&path).unwrap(), 1);
         assert_eq!(registration(&restarted, "123456789", "squatter").0, Registration::IdTaken);
         assert_eq!(registration(&restarted, "123456789", "owner").0, Registration::Accepted);
+        // A never-paired id comes back as never-paired, so it stays evictable.
+        assert!(!restarted.hosts.get("123456789").unwrap().ever_paired);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

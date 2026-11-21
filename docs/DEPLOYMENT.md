@@ -71,7 +71,8 @@ All settings are optional environment variables.
 | `RELAY_TRUSTED_PROXIES` | loopback, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` | Comma-separated CIDRs of reverse proxies. `none` trusts nothing. |
 | `RELAY_STATE_FILE` | unset | JSON file that keeps ID ownership across restarts. |
 | `RELAY_ID_LEASE_SECS` | `2592000` (30 days) | How long an offline host keeps its ID. |
-| `RELAY_MAX_ID_BINDINGS` | `100000` | Most IDs tracked at once. New IDs are refused when full. |
+| `RELAY_UNPAIRED_ID_LEASE_SECS` | `86400` (1 day) | How long an ID that has never had a viewer connect keeps its owner. |
+| `RELAY_MAX_ID_BINDINGS` | `100000` | Most IDs tracked at once. When full, the oldest offline IDs that never paired make room; if there are none, new IDs are refused. |
 | `RELAY_NEW_ID_BURST` / `RELAY_NEW_ID_REFILL_SECS` | `20` / `3600` | New IDs one IP (or IPv6 /64) may claim per window. |
 | `RELAY_MAX_RATE_ENTRIES` | `100000` | Most IPs tracked by each rate limiter. |
 | `RELAY_IDLE_TIMEOUT_SECS` | `60` | Closes a paired connection after this long without traffic. |
